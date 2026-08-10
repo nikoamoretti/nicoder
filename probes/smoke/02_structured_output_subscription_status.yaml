@@ -1,0 +1,61 @@
+stable_key: structured_output_subscription_status
+version: 2
+category: structured_output
+title: "Typed object with enum, integer, boolean and array fields"
+description: >
+  The model must return a JSON object describing a synthetic subscription with
+  a required enum, integer, boolean and array field, validated against a JSON
+  Schema.
+messages:
+  - role: system
+    content: >
+      Return only a JSON object. No prose, no markdown fences, no trailing
+      commentary. Follow the schema implied by the user's request exactly.
+  - role: user
+    content: >
+      Produce a JSON object for a subscription with:
+      status (one of "trialing", "active", "past_due", "canceled"),
+      seats (an integer at least 1),
+      auto_renew (a boolean),
+      feature_flags (an array of strings).
+      Use this data: status "active", seats 3, auto_renew true,
+      feature_flags ["priority_support", "api_webhooks"].
+tools: null
+request_parameters:
+  temperature: 0
+  max_tokens: 300
+expected_behavior:
+  json_schema:
+    type: object
+    additionalProperties: false
+    required: [status, seats, auto_renew, feature_flags]
+    properties:
+      status:
+        type: string
+        enum: [trialing, active, past_due, canceled]
+      seats:
+        type: integer
+        minimum: 1
+      auto_renew:
+        type: boolean
+      feature_flags:
+        type: array
+        items:
+          type: string
+  required_fields: [status, seats, auto_renew, feature_flags]
+  example:
+    status: "active"
+    seats: 3
+    auto_renew: true
+    feature_flags: ["priority_support", "api_webhooks"]
+scorers:
+  - structured_output_task_success
+  - json_parse_success
+  - json_schema_validity
+  - required_field_presence
+  - unexpected_field_detection
+  - http_success
+  - error_occurrence
+  - latency_measurement
+importance: high
+tags: [structured_output, json_schema, enum]

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Endpoint Ledger{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <span class="brand">Endpoint Ledger</span>
+    <a href="/">Overview</a>
+    <a href="/baseline-ops">Baseline Operations</a>
+    <a href="/changes">Change events</a>
+    <a href="/notifications">Notifications{% if unread_count is defined and unread_count %} <span class="badge warn">{{ unread_count }}</span>{% endif %}</a>
+    {% if origin is defined and origins is defined %}
+      <span class="origin-switch">
+        <span class="muted">origin:</span>
+        {% for o in origins %}
+          {% set base = request.url.path %}
+          <a href="{{ base }}?origin={{ o }}" class="{{ 'active' if origin == o else '' }}">{{ o }}</a>
+        {% endfor %}
+        <a href="{{ request.url.path }}?origin=all" class="{{ 'active' if origin == 'all' else '' }}">all</a>
+      </span>
+    {% endif %}
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

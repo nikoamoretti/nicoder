@@ -1,0 +1,61 @@
+stable_key: structured_output_customer_object
+version: 2
+category: structured_output
+title: "Customer object against a JSON Schema"
+description: >
+  The model must return a single JSON object describing a synthetic customer
+  that validates against the declared JSON Schema. No prose, no markdown.
+messages:
+  - role: system
+    content: >
+      Return only a JSON object. No prose, no markdown fences, no trailing
+      commentary. The object must match the shape described by the user.
+  - role: user
+    content: >
+      Produce a JSON object for a customer with the following properties:
+      id (string), name (string), email (string matching a valid email format),
+      active (boolean), and plan (one of "free", "pro", "enterprise").
+      Use this customer data: id "C-1042", name "Taylor Reyes",
+      email "taylor.reyes@example.com", active true, plan "pro".
+tools: null
+request_parameters:
+  temperature: 0
+  max_tokens: 300
+expected_behavior:
+  json_schema:
+    type: object
+    additionalProperties: false
+    required: [id, name, email, active, plan]
+    properties:
+      id:
+        type: string
+        minLength: 1
+      name:
+        type: string
+        minLength: 1
+      email:
+        type: string
+        format: email
+      active:
+        type: boolean
+      plan:
+        type: string
+        enum: [free, pro, enterprise]
+  required_fields: [id, name, email, active, plan]
+  example:
+    id: "C-1042"
+    name: "Taylor Reyes"
+    email: "taylor.reyes@example.com"
+    active: true
+    plan: "pro"
+scorers:
+  - structured_output_task_success
+  - json_parse_success
+  - json_schema_validity
+  - required_field_presence
+  - unexpected_field_detection
+  - http_success
+  - error_occurrence
+  - latency_measurement
+importance: high
+tags: [structured_output, json_schema]

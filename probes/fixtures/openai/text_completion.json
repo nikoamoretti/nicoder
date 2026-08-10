@@ -1,0 +1,22 @@
+{
+  "id": "chatcmpl-8fRecordedText123",
+  "object": "chat.completion",
+  "created": 1784990000,
+  "model": "gpt-4o-mini-2024-07-18",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"id\": \"C-1042\", \"name\": \"Taylor Reyes\", \"email\": \"taylor.reyes@example.com\", \"active\": true, \"plan\": \"pro\"}",
+        "tool_calls": null
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 82,
+    "completion_tokens": 29,
+    "total_tokens": 111
+  }
+}

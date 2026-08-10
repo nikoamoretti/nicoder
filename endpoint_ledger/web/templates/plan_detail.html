@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Collection plan #{{ plan.id }} — Endpoint Ledger{% endblock %}
+{% block content %}
+
+<h1>Collection plan <span class="muted mono">#{{ plan.id }}</span></h1>
+<p class="muted">
+  state: <strong>{{ plan.state }}</strong> · provider: {{ plan.provider }} ·
+  suite: {{ plan.suite_name }} · repeats per probe: {{ plan.repeats_per_probe }}
+</p>
+
+<div class="detail-grid">
+  <div class="card"><div class="label">Cohort fingerprint</div><div class="value mono" style="font-size:12px;">{{ plan.cohort_fingerprint[:24] }}…</div></div>
+  <div class="card"><div class="label">Cumulative cost</div><div class="value">${{ "%.6f"|format(plan.cumulative_cost_usd) }}</div></div>
+  <div class="card"><div class="label">Maximum total cost</div><div class="value">${{ "%.6f"|format(plan.maximum_total_cost_usd or 0) }}</div></div>
+  <div class="card"><div class="label">Maximum end</div><div class="value mono" style="font-size:12px;">{{ plan.maximum_end_at or "—" }}</div></div>
+  <div class="card"><div class="label">Maximum runs</div><div class="value">{{ plan.maximum_runs or "—" }}</div></div>
+</div>
+
+<h2>Qualification policy snapshot</h2>
+<pre>{{ plan.qualification_policy | tojson(indent=2) }}</pre>
+
+<h2>Planned runs</h2>
+<table>
+  <thead><tr><th>ID</th><th>Trigger</th><th>Requested</th><th>Scheduled for</th><th>Status</th><th>Blocking reason</th><th>Requests</th><th>Suite run</th></tr></thead>
+  <tbody>
+  {% for planned in planned %}
+    <tr>
+      <td>{{ planned.id }}</td>
+      <td>
+        {% if planned.trigger_type == "manual_run_now" %}<span class="badge warn">MANUAL</span>
+        {% elif planned.trigger_type == "qualification_smoke" %}<span class="badge info">smoke</span>
+        {% else %}<span class="muted">scheduled</span>{% endif %}
+      </td>
+      <td class="mono">{{ planned.requested_at or "—" }}</td>
+      <td class="mono">{{ planned.scheduled_for }}</td>
+      <td><span class="badge {{ 'ok' if planned.status == 'completed' else 'warn' if planned.status == 'blocked' else 'info' }}">{{ planned.status }}</span></td>
+      <td class="muted">{{ planned.blocking_reason or "—" }}</td>
+      <td>{{ planned.expected_request_count or "—" }}</td>
+      <td>{% if planned.suite_run_id %}<a href="/runs/{{ planned.suite_run_id }}">#{{ planned.suite_run_id }}</a>{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if plan.state in ("enabled", "paused") %}
+<p><a href="/baseline-ops/plan/{{ plan.id }}/manual-run"><button>Run One Additional Collection Now</button></a></p>
+{% endif %}
+
+{% if plan.state == "proposed" %}
+<form method="post" action="/baseline-ops/plan/{{ plan.id }}/enable">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Enable collection</button>
+</form>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Notifications — Endpoint Ledger{% endblock %}
+{% block content %}
+
+<h1>Notifications</h1>
+
+{% if items %}
+<table>
+  <thead><tr><th>When</th><th>Severity</th><th>Category</th><th>Title</th><th>Message</th><th></th></tr></thead>
+  <tbody>
+  {% for item in items %}
+    <tr>
+      <td class="mono">{{ item.created_at }}</td>
+      <td><span class="badge {{ 'fail' if item.severity == 'error' else 'warn' if item.severity == 'warn' else 'info' }}">{{ item.severity }}</span></td>
+      <td class="mono">{% if item.category.startswith("manual_collection") %}<span class="badge warn">MANUAL</span> {% endif %}{{ item.category }}</td>
+      <td>{{ item.title }}</td>
+      <td class="muted">{{ item.message }}</td>
+      <td>
+        {% if item.read_at is none %}
+        <form method="post" action="/notifications/{{ item.id }}/read">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">mark read</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No notifications.</p>
+{% endif %}
+
+{% endblock %}

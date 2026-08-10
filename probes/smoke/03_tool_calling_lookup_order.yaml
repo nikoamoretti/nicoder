@@ -1,0 +1,67 @@
+stable_key: tool_calling_lookup_order
+version: 2
+category: tool_calling
+title: "Select the correct read-only lookup tool with exact arguments"
+description: >
+  Given a set of tools, the model must call the read-only lookup_order tool
+  with the exact order_id argument and must not call any other tool.
+messages:
+  - role: system
+    content: >
+      You have access to the tools defined below. Decide which tool, if any,
+      is appropriate. Call exactly one tool when the user's request can be
+      satisfied by it. Prefer read-only tools. Never call a tool that modifies
+      or refunds an order unless the user explicitly requests it.
+  - role: user
+    content: >
+      Look up order ORD-8821 and tell me whether it has shipped.
+tools:
+  - type: function
+    function:
+      name: lookup_order
+      description: Fetch a read-only record for a single order.
+      parameters:
+        type: object
+        properties:
+          order_id:
+            type: string
+        required: [order_id]
+  - type: function
+    function:
+      name: refund_order
+      description: Process a refund for an order. Destructive; requires manager approval.
+      parameters:
+        type: object
+        properties:
+          order_id:
+            type: string
+        required: [order_id]
+request_parameters:
+  temperature: 0
+  max_tokens: 300
+  tool_choice: auto
+expected_behavior:
+  expected_tool_calls:
+    - name: lookup_order
+      arguments:
+        order_id: "ORD-8821"
+  forbidden_tools: [refund_order]
+  tool_call_sequence: [lookup_order]
+  exact_arguments: true
+  example_tool_calls:
+    - id: call_mock_01
+      name: lookup_order
+      arguments:
+        order_id: "ORD-8821"
+scorers:
+  - tool_task_success
+  - correct_tool_selection
+  - forbidden_tool_avoidance
+  - tool_argument_json_validity
+  - tool_argument_equality_or_schema
+  - required_tool_sequence
+  - http_success
+  - error_occurrence
+  - latency_measurement
+importance: high
+tags: [tool_calling, read_only, exact_arguments]

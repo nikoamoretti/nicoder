@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Baseline Operations — Endpoint Ledger{% endblock %}
+{% block content %}
+
+<h1>Baseline Operations</h1>
+<p class="muted">State: <strong>{{ state.state }}</strong></p>
+
+<div class="cards">
+  <div class="card"><div class="label">Credential</div>
+    <div class="value">{{ "configured" if state.credential.configured else "not configured" }}</div>
+    <div class="muted">{{ state.credential.storage_method }}</div>
+  </div>
+  <div class="card"><div class="label">Preflight</div>
+    <div class="value">{{ "ready" if state.preflight and state.preflight.ready else "not run" if not state.preflight else "blocked" }}</div>
+  </div>
+  <div class="card"><div class="label">Collection plan</div>
+    <div class="value">{{ state.plan.state if state.plan else "none" }}</div>
+  </div>
+  <div class="card"><div class="label">Latest verified backup</div>
+    <div class="value mono" style="font-size:12px;">{{ backup.name if backup else "none" }}</div>
+  </div>
+  <div class="card"><div class="label">Scheduler</div>
+    <div class="value">{{ scheduler.status if scheduler else "offline" }}</div>
+    <div class="muted">{{ scheduler.last_heartbeat_at if scheduler else "no heartbeat" }}</div>
+  </div>
+</div>
+
+{% if state.state == "credential_required" %}
+<h2>Next safe action: Configure credential</h2>
+<p>The OpenAI API key is stored in your operating system's secure credential store (macOS Keychain). It is never written to the database, logs, files, or URLs.</p>
+<form method="post" action="/baseline-ops/credential">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="password" name="credential_value" autocomplete="off" placeholder="OpenAI API key" required style="width: 320px;">
+  <button type="submit">Save credential</button>
+</form>
+
+{% elif state.state in ("ready_for_preflight", "preflight_blocked") %}
+<h2>Next safe action: Run preflight</h2>
+<p>Preflight is read-only and never calls the model endpoint.</p>
+<form method="post" action="/baseline-ops/preflight">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Run preflight</button>
+</form>
+{% if state.preflight and not state.preflight.ready %}
+<div class="raw-hidden" style="border-color: var(--red); color: var(--red);">
+  Preflight blocked:
+  <ul>
+  {% for reason in state.preflight.blocking_reasons %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% elif state.state == "ready_for_qualification_smoke" %}
+<h2>Next safe action: Run qualification smoke</h2>
+<p>This creates real live evidence: 1 repeat of each eligible v2 probe (6 requests). Evidence is sealed, exported, and verified automatically. An explicit confirmation is required.</p>
+<form method="post" action="/baseline-ops/qualification-smoke">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label><input type="checkbox" name="confirm" value="run" required> I understand this creates real live evidence</label>
+  <button type="submit">Run qualification smoke</button>
+</form>
+
+{% elif state.state == "qualification_smoke_running" %}
+<h2>Qualification-smoke is running</h2>
+<p>Run #{{ state.smoke.id }} is executing. Refresh to see progress.</p>
+
+{% elif state.state == "qualification_smoke_ready_for_review" %}
+<h2>Next safe action: Review qualification run</h2>
+<p>Run #{{ state.smoke.id }} completed. Review its six probe results, then approve or reject.</p>
+<a href="/baseline-ops/review/{{ state.smoke.id }}"><button>Review qualification run</button></a>
+
+{% elif state.state == "qualification_smoke_rejected" %}
+<h2>Qualification run rejected</h2>
+<p class="muted">{{ state.rejected_annotation.notes if state.rejected_annotation else "" }}</p>
+<p>Run a new qualification smoke after resolving the measurement issue.</p>
+
+{% elif state.state == "ready_to_schedule" %}
+<h2>Next safe action: Create collection plan</h2>
+<p>Automated baseline collection: ~2 SuiteRuns per day, five repeats per probe, until the cohort qualifies. Qualification requires at least 50 eligible observations per probe, 10 distinct runs, 5 distinct UTC dates, and 168 elapsed hours.</p>
+<form method="post" action="/baseline-ops/plan/create">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Create collection plan</button>
+</form>
+
+{% elif state.state == "collection_active" %}
+<h2>Collection operating normally</h2>
+<p>Plan #{{ state.plan.id }} is enabled. Cumulative cost: ${{ "%.6f"|format(state.plan.cumulative_cost_usd) }}.</p>
+<a href="/baseline-ops/plan/{{ state.plan.id }}/manual-run"><button>Run One Additional Collection Now</button></a>
+<form method="post" action="/baseline-ops/plan/{{ state.plan.id }}/pause" style="display:inline;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Pause</button>
+</form>
+<form method="post" action="/baseline-ops/plan/{{ state.plan.id }}/stop" style="display:inline;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Stop after current run</button>
+</form>
+<form method="post" action="/baseline-ops/plan/{{ state.plan.id }}/disable" style="display:inline;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Disable</button>
+</form>
+
+{% elif state.state == "collection_paused" %}
+<h2>Collection paused</h2>
+<p>A manual run may still be requested; the recurring schedule stays paused.</p>
+<a href="/baseline-ops/plan/{{ state.plan.id }}/manual-run"><button>Run One Additional Collection Now</button></a>
+<form method="post" action="/baseline-ops/plan/{{ state.plan.id }}/resume">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Resume</button>
+</form>
+
+{% elif state.state == "baseline_qualified" %}
+<h2>Baseline qualified</h2>
+<p class="muted">The cohort has qualified. A versioned Baseline Qualification Report has been generated.</p>
+{% endif %}
+
+<h2>Cohort qualification progress</h2>
+{% if cohort_reports %}
+<table>
+  <thead><tr><th>Probe</th><th>Status</th><th>Observations</th><th>Runs</th><th>Dates</th><th>Elapsed hours</th></tr></thead>
+  <tbody>
+  {% for report in cohort_reports %}
+    {% set c = report.cohort %}
+    {% set p = report.progress %}
+    <tr>
+      <td>{{ c.probe_stable_key }} v{{ c.probe_version.version_number }}</td>
+      <td><span class="badge {{ 'ok' if p.status == 'qualified' else 'warn' }}">{{ p.status }}</span></td>
+      <td>{{ p.eligible_primary_observations }} / {{ p.min_primary_observations }}</td>
+      <td>{{ p.distinct_runs }} / {{ p.min_distinct_runs }}</td>
+      <td>{{ p.distinct_dates }} / {{ p.min_distinct_dates }}</td>
+      <td>{{ p.elapsed_hours }} / {{ p.min_elapsed_hours }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No live cohorts yet.</p>
+{% endif %}
+
+{% endblock %}

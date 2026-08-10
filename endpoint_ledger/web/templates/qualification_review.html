@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Review qualification run #{{ report.run.id }} — Endpoint Ledger{% endblock %}
+{% block content %}
+
+<h1>Qualification review <span class="muted mono">#{{ report.run.id }}</span></h1>
+<p class="muted">
+  suite: <strong>{{ report.run.suite_name }}</strong> · status:
+  <strong class="status-{{ report.run.status }}">{{ report.run.status }}</strong> ·
+  evidence: <span class="badge info">{{ report.run.evidence_state }}</span> ·
+  model reported: <span class="mono">{{ report.model_reported or "—" }}</span>
+</p>
+
+<div class="detail-grid">
+  <div class="card"><div class="label">Expected observations</div><div class="value">{{ report.run.total_expected_observations }}</div></div>
+  <div class="card"><div class="label">Completed observations</div><div class="value">{{ report.run.completed_observations }}</div></div>
+  <div class="card"><div class="label">Failed observations</div><div class="value">{{ report.run.failed_observations }}</div></div>
+  <div class="card"><div class="label">Export verified</div><div class="value">{{ "yes" if report.artifact and report.artifact.verification_status == "verified" else "no" }}</div></div>
+</div>
+
+<h2>Primary outcomes (one per probe)</h2>
+<table>
+  <thead><tr><th>Probe</th><th>Observations</th><th>Primary outcome</th></tr></thead>
+  <tbody>
+  {% for key, entry in report.per_probe|dictsort %}
+    <tr>
+      <td class="mono">{{ key }}</td>
+      <td>{{ entry.observations }}</td>
+      <td>{% if entry.primary_passed is none %}—{% elif entry.primary_passed %}<span class="badge ok">pass</span>{% else %}<span class="badge fail">fail</span>{% endif %}{% if entry.primary_derived %}<span class="muted">*</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Approval</h2>
+{% if errors %}
+<div class="raw-hidden" style="border-color: var(--red); color: var(--red);">
+  Approval refused:
+  <ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+</div>
+{% else %}
+<form method="post" action="/baseline-ops/approve/{{ report.run.id }}" style="display:inline;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Approve for baseline collection</button>
+</form>
+{% endif %}
+
+<h2>Reject and open measurement issue</h2>
+<form method="post" action="/baseline-ops/reject/{{ report.run.id }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="text" name="reason" placeholder="Which probe, scorer, adapter, or harness behavior is affected?" style="width: 480px;" required>
+  <button type="submit">Reject</button>
+</form>
+
+<p class="muted">* primary outcome derived from stored diagnostics (legacy observation).</p>
+
+{% endblock %}

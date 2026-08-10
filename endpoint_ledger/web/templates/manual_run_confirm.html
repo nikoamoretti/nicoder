@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Run One Additional Collection Now — Endpoint Ledger{% endblock %}
+{% block content %}
+
+<h1>Run One Additional Collection Now</h1>
+<p class="muted">
+  Plan <span class="mono">#{{ plan.id }}</span> · provider: {{ plan.provider }} ·
+  state: <strong>{{ plan.state }}</strong>
+</p>
+
+{% if blockers %}
+<div class="raw-hidden" style="border-color: var(--red); color: var(--red);">
+  This manual run is currently blocked:
+  <ul>
+  {% for reason in blockers %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+</div>
+<p class="muted">Resolve the blocking reasons, then retry. No provider request was made.</p>
+<a href="/baseline-ops"><button>Back to Baseline Operations</button></a>
+{% else %}
+
+<div class="detail-grid">
+  <div class="card"><div class="label">Requested endpoint</div><div class="value">{{ endpoint.model_requested }}</div></div>
+  <div class="card"><div class="label">Most recently observed model</div><div class="value">{{ latest_model_reported or "—" }}</div></div>
+  <div class="card"><div class="label">Active cohort fingerprint</div><div class="value mono" style="font-size:12px;">{{ plan.cohort_fingerprint[:24] }}…</div></div>
+  <div class="card"><div class="label">Repeats per probe</div><div class="value">{{ plan.repeats_per_probe }}</div></div>
+  <div class="card"><div class="label">Expected live requests</div><div class="value">{{ expected_request_count }}</div></div>
+  <div class="card"><div class="label">Conservative max incremental cost</div><div class="value">${{ "%.6f"|format(maximum_incremental_cost_usd or 0) }}</div></div>
+  <div class="card"><div class="label">Cumulative plan cost (before)</div><div class="value">${{ "%.6f"|format(plan.cumulative_cost_usd) }}</div></div>
+  <div class="card"><div class="label">Maximum approved plan cost</div><div class="value">${{ "%.6f"|format(plan.maximum_total_cost_usd or 0) }}</div></div>
+  <div class="card"><div class="label">Cumulative requests (before)</div><div class="value">{{ cumulative_request_count }}</div></div>
+  <div class="card"><div class="label">Maximum approved requests</div><div class="value">{{ plan.maximum_request_count if plan.maximum_request_count is not none else "unlimited" }}</div></div>
+  <div class="card"><div class="label">Latest verified backup</div><div class="value">{{ latest_verified_backup.name if latest_verified_backup else "none" }}</div></div>
+  <div class="card"><div class="label">Evidence export destination</div><div class="value mono" style="font-size:12px;">{{ evidence_export_destination }}</div></div>
+  <div class="card"><div class="label">Recurring schedule</div><div class="value">{{ plan.state }}</div></div>
+  <div class="card"><div class="label">Next scheduled run</div><div class="value mono">{{ next_scheduled_run.scheduled_for if next_scheduled_run else "none" }}</div></div>
+</div>
+
+<h2>Eligible probe versions</h2>
+<table>
+  <thead><tr><th>Probe</th><th>Version</th><th>Primary metric</th><th>Requests</th></tr></thead>
+  <tbody>
+  {% for probe in eligible_probes %}
+    <tr>
+      <td class="mono">{{ probe.probe }}</td>
+      <td>v{{ probe.version_number }}</td>
+      <td class="mono">{{ probe.primary_metric }}</td>
+      <td>{{ plan.repeats_per_probe }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div class="raw-hidden" style="border-color: var(--gold); color: var(--gold);">
+  This manual run is <strong>additional</strong>: it does not silently replace,
+  shift, or resume the recurring schedule. {% if plan.state == "paused" %}The
+  plan remains paused after this run.{% else %}The existing recurring schedule
+  stays intact.{% endif %}
+</div>
+
+{% if close_to_scheduled_run %}
+<div class="raw-hidden" style="border-color: var(--gold); color: var(--gold);">
+  Note: the next scheduled run is due within one hour
+  ({{ next_scheduled_run.scheduled_for }}). The scheduled run is not modified
+  or removed.
+</div>
+{% endif %}
+
+<form method="post" action="/baseline-ops/plan/{{ plan.id }}/manual-run">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="idempotency_token" value="{{ idempotency_token }}">
+  <label><input type="checkbox" name="confirm" value="run" required> I confirm this creates one additional live collection run now</label>
+  <button type="submit">Run One Additional Collection Now</button>
+</form>
+
+{% endif %}
+
+{% endblock %}
