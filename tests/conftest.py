@@ -16,6 +16,7 @@ os.environ.setdefault(
 
 from collections.abc import Iterator  # noqa: E402
 
+import keyring  # noqa: E402
 import pytest  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
@@ -27,6 +28,32 @@ from endpoint_ledger.db.sealed_evidence import ALL_SQL as SEALED_EVIDENCE_SQL  #
 from endpoint_ledger.db.triggers import TRIGGERS_SQL  # noqa: E402
 
 TEST_DATABASE_URL = os.environ["ENDPOINT_LEDGER_DATABASE_URL"]
+
+
+class _FakeKeyring(keyring.backend.KeyringBackend):
+    """In-memory keyring backend so tests never touch the macOS Keychain."""
+
+    priority = 100
+
+    def __init__(self) -> None:
+        self._items: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self._items.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._items[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        self._items.pop((service, username), None)
+
+
+@pytest.fixture(autouse=True)
+def _fake_keyring():
+    previous = keyring.get_keyring()
+    keyring.set_keyring(_FakeKeyring())
+    yield
+    keyring.set_keyring(previous)
 
 
 @pytest.fixture()

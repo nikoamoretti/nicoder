@@ -20,8 +20,8 @@ from endpoint_ledger.db.models import Observation, ProviderEndpoint, Score, Scor
 from endpoint_ledger.measurement.adjudication import MEASUREMENT_DEFECT_CLASSES
 from endpoint_ledger.measurement.cohorts import CohortService, cohort_dimensions, fingerprint_for_dimensions
 from endpoint_ledger.probes.loader import load_probes, sync_probes_to_db
-from endpoint_ledger.providers import get_provider
 from endpoint_ledger.runner.service import SuiteOptions, SuiteRunner
+from endpoint_ledger.sanitize import sanitize_message
 
 
 def _hash(payload: Any) -> str:
@@ -42,9 +42,21 @@ def run_preflight(
     settings = settings or get_settings()
     report: dict[str, Any] = {"provider": provider, "ready": False, "refusals": [], "checks": {}}
 
-    adapter = get_provider(provider, settings)
-    credential_present = adapter.is_available()
-    report["checks"]["api_credential_present"] = credential_present
+    from endpoint_ledger.services.credentials import CredentialResolutionError, resolve_credential
+
+    try:
+        credential = resolve_credential(session, provider, settings)
+        credential_present = True
+        report["checks"]["api_credential_present"] = True
+        report["credential"] = {
+            "source": credential.source,
+            "fingerprint": credential.fingerprint,
+        }
+    except CredentialResolutionError as exc:
+        credential_present = False
+        report["checks"]["api_credential_present"] = False
+        report["checks"]["credential_resolution_reason"] = exc.reason
+        report["refusals"].append(sanitize_message(str(exc)))
 
     endpoints = list(
         session.scalars(
@@ -187,7 +199,7 @@ def run_preflight(
         )
 
     if not credential_present:
-        report["refusals"].append("API credential is missing from the environment")
+        report["refusals"].append("API credential is missing or ambiguous (select an active source)")
 
     report["ready"] = not report["refusals"]
     return report

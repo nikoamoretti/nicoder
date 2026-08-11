@@ -31,7 +31,9 @@ from endpoint_ledger.services.collection_service import (
 )
 from endpoint_ledger.services.credentials import (
     credential_status,
+    invalidate_preflight_binding,
     remove_credential,
+    set_active_source,
     store_credential,
     validate_credential,
 )
@@ -66,6 +68,13 @@ def _state(request: Request, session: Session) -> dict[str, Any]:
     from endpoint_ledger.services.preflight_service import latest_preflight
 
     preflight = latest_preflight(session, "openai")
+    preflight_ready = bool(
+        preflight is not None
+        and preflight.ready
+        and preflight.binding_valid is not False
+        and credential["active_fingerprint"] is not None
+        and preflight.credential_fingerprint == credential["active_fingerprint"]
+    )
     smoke = session.scalar(
         select(SuiteRun).where(
             SuiteRun.suite_name.like("qualification-smoke-%"),
@@ -100,7 +109,9 @@ def _state(request: Request, session: Session) -> dict[str, Any]:
 
     if not credential["configured"]:
         state = "credential_required"
-    elif preflight is None or not preflight.ready:
+    elif credential["ambiguous"]:
+        state = "credential_ambiguous"
+    elif not preflight_ready:
         state = "preflight_blocked" if preflight is not None and not preflight.ready else "ready_for_preflight"
     elif smoke is None:
         state = "ready_for_qualification_smoke"
@@ -176,10 +187,25 @@ def save_credential(
     request: Request,
     credential_value: str = Form(...),
 ):
+    """POST-only, CSRF-protected Keychain credential entry.
+
+    The key goes to the macOS Keychain; only a fingerprint and metadata are
+    persisted. After saving, Keychain becomes the explicit active source and
+    any prior preflight binding is invalidated (CREDENTIAL CHANGED SINCE
+    PREFLIGHT). The value is never rendered, logged, or returned.
+    """
     session = _db(request)
     try:
-        store_credential(session, "openai", credential_value, request.app.state.settings)
-        validate_credential(session, "openai", request.app.state.settings)
+        settings = request.app.state.settings
+        store_credential(session, "openai", credential_value, settings)
+        validation = validate_credential(session, "openai", settings)
+        notifications.notify(
+            session,
+            notifications.CATEGORY_CREDENTIAL_CHANGED,
+            "Credential stored and validated" if validation.get("ok") else "Credential stored",
+            message=validation.get("message", "credential stored in keychain"),
+            severity="info" if validation.get("ok") else "warn",
+        )
         return RedirectResponse("/baseline-ops", status_code=303)
     finally:
         session.close()
@@ -192,6 +218,60 @@ def remove_credential_action(request: Request, confirm: str = Form(...)):
     session = _db(request)
     try:
         remove_credential(session, "openai", request.app.state.settings)
+        notifications.notify(
+            session,
+            notifications.CATEGORY_CREDENTIAL_CHANGED,
+            "Keychain credential removed",
+            message="keychain credential removed from the active source",
+            severity="warn",
+        )
+        return RedirectResponse("/baseline-ops", status_code=303)
+    finally:
+        session.close()
+
+
+@router.post("/baseline-ops/credential/source")
+def select_source_action(request: Request, source: str = Form(...)):
+    """Explicitly select the active credential source (keychain or environment)."""
+    session = _db(request)
+    try:
+        set_active_source(session, "openai", source, request.app.state.settings)
+        notifications.notify(
+            session,
+            notifications.CATEGORY_CREDENTIAL_CHANGED,
+            f"Active credential source: {source}",
+            message="active source changed; preflight binding invalidated",
+            severity="info",
+        )
+        return RedirectResponse("/baseline-ops", status_code=303)
+    finally:
+        session.close()
+
+
+@router.post("/baseline-ops/credential/validate")
+def validate_credential_action(request: Request):
+    """Validate the active credential against the provider identity endpoint."""
+    session = _db(request)
+    try:
+        result = validate_credential(session, "openai", request.app.state.settings)
+        notifications.notify(
+            session,
+            notifications.CATEGORY_CREDENTIAL_CHANGED,
+            "Identity valid" if result.get("ok") else "Identity validation failed",
+            message=result.get("message", "validation completed"),
+            severity="info" if result.get("ok") else "warn",
+        )
+        return RedirectResponse("/baseline-ops", status_code=303)
+    finally:
+        session.close()
+
+
+@router.post("/baseline-ops/credential/preflight/invalidate")
+def invalidate_preflight_action(request: Request):
+    session = _db(request)
+    try:
+        invalidate_preflight_binding(session, "openai")
+        session.commit()
         return RedirectResponse("/baseline-ops", status_code=303)
     finally:
         session.close()

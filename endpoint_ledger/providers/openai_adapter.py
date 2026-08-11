@@ -1,7 +1,8 @@
 """OpenAI provider adapter.
 
-- Reads ``OPENAI_API_KEY`` from the environment. When absent the adapter
-  reports itself unavailable and raises ``ProviderUnavailableError`` on invoke.
+- Receives the credential from the shared application credential service via a
+  resolver callable; it never reads ``OPENAI_API_KEY`` (or any env var)
+  directly. With no resolver the adapter is unavailable.
 - Uses the official ``openai`` SDK. Retries only transient failures with
   bounded exponential backoff; validation-style failures are never retried.
 - Preserves the provider's raw response alongside normalized fields.
@@ -10,7 +11,6 @@
 
 from __future__ import annotations
 
-import os
 import random
 import time
 from collections.abc import Callable
@@ -37,10 +37,12 @@ from endpoint_ledger.runner.canonical_response import (
     Usage,
 )
 from endpoint_ledger.sanitize import sanitize_message
+from endpoint_ledger.services.credentials import CredentialResolutionError, ResolvedCredential
 
 NON_RETRYABLE_STATUS_CODES = {400, 401, 403, 404, 409, 422}
 
 SleepFn = Callable[[float], None]
+CredentialResolver = Callable[[], ResolvedCredential]
 
 
 def _utcnow() -> datetime:
@@ -125,13 +127,31 @@ class OpenAIAdapter(ProviderAdapter):
         settings: Settings | None = None,
         sleep_fn: SleepFn = time.sleep,
         client_factory: Callable[[str, float], OpenAI] | None = None,
+        credential_resolver: CredentialResolver | None = None,
     ) -> None:
         self._settings = settings or Settings()
         self._sleep_fn = sleep_fn
         self._client_factory = client_factory
+        self._credential_resolver = credential_resolver
+
+    def _resolve(self) -> ResolvedCredential:
+        if self._credential_resolver is None:
+            raise ProviderUnavailableError(
+                "openai adapter has no credential resolver; the provider is unavailable"
+            )
+        try:
+            return self._credential_resolver()
+        except CredentialResolutionError as exc:
+            raise ProviderUnavailableError(
+                f"openai credential unavailable ({exc.reason}); the provider is unavailable"
+            ) from exc
 
     def is_available(self) -> bool:
-        return bool(os.getenv("OPENAI_API_KEY"))
+        try:
+            self._resolve()
+            return True
+        except ProviderUnavailableError:
+            return False
 
     def invoke(
         self,
@@ -139,11 +159,8 @@ class OpenAIAdapter(ProviderAdapter):
         probe_version: ProbeVersion,
         repeat_index: int,
     ) -> CanonicalProviderResponse:
-        if not self.is_available():
-            raise ProviderUnavailableError(
-                "OPENAI_API_KEY is not set; the openai endpoint is unavailable"
-            )
-        api_key = os.getenv("OPENAI_API_KEY") or ""
+        credential = self._resolve()
+        api_key = credential.value
         if self._client_factory is not None:
             client = self._client_factory(api_key, self._settings.openai_timeout_seconds)
         else:

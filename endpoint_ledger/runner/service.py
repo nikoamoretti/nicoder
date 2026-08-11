@@ -36,10 +36,15 @@ from endpoint_ledger.runner.canonical_response import CanonicalProviderResponse
 from endpoint_ledger.runner.request_builder import build_request_payload
 from endpoint_ledger.sanitize import redact_secrets, sanitize_message
 from endpoint_ledger.scoring import score_response
+from endpoint_ledger.services.credentials import CredentialResolutionError, resolve_credential
 
 
 class CostCeilingExceededError(RuntimeError):
     pass
+
+
+class CredentialBindingError(RuntimeError):
+    """Live execution refused: credential does not match the last preflight."""
 
 
 @dataclass
@@ -238,16 +243,22 @@ class SuiteRunner:
             return summary
 
         for provider_name in sorted({e.provider for e in endpoints}):
-            adapter = get_provider(provider_name, self.settings)
-            if not adapter.is_available():
-                return self._fail_before_start(
-                    options, len(items), estimate,
-                    f"provider {provider_name!r} is unavailable (check credentials); run not started",
-                )
             if provider_name == "openai" and not options.live:
                 return self._fail_before_start(
                     options, len(items), estimate,
                     "openai is a live provider; re-run with --live to allow real API calls",
+                )
+            try:
+                self._guard_live_credential_binding(provider_name, endpoints)
+            except (CredentialResolutionError, CredentialBindingError) as exc:
+                return self._fail_before_start(
+                    options, len(items), estimate, sanitize_message(str(exc))
+                )
+            adapter = get_provider(provider_name, self.settings, session=self.session)
+            if not adapter.is_available():
+                return self._fail_before_start(
+                    options, len(items), estimate,
+                    f"provider {provider_name!r} is unavailable (check credentials); run not started",
                 )
 
         ceiling = options.cost_ceiling_usd
@@ -273,7 +284,8 @@ class SuiteRunner:
         self.session.flush()
 
         adapters: dict[str, ProviderAdapter] = {
-            name: get_provider(name, self.settings) for name in {e.provider for e in endpoints}
+            name: get_provider(name, self.settings, session=self.session)
+            for name in {e.provider for e in endpoints}
         }
 
         completed = 0
@@ -333,6 +345,32 @@ class SuiteRunner:
 
         summary.suite_run = run
         return summary
+
+    def _guard_live_credential_binding(
+        self,
+        provider_name: str,
+        endpoints: list[ProviderEndpoint],
+    ) -> None:
+        """Block a live run whose credential does not match the last preflight.
+
+        Applies to live providers only. A mismatch raises
+        ``CredentialBindingError("CREDENTIAL CHANGED SINCE PREFLIGHT")``
+        before any provider request is made.
+        """
+        if provider_name != "openai":
+            return
+        from endpoint_ledger.services.preflight_service import latest_preflight
+
+        credential = resolve_credential(self.session, provider_name, self.settings)
+        record = latest_preflight(self.session, provider_name)
+        if record is None:
+            raise CredentialBindingError("PREFLIGHT REQUIRED BEFORE LIVE RUN")
+        if not record.ready:
+            raise CredentialBindingError("preflight is not ready")
+        if record.binding_valid is False:
+            raise CredentialBindingError("CREDENTIAL CHANGED SINCE PREFLIGHT")
+        if record.credential_fingerprint != credential.fingerprint:
+            raise CredentialBindingError("CREDENTIAL CHANGED SINCE PREFLIGHT")
 
     def _fail_before_start(
         self,

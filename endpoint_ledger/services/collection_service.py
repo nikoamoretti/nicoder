@@ -316,10 +316,12 @@ def _execute_planned_run(
     endpoint = session.get(ProviderEndpoint, plan.endpoint_id)
     if endpoint is None:
         return _block("endpoint not found")
-    from endpoint_ledger.services.credentials import resolve_api_key
+    from endpoint_ledger.services.credentials import CredentialResolutionError, resolve_credential
 
-    if resolve_api_key(plan.provider, settings) is None:
-        return _block("API credential unavailable")
+    try:
+        resolve_credential(session, plan.provider, settings)
+    except CredentialResolutionError as exc:
+        return _block(str(exc))
 
     if plan.maximum_end_at is not None and now > plan.maximum_end_at:
         plan.state = "completed_unqualified"

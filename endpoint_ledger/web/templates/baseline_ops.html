@@ -25,18 +25,133 @@
   </div>
 </div>
 
+<h2>OpenAI Credential</h2>
+{% if state.credential.ambiguous %}
+<div class="raw-hidden" style="border-color: var(--orange); color: var(--orange);">
+  Both credential sources contain <strong>different</strong> credentials and no active source is
+  selected. Live execution is blocked until you select one explicitly. No key material is shown here.
+</div>
+{% endif %}
+<div class="cards">
+  <div class="card"><div class="label">Keychain credential</div>
+    <div class="value">
+      {% if state.credential.keychain.configured %}
+        <span class="badge ok">configured</span>
+      {% else %}
+        <span class="badge warn">missing</span>
+      {% endif %}
+    </div>
+    <div class="muted mono" style="font-size:12px;">
+      {% if state.credential.keychain.fingerprint %}fingerprint {{ state.credential.keychain.fingerprint[:12] }}…{% else %}no fingerprint{% endif %}
+    </div>
+    {% if state.credential.active_source == "keychain" and state.credential.validation_status %}
+      <div class="muted"><span class="badge {{ 'ok' if state.credential.validation_status == 'valid' else 'fail' }}">{{ state.credential.validation_status }}</span> validated {{ state.credential.last_validated_at }}</div>
+    {% endif %}
+  </div>
+  <div class="card"><div class="label">Environment credential</div>
+    <div class="value">
+      {% if state.credential.environment.configured %}
+        <span class="badge ok">configured</span>
+      {% else %}
+        <span class="badge warn">missing</span>
+      {% endif %}
+    </div>
+    <div class="muted mono" style="font-size:12px;">
+      {% if state.credential.environment.fingerprint %}fingerprint {{ state.credential.environment.fingerprint[:12] }}…{% else %}no fingerprint{% endif %}
+    </div>
+    {% if state.credential.active_source == "environment" and state.credential.validation_status %}
+      <div class="muted"><span class="badge {{ 'ok' if state.credential.validation_status == 'valid' else 'fail' }}">{{ state.credential.validation_status }}</span> validated {{ state.credential.last_validated_at }}</div>
+    {% endif %}
+  </div>
+  <div class="card"><div class="label">Active source</div>
+    <div class="value">
+      {% if state.credential.active_source %}
+        {{ state.credential.active_source }}{% if not state.credential.explicit_source %} (derived){% else %} (explicit){% endif %}
+      {% else %}
+        <span class="badge warn">none selected</span>
+      {% endif %}
+    </div>
+    <div class="muted mono" style="font-size:12px;">
+      {% if state.credential.active_fingerprint %}fingerprint {{ state.credential.active_fingerprint[:12] }}…{% endif %}
+    </div>
+  </div>
+  <div class="card"><div class="label">Preflight binding</div>
+    <div class="value">
+      {% if state.credential.preflight_binding.ok %}
+        <span class="badge ok">bound</span>
+      {% else %}
+        <span class="badge fail">stale</span>
+      {% endif %}
+    </div>
+    <div class="muted" style="font-size:12px;">{{ state.credential.preflight_binding.reason }}</div>
+  </div>
+</div>
+
+{% if state.credential.validation_status %}
+<div class="detail-grid">
+  <div class="card"><div class="label">Identity</div>
+    <div class="value mono" style="font-size:13px;">{{ state.credential.identity_user_id or "—" }}{% if state.credential.identity_email_redacted %} · {{ state.credential.identity_email_redacted }}{% endif %}</div>
+    <div class="muted" style="font-size:12px;">
+      {% for org in state.credential.identity_orgs %}{{ org.title }} ({{ org.id }}){% if not loop.last %} · {% endif %}{% endfor %}
+    </div>
+  </div>
+  <div class="card"><div class="label">Validation</div>
+    <div class="value">{{ state.credential.validation_status or "not validated" }}</div>
+    <div class="muted" style="font-size:12px;">{{ state.credential.validation_message }}</div>
+  </div>
+</div>
+{% endif %}
+
+<details>
+  <summary><button type="button">Add or Replace Keychain Credential</button></summary>
+  <p>The OpenAI API key is stored in your macOS Keychain. It is never written to the database,
+  logs, URLs, evidence exports, or repository files; only a fingerprint and identity metadata
+  are persisted. Saving selects Keychain as the active source and invalidates the current preflight.</p>
+  <form method="post" action="/baseline-ops/credential" data-clear-on-submit>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="password" name="credential_value" autocomplete="new-password" placeholder="sk-…" required style="width: 320px;">
+    <button type="submit">Save and Validate</button>
+    <button type="button" onclick="this.form.reset()">Cancel</button>
+  </form>
+</details>
+
+<div class="actions" style="margin: 12px 0;">
+  <form method="post" action="/baseline-ops/credential/remove" style="display:inline;" data-confirm="remove">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="confirm" value="remove">
+    <button type="submit">Remove Keychain Credential</button>
+  </form>
+  <form method="post" action="/baseline-ops/credential/source" style="display:inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="source" value="keychain">
+    <button type="submit">Select Keychain as Active Source</button>
+  </form>
+  <form method="post" action="/baseline-ops/credential/source" style="display:inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="source" value="environment">
+    <button type="submit">Select Environment as Active Source</button>
+  </form>
+  <form method="post" action="/baseline-ops/credential/validate" style="display:inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Validate Active Credential</button>
+  </form>
+  <form method="post" action="/baseline-ops/credential/preflight/invalidate" style="display:inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Invalidate Current Preflight</button>
+  </form>
+</div>
+
 {% if state.state == "credential_required" %}
 <h2>Next safe action: Configure credential</h2>
 <p>The OpenAI API key is stored in your operating system's secure credential store (macOS Keychain). It is never written to the database, logs, files, or URLs.</p>
-<form method="post" action="/baseline-ops/credential">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <input type="password" name="credential_value" autocomplete="off" placeholder="OpenAI API key" required style="width: 320px;">
-  <button type="submit">Save credential</button>
-</form>
+
+{% elif state.state == "credential_ambiguous" %}
+<h2>Next safe action: Select an active credential source</h2>
+<p>Both sources hold different credentials. Choose Keychain or Environment above under OpenAI Credential; live execution stays blocked until then.</p>
 
 {% elif state.state in ("ready_for_preflight", "preflight_blocked") %}
 <h2>Next safe action: Run preflight</h2>
-<p>Preflight is read-only and never calls the model endpoint.</p>
+<p>Preflight is read-only and never calls the model endpoint. A fresh preflight is required whenever the credential changes.</p>
 <form method="post" action="/baseline-ops/preflight">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button type="submit">Run preflight</button>
@@ -47,6 +162,11 @@
   <ul>
   {% for reason in state.preflight.blocking_reasons %}<li>{{ reason }}</li>{% endfor %}
   </ul>
+</div>
+{% endif %}
+{% if state.preflight and state.preflight.binding_valid is false %}
+<div class="raw-hidden" style="border-color: var(--red); color: var(--red);">
+  CREDENTIAL CHANGED SINCE PREFLIGHT — the credential changed after the last preflight; re-run preflight before any live run.
 </div>
 {% endif %}
 
@@ -71,7 +191,7 @@
 {% elif state.state == "qualification_smoke_rejected" %}
 <h2>Qualification run rejected</h2>
 <p class="muted">{{ state.rejected_annotation.notes if state.rejected_annotation else "" }}</p>
-<p>Run a new qualification smoke after resolving the measurement issue.</p>
+<p>Resolve the operational issue (see the OpenAI Credential section above), then run a new qualification smoke.</p>
 
 {% elif state.state == "ready_to_schedule" %}
 <h2>Next safe action: Create collection plan</h2>
@@ -134,5 +254,11 @@
 {% else %}
 <p class="muted">No live cohorts yet.</p>
 {% endif %}
+
+<script>
+document.querySelectorAll("form[data-clear-on-submit]").forEach(function (form) {
+  form.addEventListener("submit", function () { setTimeout(function () { form.reset(); }, 0); });
+});
+</script>
 
 {% endblock %}

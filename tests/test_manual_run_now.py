@@ -104,13 +104,12 @@ class FakeOpenAIAdapter:
 def fake_openai(monkeypatch):
     """All provider calls use the fake OpenAI adapter; no live requests."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
-    import endpoint_ledger.preflight as preflight_mod
     import endpoint_ledger.providers as providers
     import endpoint_ledger.runner.service as runner_mod
 
     fake = FakeOpenAIAdapter()
 
-    def fake_get_provider(name, settings=None):
+    def fake_get_provider(name, settings=None, session=None):
         if name == "openai":
             return fake
         from endpoint_ledger.providers.mock import MockProvider
@@ -119,7 +118,6 @@ def fake_openai(monkeypatch):
 
     monkeypatch.setattr(providers, "get_provider", fake_get_provider)
     monkeypatch.setattr(runner_mod, "get_provider", fake_get_provider)
-    monkeypatch.setattr(preflight_mod, "get_provider", fake_get_provider)
     yield fake
 
 
@@ -390,11 +388,7 @@ def test_13_failed_preflight_makes_zero_provider_calls(
         def invoke(self, *args, **kwargs):
             raise AssertionError("no provider request may occur")
 
-    import endpoint_ledger.preflight as preflight_mod
-
-    monkeypatch.setattr(
-        preflight_mod, "get_provider", lambda name, settings=None: _Unavailable()
-    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     before = fake_openai.invoke_count
     blocked = request_manual_run(db, settings, plan.id, "k-nokey")
     assert blocked["ok"] is False
@@ -415,11 +409,7 @@ def test_14_missing_credential_blocks_the_request(
         def invoke(self, *args, **kwargs):
             raise AssertionError("no provider request may occur")
 
-    import endpoint_ledger.preflight as preflight_mod
-
-    monkeypatch.setattr(
-        preflight_mod, "get_provider", lambda name, settings=None: _Unavailable()
-    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     blocked = request_manual_run(db, settings, plan.id, "k-nokey-2")
     assert any("credential" in r for r in blocked["blockers"])
     assert db.query(PlannedCollectionRun).filter(
@@ -545,8 +535,11 @@ def test_22_partial_provider_failure_preserves_successful_observations(
     import endpoint_ledger.providers as providers
     import endpoint_ledger.runner.service as runner_mod
 
-    monkeypatch.setattr(providers, "get_provider", lambda name, settings=None: _AdapterWith(fake, flaky_invoke))
-    monkeypatch.setattr(runner_mod, "get_provider", lambda name, settings=None: _AdapterWith(fake, flaky_invoke))
+    def flaky_get_provider(name, settings=None, session=None):
+        return _AdapterWith(fake, flaky_invoke)
+
+    monkeypatch.setattr(providers, "get_provider", flaky_get_provider)
+    monkeypatch.setattr(runner_mod, "get_provider", flaky_get_provider)
     result = _enqueue(db, settings, plan)
     from endpoint_ledger.services.scheduler import scheduler_tick
 
@@ -684,8 +677,8 @@ def _set_shifted_model(monkeypatch, fake):
         return response
 
     adapter = _AdapterWith(fake, shifted_invoke)
-    monkeypatch.setattr(providers, "get_provider", lambda name, settings=None: adapter)
-    monkeypatch.setattr(runner_mod, "get_provider", lambda name, settings=None: adapter)
+    monkeypatch.setattr(providers, "get_provider", lambda name, settings=None, session=None: adapter)
+    monkeypatch.setattr(runner_mod, "get_provider", lambda name, settings=None, session=None: adapter)
 
 
 def test_29_model_reported_change_pauses_automatic_collection(

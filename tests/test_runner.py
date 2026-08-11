@@ -95,7 +95,7 @@ def test_openai_unavailable_without_key(db, settings, monkeypatch):
     run = summary.suite_run
     assert run is not None
     assert run.status == "failed"
-    assert "unavailable" in run.error_summary
+    assert "credential" in run.error_summary
     assert run.completed_observations == 0
 
 

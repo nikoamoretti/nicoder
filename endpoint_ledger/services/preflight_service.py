@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from endpoint_ledger.config import Settings, get_settings
 from endpoint_ledger.db.models import PreflightRecord
 from endpoint_ledger.preflight import run_preflight
+from endpoint_ledger.services.credentials import record_preflight_binding
 
 
 def configuration_hash(report: dict[str, Any]) -> str:
@@ -61,6 +62,7 @@ def perform_preflight(
         blocking_reasons=list(report.get("refusals") or []),
         report=report,
     )
+    record_preflight_binding(session, provider, record, settings)
     session.add(record)
     session.commit()
     report["configuration_hash"] = record.configuration_hash

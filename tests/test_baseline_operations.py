@@ -27,8 +27,9 @@ from endpoint_ledger.services.collection_service import (
 )
 from endpoint_ledger.services.credentials import (
     credential_status,
+    fingerprint_of,
     remove_credential,
-    resolve_api_key,
+    resolve_credential,
     store_credential,
 )
 from endpoint_ledger.services.preflight_service import perform_preflight
@@ -105,20 +106,17 @@ def fake_openai(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     import endpoint_ledger.providers as providers
 
-    def fake_get_provider(name, settings=None):
+    def fake_get_provider(name, settings=None, session=None):
         if name == "openai":
             return FakeOpenAIAdapter()
         from endpoint_ledger.providers.mock import MockProvider
 
         return MockProvider()
 
-    import endpoint_ledger.preflight as preflight_mod
     import endpoint_ledger.runner.service as runner_mod
 
     monkeypatch.setattr(providers, "get_provider", fake_get_provider)
     monkeypatch.setattr(runner_mod, "get_provider", fake_get_provider)
-    monkeypatch.setattr(preflight_mod, "get_provider", fake_get_provider)
-    yield
 
 
 def _app(db_url=TEST_DATABASE_URL, **overrides):
@@ -134,20 +132,32 @@ def _csrf_headers(client: TestClient) -> dict:
 # ------------------------------------------------------------ credentials
 
 
-def test_credential_setup_stores_no_secret_in_db(db, fake_openai, tmp_path):
+def test_credential_setup_stores_no_secret_in_db(db, fake_openai):
     store_credential(db, "openai", "sk-test-secret-value", None)
     status = credential_status(db, "openai")
     assert status["configured"] is True
+    assert status["active_source"] == "keychain"
+    assert status["keychain"]["fingerprint"] == fingerprint_of("sk-test-secret-value")
     from endpoint_ledger.db.models import CredentialMetadata
 
     row = db.query(CredentialMetadata).filter(CredentialMetadata.provider == "openai").one()
-    assert "sk-test-secret-value" not in (row.validation_result or "")
-    assert resolve_api_key("openai") == "sk-test-secret-value"
+    stored = "".join(
+        str(getattr(row, field) or "")
+        for field in ("validation_result", "validation_message", "validation_status",
+                      "identity_user_id", "identity_email_redacted", "identity_orgs")
+    )
+    assert "sk-test-secret-value" not in stored
+    assert resolve_credential(db, "openai").source == "keychain"
+    assert resolve_credential(db, "openai").value == "sk-test-secret-value"
     remove_credential(db, "openai")
-    # Environment fallback still resolves (env var present).
-    assert resolve_api_key("openai") == "sk-fake"
+    # With the keychain empty and no explicit selection, the environment is the
+    # only configured source — derived, never a silent preference switch.
+    resolved = resolve_credential(db, "openai")
+    assert resolved.source == "environment"
+    assert resolved.value == "sk-fake"
     row = db.query(CredentialMetadata).filter(CredentialMetadata.provider == "openai").one()
     assert row.configured is False
+    assert row.active_source is None
 
 
 def test_credential_page_never_echoes_secret(db, fake_openai):
@@ -418,7 +428,7 @@ def test_model_resolution_change_pauses_collection(db, settings, fake_openai):
     fake.invoke = shifted_invoke
     providers_get = providers.get_provider
 
-    def get(name, settings=None):
+    def get(name, settings=None, session=None):
         if name == "openai":
             return fake
         return providers_get(name, settings)

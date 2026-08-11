@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from endpoint_ledger.db.models import AutomationNotification
 
 CATEGORY_CREDENTIAL_MISSING = "credential_missing"
+CATEGORY_CREDENTIAL_CHANGED = "credential_changed"
 CATEGORY_PREFLIGHT_BLOCKED = "preflight_blocked"
 CATEGORY_QUALIFICATION_SMOKE_COMPLETED = "qualification_smoke_completed"
 CATEGORY_QUALIFICATION_AWAITING_REVIEW = "qualification_smoke_awaiting_review"

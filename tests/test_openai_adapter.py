@@ -27,6 +27,7 @@ from endpoint_ledger.providers.openai_adapter import (
     normalize_openai_response,
     should_retry,
 )
+from endpoint_ledger.services.credentials import ResolvedCredential
 from tests.helpers import make_endpoint, sync_probes
 
 FIXTURES = Path(__file__).resolve().parent.parent / "probes" / "fixtures" / "openai"
@@ -35,6 +36,12 @@ FIXTURES = Path(__file__).resolve().parent.parent / "probes" / "fixtures" / "ope
 def _load_fixture(name: str) -> dict[str, Any]:
     with (FIXTURES / name).open("r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def _fake_credential() -> ResolvedCredential:
+    return ResolvedCredential(
+        source="test", value="sk-test-resolver-value", fingerprint="test-fingerprint"
+    )
 
 
 def _adapter(responses: list[Any], max_retries: int = 3) -> OpenAIAdapter:
@@ -61,6 +68,7 @@ def _adapter(responses: list[Any], max_retries: int = 3) -> OpenAIAdapter:
         settings=Settings(database_url="unused", openai_max_retries=max_retries),
         sleep_fn=sleep_fn,
         client_factory=factory,
+        credential_resolver=_fake_credential,
     )
     adapter._sleeps = sleeps  # type: ignore[attr-defined]
     return adapter
@@ -157,6 +165,37 @@ def test_unavailable_without_api_key(probe_version, db, monkeypatch):
     endpoint = make_endpoint(db, provider="openai", model_requested="gpt-4o-mini")
     with pytest.raises(ProviderUnavailableError, match="unavailable"):
         adapter.invoke(endpoint, probe_version, 1)
+
+
+def test_adapter_uses_resolver_not_environment(probe_version, db, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    resolver_value = "sk-from-shared-resolver"
+    adapter = OpenAIAdapter(
+        settings=Settings(database_url="unused"),
+        credential_resolver=lambda: ResolvedCredential(
+            source="keychain", value=resolver_value, fingerprint="fp"
+        ),
+    )
+    assert adapter.is_available() is True
+    captured: dict[str, str] = {}
+    raw = _load_fixture("text_completion.json")
+
+    class FakeCompletions:
+        def create(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(model_dump=lambda: raw)
+
+    def factory(api_key: str, timeout: float) -> Any:
+        captured["api_key"] = api_key
+        return SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    adapter._client_factory = factory  # type: ignore[attr-defined]
+    endpoint = make_endpoint(db, provider="openai", model_requested="gpt-4o-mini")
+    adapter._credential_resolver = lambda: ResolvedCredential(
+        source="keychain", value=resolver_value, fingerprint="fp"
+    )
+    response = adapter.invoke(endpoint, probe_version, 1)
+    assert response.error is None
+    assert captured["api_key"] == resolver_value
 
 
 def test_build_payload_includes_tools_and_params(probe_version, db):

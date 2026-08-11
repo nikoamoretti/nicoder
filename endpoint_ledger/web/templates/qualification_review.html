@@ -51,6 +51,19 @@
   <button type="submit">Reject</button>
 </form>
 
+<h2>Reject as Operational Failure</h2>
+<p class="muted">
+  For account/credential incidents (for example <code>insufficient_quota</code> /
+  <code>account_configuration</code>): records a review decision as an annotation.
+  Original evidence is never modified. The run stays sealed, exported, and excluded
+  from behavioral metrics, baseline qualification, and drift detection.
+</p>
+<form method="post" action="/baseline-ops/reject/{{ report.run.id }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="reason" value="operational failure: account credential/quota incident (insufficient_quota / account_configuration); rejected as operational, not model behavior">
+  <button type="submit">Reject as Operational Failure</button>
+</form>
+
 <p class="muted">* primary outcome derived from stored diagnostics (legacy observation).</p>
 
 {% endblock %}

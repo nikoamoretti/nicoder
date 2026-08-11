@@ -349,7 +349,9 @@ class CredentialMetadata(Base, TimestampMixin):
     """Non-secret metadata for a configured provider credential.
 
     The secret itself is stored only in the OS credential store (macOS
-    Keychain via keyring); this row stores no part of it.
+    Keychain via keyring); this row stores no part of it. Fingerprints are
+    SHA-256 digests of the secret, and identity fields are the normalized
+    (redacted) result of an identity-endpoint validation.
     """
 
     __tablename__ = "credential_metadata"
@@ -361,10 +363,25 @@ class CredentialMetadata(Base, TimestampMixin):
     last_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     validation_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    keychain_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    environment_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    validation_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    validation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    identity_user_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    identity_email_redacted: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    identity_orgs: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
 
 
 class PreflightRecord(Base):
-    """A persisted preflight result; becomes stale when configuration changes."""
+    """A persisted preflight result; becomes stale when configuration changes.
+
+    Credential binding: the preflight records the exact credential fingerprint
+    and source it validated against; live execution refuses to start when the
+    current credential differs (``binding_valid`` is flipped by the credential
+    service whenever the credential changes while the preflight is still on
+    record).
+    """
 
     __tablename__ = "preflight_records"
 
@@ -374,6 +391,10 @@ class PreflightRecord(Base):
     ready: Mapped[bool] = mapped_column(Boolean, nullable=False)
     blocking_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    credential_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_binding: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    binding_valid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    binding_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
