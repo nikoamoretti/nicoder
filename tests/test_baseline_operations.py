@@ -160,7 +160,11 @@ def test_credential_setup_stores_no_secret_in_db(db, fake_openai):
     assert row.active_source is None
 
 
-def test_credential_page_never_echoes_secret(db, fake_openai):
+def test_credential_page_never_echoes_secret(db, fake_openai, monkeypatch):
+    monkeypatch.setattr(
+        "endpoint_ledger.services.credentials._identity_request",
+        lambda api_key, timeout: {"id": "test-user", "email": "tester@example.com", "orgs": []},
+    )
     client = _app()
     client.get("/baseline-ops")
     headers = _csrf_headers(client)
@@ -395,7 +399,10 @@ def test_168_hour_qualification_requirement(db, settings):
 # ------------------------------------------------------------ model resolution
 
 
-def test_model_resolution_change_pauses_collection(db, settings, fake_openai):
+def test_model_resolution_change_pauses_collection(db, settings, fake_openai, monkeypatch, tmp_path):
+    backup = tmp_path / "verified-backup.dump"
+    backup.write_text("test backup")
+    monkeypatch.setattr("endpoint_ledger.backup.last_verified_backup", lambda settings=None: backup)
     endpoint = _make_openai_endpoint(db)
     sync_probes(db)
     db.commit()

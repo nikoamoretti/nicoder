@@ -1,11 +1,9 @@
 """Credential storage and resolution — the single authority.
 
-Two explicit sources are supported: the macOS Keychain (via ``keyring``) and
-the ``OPENAI_API_KEY`` environment variable. An explicit active-source
-selection persists in ``CredentialMetadata``; the default after saving a
-Keychain credential is Keychain. There is **no silent fallback**: resolution
-uses exactly the active source, and when both sources hold different
-credentials without an explicit selection the resolver refuses (ambiguous).
+The dashboard-managed credential is stored through ``keyring`` and is the
+authoritative local credential as soon as it has passed identity validation.
+An ``OPENAI_API_KEY`` environment value remains available for development and
+server deployments, but cannot override a dashboard-managed credential.
 
 The secret itself lives only in the Keychain / environment. PostgreSQL holds
 only non-secret metadata: SHA-256 fingerprints, validation status, and
@@ -204,9 +202,18 @@ def credential_status(session: Session, provider: str, settings: Settings | None
             ),
         }
 
+    dashboard_managed = bool(metadata.configured and keychain_value)
+    dashboard_key_valid = bool(
+        dashboard_managed and metadata.active_source == KEYCHAIN and metadata.validation_status == "valid"
+    )
+    external_credential_configured = bool(env_value and not dashboard_managed)
+
     return {
         "provider": provider,
         "configured": bool(keychain_value or env_value),
+        "dashboard_managed": dashboard_managed,
+        "dashboard_key_valid": dashboard_key_valid,
+        "external_credential_configured": external_credential_configured,
         "keychain": {"configured": bool(keychain_value), "fingerprint": keychain_fp},
         "environment": {"configured": bool(env_value), "fingerprint": env_fp},
         "active_source": effective,
@@ -250,6 +257,60 @@ def store_credential(
     invalidate_preflight_binding(session, provider)
     session.commit()
     return credential_status(session, provider, settings)
+
+
+def validate_and_store_credential(
+    session: Session,
+    provider: str,
+    secret_value: str,
+    settings: Settings | None = None,
+    *,
+    identity_client: IdentityClient | None = None,
+) -> dict[str, Any]:
+    """Validate a submitted credential before replacing the active credential.
+
+    Validation calls the provider identity endpoint only. An invalid candidate
+    is never written to the secure store and leaves any working credential and
+    its preflight binding untouched.
+    """
+    if not secret_value or not secret_value.strip():
+        raise ValueError("credential value may not be empty")
+    settings = settings or get_settings()
+    secret = secret_value.strip()
+    client = identity_client or _identity_request
+
+    try:
+        identity = _normalize_identity(client(secret, settings.openai_timeout_seconds))
+    except Exception as exc:  # network/auth/timeout — never leak key material
+        return {
+            "ok": False,
+            "status": "invalid",
+            "message": sanitize_message(f"identity endpoint refused validation: {type(exc).__name__}"),
+        }
+
+    keyring.set_password(_account(provider, settings), provider, secret)
+    metadata = _metadata(session, provider)
+    now = datetime.now(UTC)
+    metadata.storage_method = KEYCHAIN
+    metadata.configured = True
+    metadata.last_updated_at = now
+    metadata.last_validated_at = now
+    metadata.keychain_fingerprint = fingerprint_of(secret)
+    metadata.environment_fingerprint = None
+    metadata.active_source = KEYCHAIN
+    metadata.validation_status = "valid"
+    metadata.validation_message = "Identity validated. Run Preflight before qualification smoke."
+    metadata.identity_user_id = identity["user_id"] or None
+    metadata.identity_email_redacted = _redact_email(identity["email"])
+    metadata.identity_orgs = identity["orgs"]
+    invalidate_preflight_binding(session, provider)
+    session.commit()
+    return {
+        "ok": True,
+        "status": "valid",
+        "message": metadata.validation_message,
+        "credential": credential_status(session, provider, settings),
+    }
 
 
 def remove_credential(session: Session, provider: str, settings: Settings | None = None) -> dict[str, Any]:

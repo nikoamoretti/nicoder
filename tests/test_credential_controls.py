@@ -35,6 +35,7 @@ from endpoint_ledger.services.credentials import (
     set_active_source,
     source_value,
     store_credential,
+    validate_and_store_credential,
     validate_credential,
 )
 from endpoint_ledger.services.preflight_service import latest_preflight, perform_preflight
@@ -146,29 +147,28 @@ class TestControlsRenderedInEveryState:
         client = _client()
         body = client.get("/baseline-ops").text
         assert "credential_required" in body
-        assert "OpenAI Credential" in body
-        assert "Add or Replace Keychain Credential" in body
-        assert "Select Keychain as Active Source" in body
-        assert "Select Environment as Active Source" in body
-        assert "keychain" in body
+        assert "OpenAI API Key" in body
+        assert 'type="password"' in body
+        assert "OpenAI API key" in body
+        assert "Save and validate" in body
+        assert "Stored securely on this Mac. The key will not be displayed again." in body
+        assert "keychain" not in body.lower()
+        assert "environment" not in body.lower()
+        assert "fingerprint" not in body.lower()
 
-    def test_ambiguous_state_renders_controls_and_warning(self, db, settings, monkeypatch):
+    def test_external_credential_still_offers_the_simple_entry_form(self, db, settings, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
-        seed_keychain(SECRET, settings)
-        status = credential_status(db, "openai", settings)
-        assert status["ambiguous"] is True
-        db.commit()  # release the fixture session's row lock before route calls
         body = _client().get("/baseline-ops").text
-        assert "credential_ambiguous" in body
-        assert "different" in body
-        assert "Add or Replace Keychain Credential" in body
+        assert "An externally configured key exists." in body
+        assert "OpenAI API Key" in body
+        assert "Save and validate" in body
 
     def test_ready_for_qualification_smoke_renders_controls(self, db, settings, monkeypatch):
         _bound_preflight(db, settings, monkeypatch)
         body = _client().get("/baseline-ops").text
         assert "ready_for_qualification_smoke" in body
-        assert "OpenAI Credential" in body
-        assert "Add or Replace Keychain Credential" in body
+        assert "OpenAI API Key" in body
+        assert "Save and validate" in body
 
     def test_ready_for_review_renders_controls(self, db, settings, monkeypatch):
         _fake_providers(monkeypatch)
@@ -177,8 +177,8 @@ class TestControlsRenderedInEveryState:
         assert result["ok"] is True
         body = _client().get("/baseline-ops").text
         assert "qualification_smoke_ready_for_review" in body
-        assert "OpenAI Credential" in body
-        assert "Add or Replace Keychain Credential" in body
+        assert "OpenAI API Key" in body
+        assert "Save and validate" in body
         assert "Review qualification run" in body
 
     def test_rejected_state_renders_controls(self, db, settings, monkeypatch):
@@ -191,8 +191,8 @@ class TestControlsRenderedInEveryState:
         assert response["ok"] is True
         body = _client().get("/baseline-ops").text
         assert "qualification_smoke_rejected" in body
-        assert "OpenAI Credential" in body
-        assert "Add or Replace Keychain Credential" in body
+        assert "OpenAI API Key" in body
+        assert "Save and validate" in body
 
 
 class TestEntryIsPostOnlyAndCsrfProtected:
@@ -201,9 +201,6 @@ class TestEntryIsPostOnlyAndCsrfProtected:
         client.get("/baseline-ops")
         assert client.get("/baseline-ops/credential").status_code == 405
         assert client.get("/baseline-ops/credential/remove").status_code == 405
-        assert client.get("/baseline-ops/credential/source").status_code == 405
-        assert client.get("/baseline-ops/credential/validate").status_code == 405
-        assert client.get("/baseline-ops/credential/preflight/invalidate").status_code == 405
 
     def test_post_without_csrf_token_is_forbidden(self, db, settings):
         client = _client()
@@ -272,7 +269,9 @@ class TestSecretNeverLeavesKeychain:
         assert SECRET not in response.text
         body = client.get("/baseline-ops").text
         assert SECRET not in body
-        assert fingerprint_of(SECRET)[:12] in body  # fingerprint-only visibility
+        assert fingerprint_of(SECRET) not in body
+        assert "Status:" in body
+        assert "Configured" in body
 
     def test_secret_never_in_logs(self, db, settings, monkeypatch, caplog):
         import logging
@@ -307,6 +306,21 @@ class TestSecretNeverLeavesKeychain:
         )
         assert notification is not None
         assert SECRET not in notification.title and SECRET not in notification.message
+
+    def test_invalid_candidate_does_not_replace_existing_valid_key(self, db, settings, monkeypatch):
+        _fake_identity(monkeypatch)
+        saved = validate_and_store_credential(db, "openai", SECRET, settings)
+        assert saved["ok"] is True
+
+        def _invalid(api_key: str, timeout: float):
+            raise RuntimeError("invalid API key")
+
+        result = validate_and_store_credential(
+            db, "openai", "sk-invalid-candidate", settings, identity_client=_invalid
+        )
+        assert result["ok"] is False
+        assert source_value("openai", "keychain", settings) == SECRET
+        assert resolve_credential(db, "openai", settings).value == SECRET
 
 
 class TestIdentityValidation:
@@ -366,6 +380,15 @@ class TestExplicitActiveSourcePolicy:
         assert resolved.source == "environment"
         assert resolved.fingerprint == fingerprint_of("sk-fake-env")
 
+    def test_dashboard_key_is_authoritative_over_environment(self, db, settings, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-external")
+        _fake_identity(monkeypatch)
+        result = validate_and_store_credential(db, "openai", SECRET, settings)
+        assert result["ok"] is True
+        resolved = resolve_credential(db, "openai", settings)
+        assert resolved.source == "keychain"
+        assert resolved.value == SECRET
+
     def test_selecting_missing_source_refuses(self, db, settings, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-env")
         with pytest.raises(CredentialResolutionError):
@@ -414,13 +437,14 @@ class TestPreflightBinding:
         assert record.binding_valid is False
         assert record.binding_reason == INVALIDATION_REASON
 
-    def test_route_invalidate_preflight(self, db, settings, monkeypatch):
+    def test_route_saving_key_invalidates_preflight(self, db, settings, monkeypatch):
         _bound_preflight(db, settings, monkeypatch)
+        _fake_identity(monkeypatch)
         client = _client()
         token = _csrf(client)
         response = client.post(
-            "/baseline-ops/credential/preflight/invalidate",
-            data={"csrf_token": token},
+            "/baseline-ops/credential",
+            data={"credential_value": SECRET, "csrf_token": token},
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -554,3 +578,32 @@ class TestRejectIsAnnotationOnly:
         )
         assert len(annotations) == 1
         assert "insufficient quota" in annotations[0].notes
+
+    def test_run_14_rejection_adds_only_an_annotation(self, db):
+        from endpoint_ledger.services.qualification_service import reject
+
+        run = SuiteRun(
+            id=14,
+            suite_name="qualification-smoke-2026-08-10",
+            status="completed_with_errors",
+            total_expected_observations=6,
+            completed_observations=6,
+            failed_observations=1,
+            runner_version="0.1.0",
+            data_origin="live",
+            evidence_state="exported",
+        )
+        db.add(run)
+        db.commit()
+        before = (run.status, run.completed_observations, run.failed_observations, run.evidence_state)
+
+        result = reject(db, 14, "operational failure: account configuration")
+
+        assert result["ok"] is True
+        db.refresh(run)
+        assert (run.status, run.completed_observations, run.failed_observations, run.evidence_state) == before
+        annotation = db.query(RunAnnotation).filter(
+            RunAnnotation.suite_run_id == 14,
+            RunAnnotation.annotation_type == "qualification_rejection",
+        ).one()
+        assert "operational failure" in annotation.notes

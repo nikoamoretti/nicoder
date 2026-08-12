@@ -73,9 +73,11 @@ The **MockProvider** implements deterministic scenario modes
 the change-detection demo are reproducible. Its behavior is a pure function of
 (seed, endpoint id, probe version id, repeat index).
 
-The **OpenAIAdapter** reads `OPENAI_API_KEY` from the environment, uses the
-official SDK, retries only transient failures with bounded exponential backoff
-(never validation failures), and reports unavailable when the key is absent.
+The **OpenAIAdapter** receives its key through the shared credential resolver,
+uses the official SDK, retries only transient failures with bounded exponential
+backoff (never validation failures), and reports unavailable when no resolved
+credential is available. A dashboard-managed credential is authoritative over
+an environment credential for the local dashboard.
 
 ## Probe versioning
 
