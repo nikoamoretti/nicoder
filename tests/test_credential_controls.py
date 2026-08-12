@@ -331,6 +331,27 @@ class TestSecretNeverLeavesKeychain:
 
 
 class TestIdentityValidation:
+    def test_wrapped_identity_organizations_are_saved_without_an_attribute_error(self, db, settings):
+        payload = {
+            "id": "user-abc-123",
+            "email": "engineer@example.com",
+            "orgs": {"data": [{"id": "org-1", "title": "Platform"}]},
+        }
+
+        result = validate_and_store_credential(
+            db,
+            "openai",
+            SECRET,
+            settings,
+            identity_client=lambda api_key, timeout: payload,
+        )
+
+        assert result["ok"] is True
+        metadata = db.query(CredentialMetadata).one()
+        assert metadata.identity_user_id == "user-abc-123"
+        assert metadata.identity_email_redacted == "e***@example.com"
+        assert metadata.identity_orgs == [{"id": "org-1", "title": "Platform"}]
+
     def test_validation_uses_identity_endpoint_only_with_redaction(self, db, settings, monkeypatch):
         captured: list[str] = []
         _fake_identity(monkeypatch, captured=captured)

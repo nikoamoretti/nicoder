@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -354,13 +354,43 @@ def _redact_email(email: str | None) -> str | None:
     return f"{local[0]}***@{domain}" if local else f"***@{domain}"
 
 
-def _normalize_identity(payload: dict[str, Any]) -> dict[str, Any]:
-    orgs = payload.get("orgs") or []
+def _normalize_identity(payload: object) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("identity response must be an object")
     return {
-        "user_id": str(payload.get("id") or ""),
-        "email": payload.get("email"),
-        "orgs": [{"id": str(o.get("id") or ""), "title": str(o.get("title") or "")} for o in orgs],
+        "user_id": _identity_text(payload.get("id")) or "",
+        "email": _identity_text(payload.get("email")),
+        "orgs": _normalize_identity_orgs(payload.get("orgs") or payload.get("organizations")),
     }
+
+
+def _normalize_identity_orgs(raw_orgs: object) -> list[dict[str, str]]:
+    """Normalize either a direct organization list or an API list wrapper."""
+    if isinstance(raw_orgs, Mapping):
+        raw_orgs = raw_orgs.get("data")
+    if not isinstance(raw_orgs, list):
+        return []
+
+    orgs: list[dict[str, str]] = []
+    for raw_org in raw_orgs:
+        if not isinstance(raw_org, Mapping):
+            continue
+        orgs.append(
+            {
+                "id": _identity_text(raw_org.get("id")) or "",
+                "title": _identity_text(raw_org.get("title")) or _identity_text(raw_org.get("name")) or "",
+            }
+        )
+    return orgs
+
+
+def _identity_text(value: object) -> str | None:
+    """Return scalar identity metadata without coercing nested provider data."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    return None
 
 
 def _identity_request(api_key: str, timeout: float) -> dict[str, Any]:
