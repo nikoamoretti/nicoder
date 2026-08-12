@@ -196,6 +196,13 @@ class TestControlsRenderedInEveryState:
 
 
 class TestEntryIsPostOnlyAndCsrfProtected:
+    def test_rendered_credential_form_uses_the_csrf_cookie(self, db, settings):
+        client = _client()
+        response = client.get("/baseline-ops")
+        token = client.cookies.get("el_csrftoken")
+        assert token
+        assert f'name="csrf_token" value="{token}"' in response.text
+
     def test_get_on_credential_route_is_rejected(self, db, settings):
         client = _client()
         client.get("/baseline-ops")

@@ -161,7 +161,7 @@ def baseline_ops(request: Request):
         service = CohortService(session, request.app.state.settings)
         cohort_reports = service.status_report(origin="live")
 
-        return templates.TemplateResponse(
+        response = templates.TemplateResponse(
             request,
             "baseline_ops.html",
             {
@@ -171,8 +171,10 @@ def baseline_ops(request: Request):
                 "unread": unread,
                 "cohort_reports": cohort_reports,
                 "settings": request.app.state.settings,
+                "csrf_token": state["csrf_token"],
             },
         )
+        return response
     finally:
         session.close()
 
