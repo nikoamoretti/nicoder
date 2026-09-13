@@ -41,9 +41,17 @@ class PatchRecord(BaseModel):
     after: dict[str, str] = Field(default_factory=dict)
 
 
+class PendingVerification(BaseModel):
+    """A content-changing edit awaiting its mandatory automatic check."""
+
+    model_config = ConfigDict(extra="forbid")
+    tree: str
+    patch_sha: str
+    scope: str = "focused"
+
+
 class CheckEvidence(BaseModel):
     """Structured, controller-owned test evidence for one invocation."""
-
     model_config = ConfigDict(extra="forbid")
     scope: str
     argv: list[str]
@@ -93,6 +101,8 @@ class EpisodeState(BaseModel):
     model_checks: int = 0
     test_invocations: int = 0
     final_validations: int = 0
+    auto_checks: int = 0
+    pending_verification: PendingVerification | None = None
     consecutive_invalid: int = 0
     repeat_streak: int = 0
     budgets: Budgets = Field(default_factory=Budgets)

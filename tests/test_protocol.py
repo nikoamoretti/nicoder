@@ -169,3 +169,61 @@ def test_replace_fingerprint_covers_edits_not_free_text():
                                    expected_effect="e1")
     assert fingerprint(base, "tree") == fingerprint(same_words, "tree")
     assert fingerprint(base, "tree") != fingerprint(different, "tree")
+
+
+def _replace_span(**kwargs):
+    base = {"action": "patch", "operation": "replace_span",
+            "edits": [{"span_id": "S1", "new": "return 1"}],
+            "expected_effect": "fix"}
+    base.update(kwargs)
+    return json.dumps(base)
+
+
+def test_v3_replace_span_parses():
+    from local_coder.protocol import PatchReplaceSpanAction
+
+    action = parse_raw(_replace_span(), "3")
+    assert isinstance(action, PatchReplaceSpanAction)
+    assert action.edits[0].span_id == "S1"
+
+
+def test_v3_rejects_replace_and_apply_operations():
+    with pytest.raises(ProtocolError) as exc:
+        parse_raw(_replace(), "3")
+    assert exc.value.code == "unsupported_operation"
+    with pytest.raises(ProtocolError) as exc:
+        parse_raw(json.dumps({"action": "patch", "operation": "apply",
+                              "diff": "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n",
+                              "expected_effect": "fix"}), "3")
+    assert exc.value.code == "unsupported_operation"
+
+
+def test_v2_rejects_replace_span_operation():
+    with pytest.raises(ProtocolError) as exc:
+        parse_raw(_replace_span(), "2")
+    assert exc.value.code == "unsupported_operation"
+
+
+def test_v3_span_id_schema_rejected():
+    for bad in ("1", "S0", "s1", "S1x", "", "SS1"):
+        with pytest.raises(ProtocolError) as exc:
+            parse_raw(_replace_span(edits=[{"span_id": bad, "new": "x"}]), "3")
+        assert exc.value.code == "invalid_schema", bad
+    with pytest.raises(ProtocolError) as exc:
+        parse_raw(_replace_span(edits=[{"span_id": "S1", "new": "x", "old": "y"}]), "3")
+    assert exc.value.code == "invalid_schema"
+
+
+def test_v3_revert_parses_and_fingerprint_covers_spans():
+    from local_coder.protocol import PatchReplaceSpanAction, PatchRevertAction
+
+    raw = '{"action":"patch","operation":"revert_last","reason_code":"regression"}'
+    assert isinstance(parse_raw(raw, "3"), PatchRevertAction)
+    base = PatchReplaceSpanAction(action="patch", operation="replace_span",
+                                  edits=[{"span_id": "S1", "new": "a"}], expected_effect="e1")
+    same_words = PatchReplaceSpanAction(action="patch", operation="replace_span",
+                                        edits=[{"span_id": "S1", "new": "a"}], expected_effect="e2")
+    different = PatchReplaceSpanAction(action="patch", operation="replace_span",
+                                       edits=[{"span_id": "S2", "new": "a"}], expected_effect="e1")
+    assert fingerprint(base, "t") == fingerprint(same_words, "t")
+    assert fingerprint(base, "t") != fingerprint(different, "t")

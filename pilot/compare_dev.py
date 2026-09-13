@@ -1,15 +1,15 @@
 """Bounded development comparison: 4 curated tasks x 3 profiles (12 cells).
 
-Profiles:
-  A: protocol v1 unified-diff PATCH, thinking auto, legacy channel fallback.
-  B: protocol v1 unified-diff PATCH, thinking off, final-channel-only actions.
-  C: protocol v2 exact-replacement PATCH, thinking off, final-channel-only.
+Profiles (non-thinking + final-channel throughout):
+  C0: protocol v2 exact-replacement PATCH, existing verification policy.
+  D1: protocol v2 exact-replacement PATCH, mandatory post-edit verification.
+  D2: protocol v3 span-ID PATCH, mandatory post-edit verification.
 
 Everything else is held constant (model file, runtime build, sampling,
-retrieval, task/grader versions, budgets, isolated backend). Server thinking
-mode switches between cells with recorded restarts; per-task order is the
-predeclared interleave [A, B, C]. First outcomes only, sequential, no
-held-out tasks. Raw episodes stay local; sanitized reports are committed.
+retrieval, task/grader versions, budgets, isolated backend). Per-task order
+is the predeclared rotation of [C0, D1, D2]. First outcomes only,
+sequential, no held-out tasks. Raw episodes stay local; sanitized reports
+are committed.
 """
 from __future__ import annotations
 
@@ -46,15 +46,15 @@ SERVER_ARGV_BASE = [
 ]
 
 TASKS = ["fam-demo-calc", "fam-localization", "fam-multi-hunk", "fam-recovery"]
-ORDER = ["A", "B", "C"]
+ORDER = ["C0", "D1", "D2"]
 
 PROFILES = {
-    "A": {"protocol": "1", "constraint": "gbnf-action-v1",
-          "thinking": "auto", "channel": "legacy", "server_thinking": "auto"},
-    "B": {"protocol": "1", "constraint": "gbnf-action-v1",
-          "thinking": "off", "channel": "final-only", "server_thinking": "off"},
-    "C": {"protocol": "2", "constraint": "gbnf-action-v2",
-          "thinking": "off", "channel": "final-only", "server_thinking": "off"},
+    "C0": {"protocol": "2", "constraint": "gbnf-action-v2", "verification": "off",
+           "thinking": "off", "channel": "final-only", "server_thinking": "off"},
+    "D1": {"protocol": "2", "constraint": "gbnf-action-v2", "verification": "mandatory",
+           "thinking": "off", "channel": "final-only", "server_thinking": "off"},
+    "D2": {"protocol": "3", "constraint": "gbnf-action-v3", "verification": "mandatory",
+           "thinking": "off", "channel": "final-only", "server_thinking": "off"},
 }
 
 COMMON = {
@@ -116,6 +116,39 @@ def build_adapter(profile: dict):
         channel_policy=profile["channel"], thinking=profile["thinking"])
 
 
+def span_offered_gold(store: EpisodeStore, episode_id: str, gold_files: list[str]) -> bool | None:
+    """Whether any turn's span catalogue covered a gold file.
+
+    None when the episode has no span bundles (non-v3 profiles). A False
+    here is a span-coverage failure, never a code-generation failure.
+    """
+    import json as _json
+
+    seen_bundle = False
+    for turn in store.list_turns(episode_id):
+        try:
+            raw = store.read_turn_file(episode_id, turn, "spans.json")
+        except OSError:
+            continue
+        seen_bundle = True
+        try:
+            bindings = _json.loads(raw)
+        except ValueError:
+            continue
+        paths = set()
+        if isinstance(bindings, dict):
+            for value in bindings.values():
+                if isinstance(value, dict) and "path" in value:
+                    paths.add(value["path"])
+        elif isinstance(bindings, list):
+            for entry in bindings:
+                if isinstance(entry, dict) and "path" in entry:
+                    paths.add(entry["path"])
+        if any(gold in paths for gold in gold_files):
+            return True
+    return False if seen_bundle else None
+
+
 def run_cell(suite_path: Path, entry: dict, profile_name: str, profile: dict,
              store: EpisodeStore, run_id: str) -> dict:
     """Run one task/profile cell; first outcome kept."""
@@ -138,7 +171,8 @@ def run_cell(suite_path: Path, entry: dict, profile_name: str, profile: dict,
         config = load_config(paths["repo"])
         controller = Controller(store, config, build_adapter(profile), IsolatedBackend(),
                                 paths["repo"], ticket, episode_id=episode_id,
-                                task_id=entry["id"], protocol_version=profile["protocol"])
+                                task_id=entry["id"], protocol_version=profile["protocol"],
+                                verification_policy=profile["verification"])
         state = controller.run()
     except Exception as exc:  # noqa: BLE001 - recorded per-cell, never raised
         cell.update({"status": "setup-failed", "detail": str(exc)[:300]})
@@ -204,7 +238,11 @@ def run_cell(suite_path: Path, entry: dict, profile_name: str, profile: dict,
         "checked_changed_code": checked_changed,
         "target_improvement": improvement,
         "model_checks": state.model_checks,
+        "auto_checks": state.auto_checks,
         "test_invocations": state.test_invocations,
+        "verification": profile["verification"],
+        "interface": {"1": "unified-diff", "2": "replace", "3": "replace_span"}[profile["protocol"]],
+        "span_offered_gold": span_offered_gold(store, episode_id, gold_files),
         "prompt_tokens_exact": state.prompt_tokens_exact,
         "completion_tokens_exact": state.completion_tokens_exact,
         "prompt_tokens_est": state.prompt_tokens_est,
@@ -229,6 +267,48 @@ def run_cell(suite_path: Path, entry: dict, profile_name: str, profile: dict,
     return cell
 
 
+MAX_PROBES = 2
+
+PROBE_PROMPTS = [
+    ("check-final-channel",
+     "Return exactly one JSON action object and nothing else: "
+     '{"action":"check","scope":"focused"}'),
+    ("span-shape",
+     'File src/toy.py contains:\n'
+     'def hello(name):\n    return "hi " + name\n'
+     'Span [S1] covers this line exactly:     return "hi " + name\n'
+     "Return exactly one JSON action object and nothing else: a patch replace_span "
+     'action with span_id "S1" whose new text is     return "hello, " + name'),
+]
+
+
+def run_probes(report: dict, log: list[str]) -> None:
+    """Run at most MAX_PROBES task-independent capability probes, recorded.
+
+    Prompts mention no task, repo, or gold content. Each probe performs one
+    real generation through the same thinking-off, final-only, v3-grammar
+    configuration the D2 cells use. Failures are recorded, not retried.
+    """
+    from local_coder.inference.base import AdapterError
+
+    probes: list[dict] = []
+    for name, prompt in PROBE_PROMPTS[:MAX_PROBES]:
+        adapter = build_adapter(PROFILES["D2"])
+        try:
+            record = adapter.probe(prompt=prompt, protocol_version="3")
+            record["name"] = name
+            record["outcome"] = "ok"
+        except AdapterError as exc:
+            record = {"name": name, "outcome": "failed",
+                      "constraint": PROFILES["D2"]["constraint"],
+                      "channel_policy": PROFILES["D2"]["channel"],
+                      "thinking": PROFILES["D2"]["thinking"],
+                      "detail": str(exc)[:300]}
+        probes.append(record)
+        log.append(f"probe {name}: {record['outcome']}")
+    report["probes"] = sanitize(probes, os.path.expanduser("~"))
+
+
 def main() -> None:
     """Freeze, run 12 cells sequentially, write sanitized reports."""
     suite_path = REPO_ROOT / "pilot" / "suite"
@@ -250,8 +330,15 @@ def main() -> None:
     }
     entries = {e["id"]: e for e in manifest["entries"]}
     current_mode: str | None = None
-    for task_id in TASKS:
-        for profile_name in ORDER:
+    ensure_server(PROFILES["D2"]["server_thinking"], server_log)
+    current_mode = PROFILES["D2"]["server_thinking"]
+    run_probes(report, server_log)
+    actual_order: list[str] = []
+    for task_index, task_id in enumerate(TASKS):
+        # Rotate the profile order per task so no profile always runs first
+        # (fresh host) or last (pressured host); the rotation is predeclared.
+        rotation = ORDER[task_index % len(ORDER):] + ORDER[:task_index % len(ORDER)]
+        for profile_name in rotation:
             available = host_available_mb()
             if available is not None and available < 1024:
                 report["stopped_early"] = f"host available {available}MB below 1024MB floor"
@@ -261,10 +348,12 @@ def main() -> None:
                 ensure_server(profile["server_thinking"], server_log)
                 current_mode = profile["server_thinking"]
             print(f"[{run_id}] {task_id} / {profile_name}", flush=True)
+            actual_order.append(f"{task_id}/{profile_name}")
             report["tasks"].append(run_cell(suite_path, entries[task_id], profile_name,
                                             profile, store, run_id))
         if report.get("stopped_early"):
             break
+    report["order"] = actual_order
     report["finished"] = utc_now()
     report["attempted"] = sum(1 for t in report["tasks"] if t["status"] != "scheduled")
     clean = sanitize(report, home)
@@ -276,7 +365,8 @@ def main() -> None:
 
         fields = ["id", "profile", "split", "status", "category", "generations", "patch_attempts",
                   "applied_edits", "checked_changed_code", "target_improvement", "model_checks",
-                  "test_invocations", "prompt_tokens_exact", "completion_tokens_exact", "elapsed_s",
+                  "auto_checks", "test_invocations", "verification", "interface", "span_offered_gold",
+                  "prompt_tokens_exact", "completion_tokens_exact", "elapsed_s",
                   "protocol_errors", "regression", "recovery", "handoff_ok", "recall_at_1"]
         writer = _csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -295,7 +385,9 @@ def main() -> None:
                 f"gens={cell.get('generations', '-')} applied={cell.get('applied_edits', '-')} "
                 f"checked_changed={cell.get('checked_changed_code', '-')} "
                 f"improved={cell.get('target_improvement', [])} "
-                f"rejects={cell.get('patch_rejections', {})}")
+                f"rejects={cell.get('patch_rejections', {})} "
+                f"verify={cell.get('verification', '?')} auto={cell.get('auto_checks', '-')} "
+                f"spans={cell.get('span_offered_gold', '-')}")
         lines.append("")
     (report_dir / "report.md").write_text("\n".join(lines))
     (report_dir / "profiles.json").write_text(

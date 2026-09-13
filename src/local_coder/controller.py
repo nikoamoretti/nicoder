@@ -28,12 +28,14 @@ from .persistence import EpisodeStore, new_episode_id, utc_now
 from .protocol import (
     PROTOCOL_VERSION,
     PROTOCOL_VERSION_V2,
+    PROTOCOL_VERSION_V3,
     CheckAction,
     DoneBlockedAction,
     DoneSolvedAction,
     FindAction,
     PatchApplyAction,
     PatchReplaceAction,
+    PatchReplaceSpanAction,
     PatchRevertAction,
     ProtocolError,
     estimate_tokens,
@@ -45,7 +47,7 @@ from .skills import check as check_skill
 from .skills import done as done_skill
 from .skills import find as find_skill
 from .skills import patch as patch_skill
-from .state import EpisodeState
+from .state import CheckEvidence, EpisodeState
 from .telemetry import controller_rss_mb
 from .workspace import CandidateWorkspace
 
@@ -128,9 +130,12 @@ class Controller:
         episode_id: str | None = None,
         task_id: str | None = None,
         protocol_version: str = PROTOCOL_VERSION,
+        verification_policy: str = "off",
     ) -> None:
-        if protocol_version not in (PROTOCOL_VERSION, PROTOCOL_VERSION_V2):
+        if protocol_version not in (PROTOCOL_VERSION, PROTOCOL_VERSION_V2, PROTOCOL_VERSION_V3):
             raise ValueError(f"unknown protocol version {protocol_version!r}")
+        if verification_policy not in ("off", "mandatory"):
+            raise ValueError(f"unknown verification policy {verification_policy!r}")
         self.store = store
         self.config = config
         self.adapter = adapter
@@ -140,6 +145,7 @@ class Controller:
         self.episode_id = episode_id or new_episode_id()
         self.task_id = task_id
         self.protocol_version = protocol_version
+        self.verification_policy = verification_policy
         self.state: EpisodeState | None = None
         self.workspace: CandidateWorkspace | None = None
         self.original_manifest: dict[str, str] = {}
@@ -188,6 +194,7 @@ class Controller:
             provenance={
                 **self.adapter.provenance(),
                 "protocol_version": self.protocol_version,
+                "verification_policy": self.verification_policy,
                 "execution_backend": self.backend.name,
                 "isolation": self.backend.isolation_label,
             },
@@ -283,9 +290,11 @@ class Controller:
             if rss is not None and rss > state.budgets.memory_rss_limit_mb:
                 self._finish("blocked", f"memory pressure: controller RSS {rss}MB over limit")
                 return False
+        if not self._drain_pending():
+            return False
         counter = self.adapter.token_counter()
         try:
-            text = briefing_mod.render(
+            text, spans, _omitted = briefing_mod.render_full(
                 state, self.workspace, self.last_observation,
                 counter=counter, context_limit=self.adapter.context_limit(),
                 protocol_version=self.protocol_version)
@@ -298,7 +307,8 @@ class Controller:
         self.store.write_briefing(self.episode_id, text)
         briefing_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         step_index = state.generations_used
-        turn = self._reserve_slot(text, counter, content_tokens, count_label, briefing_sha, step_index)
+        turn = self._reserve_slot(text, counter, content_tokens, count_label, briefing_sha, step_index,
+                                  spans=spans)
         try:
             return self._dispatch_turn(turn, text, step_index, content_tokens)
         finally:
@@ -306,13 +316,15 @@ class Controller:
 
     def _reserve_slot(
         self, text: str, counter, content_tokens: int, count_label: str,
-        briefing_sha: str, step_index: int,
+        briefing_sha: str, step_index: int, spans: list | None = None,
     ) -> int:
         """Reserve and durably record a generation slot BEFORE dispatch.
 
         Raises BudgetExhausted without contacting any model when no slot
         remains. A reserved slot is consumed even if dispatch later fails
-        with an unknown outcome: it is never silently resampled.
+        with an unknown outcome: it is never silently resampled. The exact
+        span list displayed in the briefing is persisted as spans.json so
+        span IDs keep the meaning the model saw.
         """
         assert self.state is not None
         state = self.state
@@ -323,6 +335,15 @@ class Controller:
         store.write_turn_file(
             ep, turn, "focus.json",
             json.dumps(briefing_mod.focus_bindings(state), indent=2, sort_keys=True))
+        if spans:
+            store.write_turn_file(
+                ep, turn, "spans.json",
+                json.dumps([
+                    {"span_id": span.span_id, "path": span.path,
+                     "start_byte": span.start_byte, "end_byte": span.end_byte,
+                     "file_sha256": span.file_sha256, "bytes_sha256": span.bytes_sha256}
+                    for span in spans
+                ], indent=2, sort_keys=True))
         profile = {
             "protocol_version": self.protocol_version,
             "constraint": getattr(self.adapter, "constraint", "json_object"),
@@ -393,6 +414,15 @@ class Controller:
         self._turn_write(turn, "action.json", json.dumps(
             {"ok": True, "action": action.model_dump()}, indent=2, sort_keys=True, default=str))
         state.consecutive_invalid = 0
+        if (self.verification_policy == "mandatory" and state.pending_verification is not None
+                and action.action in ("find", "patch", "check")):
+            self.last_observation = {"status": "rejected", "code": "verification_pending",
+                                     "detail": "an edit awaits mandatory verification; "
+                                               "the runtime checks first"}
+            self._ev( "observation",
+                                    {"action": action.action, "status": "rejected"})
+            self.store.save_state(state)
+            return self._still_running()
         if action.action not in allowed_actions(state.phase):
             self.last_observation = {"status": "rejected", "code": "illegal_phase",
                                      "detail": f"{action.action} not allowed in {state.phase}"}
@@ -402,12 +432,14 @@ class Controller:
             return self._still_running()
         if isinstance(action, FindAction) and action.hypothesis:
             state.hypothesis = action.hypothesis
-        if isinstance(action, PatchApplyAction | PatchRevertAction | CheckAction) and action.hypothesis:
+        if isinstance(action, PatchApplyAction | PatchRevertAction | CheckAction | PatchReplaceSpanAction) \
+                and action.hypothesis:
             state.hypothesis = action.hypothesis
         state.last_action = briefing_mod.action_preview(action)
         if isinstance(action, FindAction):
             cont = self._do_find(action)
-        elif isinstance(action, PatchApplyAction | PatchRevertAction | PatchReplaceAction):
+        elif isinstance(action, PatchApplyAction | PatchRevertAction | PatchReplaceAction
+                         | PatchReplaceSpanAction):
             cont = self._do_patch(action)
         elif isinstance(action, CheckAction):
             cont = self._do_check(action)
@@ -559,7 +591,8 @@ class Controller:
                                  "new_focus": [f.path for f in fresh]})
         return self._still_running()
 
-    def _do_patch(self, action: PatchApplyAction | PatchRevertAction | PatchReplaceAction) -> bool:
+    def _do_patch(self, action: PatchApplyAction | PatchRevertAction | PatchReplaceAction
+                    | PatchReplaceSpanAction) -> bool:
         assert self.state is not None and self.workspace is not None
         state = self.state
         if state.patch_attempts >= state.budgets.max_patch_attempts:
@@ -569,11 +602,16 @@ class Controller:
             self._ev( "observation",
                                     {"action": "patch", "status": "rejected"})
             return self._still_running()
+        if self.verification_policy == "mandatory" and not self._validation_budget_ok():
+            self._finish("blocked", "no validation budget for mandatory post-edit check")
+            return False
         state.patch_attempts += 1
         if isinstance(action, PatchRevertAction):
             return self._do_revert(action)
         if isinstance(action, PatchReplaceAction):
             return self._do_replace(action)
+        if isinstance(action, PatchReplaceSpanAction):
+            return self._do_replace_span(action)
         if not state.focus:
             self.last_observation = {"status": "rejected", "code": "need_find",
                                      "detail": "PATCH requires current focus evidence; use FIND first"}
@@ -610,6 +648,9 @@ class Controller:
                 foc.sha256 = sha256_file(self.workspace.root / foc.path)
         state.candidate_tree_hash = self.workspace.tree_hash()
         state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
+        if not self._verify_after_edit(record.sha, observation):
+            self.last_observation = observation
+            return False
         self.last_observation = observation
         self._ev( "patch_applied", {
             "patch": record.sha, "files": record.files,
@@ -683,6 +724,9 @@ class Controller:
                 foc.sha256 = sha256_file(self.workspace.root / foc.path)
         state.candidate_tree_hash = self.workspace.tree_hash()
         state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
+        if not self._verify_after_edit(record.sha, observation):
+            self.last_observation = observation
+            return False
         self.last_observation = observation
         self._ev( "patch_applied", {
             "patch": record.sha, "files": record.files,
@@ -709,6 +753,116 @@ class Controller:
                 return None
         return bindings
 
+    def _turn_spans(self) -> dict[str, dict[str, object]] | None:
+        """Span bindings snapshotted for the open turn, if any."""
+        if self._open_turn is None:
+            return None
+        try:
+            raw = self.store.read_turn_file(self.episode_id, self._open_turn, "spans.json")
+        except OSError:
+            return None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(data, list):
+            return None
+        bindings: dict[str, dict[str, object]] = {}
+        for entry in data:
+            try:
+                span_id = str(entry["span_id"])
+                bindings[span_id] = {
+                    "path": str(entry["path"]),
+                    "file_sha256": str(entry["file_sha256"]),
+                    "start_byte": int(entry["start_byte"]),
+                    "end_byte": int(entry["end_byte"]),
+                    "bytes_sha256": str(entry["bytes_sha256"]),
+                }
+            except (ValueError, KeyError, TypeError):
+                return None
+        return bindings
+
+    def _do_replace_span(self, action: PatchReplaceSpanAction) -> bool:
+        """Execute one protocol-v3 span-selection PATCH attempt."""
+        assert self.state is not None and self.workspace is not None
+        state = self.state
+        if self.protocol_version != PROTOCOL_VERSION_V3:
+            self.last_observation = {"status": "rejected", "code": "wrong_protocol",
+                                     "detail": "replace_span requires protocol v3"}
+            self._ev( "observation",
+                                    {"action": "patch", "status": "rejected"})
+            return self._still_running()
+        if not state.focus:
+            self.last_observation = {"status": "rejected", "code": "need_find",
+                                     "detail": "PATCH requires current focus evidence; use FIND first"}
+            self._ev( "observation",
+                                    {"action": "patch", "status": "rejected"})
+            return self._still_running()
+        tree = self.workspace.tree_hash()
+        if self._repeat(fingerprint(action, tree), "patch-replace-span"):
+            self.store.save_state(state)
+            return self._still_running()
+        bindings = self._turn_spans()
+        if bindings is None:
+            self.last_observation = {"status": "rejected", "code": "missing_bindings",
+                                     "detail": "no span bindings for this turn; re-FIND before patching"}
+            self._ev( "observation",
+                                    {"action": "patch", "status": "rejected"})
+            return self._still_running()
+        resolved: list[tuple[str, int, int, str, str]] = []
+        file_hashes: dict[str, str] = {}
+        for edit in action.edits:
+            binding = bindings.get(edit.span_id)
+            if binding is None:
+                self.last_observation = {"status": "rejected", "code": "unknown_span_id",
+                                         "detail": f"span_id {edit.span_id} is not an editable span "
+                                                   "shown in this request"}
+                self._ev( "observation",
+                                        {"action": "patch", "status": "rejected"})
+                return self._still_running()
+            path = str(binding["path"])
+            start_byte = binding["start_byte"]
+            end_byte = binding["end_byte"]
+            assert isinstance(start_byte, int) and isinstance(end_byte, int)
+            resolved.append((path, start_byte, end_byte, edit.new, str(binding["bytes_sha256"])))
+            file_hashes[path] = str(binding["file_sha256"])
+        edits_sha = hashlib.sha256(
+            json.dumps(action.model_dump()["edits"], sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        self._ev( "patch_intent",
+                                {"edits_sha": edits_sha, "base_tree": tree, "interface": "replace_span"})
+        observation, record, reverse, rendered = patch_skill.run_patch_replace_span(
+            state, self.workspace, self.store.artifacts_dir(self.episode_id),
+            resolved, file_hashes, self.config.editable_paths,
+            self.episode_id, self.store.write_artifact_text)
+        self.store.write_artifact_text(
+            self.episode_id, f"patch-{state.generations_used:04d}.diff", rendered)
+        if record is None or reverse is None:
+            self.last_observation = observation
+            self._ev( "patch_rejected", observation)
+            return self._still_running()
+        if state.last_patch is not None:
+            state.patch_history.append(state.last_patch)
+        state.last_patch = record
+        self.reverse_cache[record.sha] = reverse
+        for new in record.files:
+            if new not in state.modified_files:
+                state.modified_files.append(new)
+        for foc in state.focus:
+            if foc.path in record.files:
+                from .paths import sha256_file
+
+                foc.sha256 = sha256_file(self.workspace.root / foc.path)
+        state.candidate_tree_hash = self.workspace.tree_hash()
+        state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
+        if not self._verify_after_edit(record.sha, observation):
+            self.last_observation = observation
+            return False
+        self.last_observation = observation
+        self._ev( "patch_applied", {
+            "patch": record.sha, "files": record.files,
+            "result_tree": record.result_tree, "interface": "replace_span"})
+        return self._still_running()
+
     def _do_revert(self, action: PatchRevertAction) -> bool:
         assert self.state is not None and self.workspace is not None
         state = self.state
@@ -734,9 +888,127 @@ class Controller:
                 foc.sha256 = _sha(self.workspace.root / foc.path)
         state.candidate_tree_hash = self.workspace.tree_hash()
         state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
+        if not self._verify_after_edit(f"revert:{reverted_sha}", observation):
+            self.last_observation = observation
+            return False
         self.last_observation = observation
         self._ev( "patch_reverted", {"patch": reverted_sha})
         return self._still_running()
+
+    # -- mandatory verification ---------------------------------------------
+
+    def _validation_budget_ok(self) -> bool:
+        """Room for one automatic check plus a future final validation."""
+        assert self.state is not None
+        state = self.state
+        need_final = 0 if state.final_validations >= 1 else 1
+        return state.test_invocations + 1 + need_final <= state.budgets.max_test_invocations
+
+    def _run_automatic_check(self) -> CheckEvidence | None:
+        """Execute the mandatory post-edit check. None iff the episode ended.
+
+        Consumes one test invocation and one auto-check slot, never a model
+        generation or a model-check slot. Recorded as controller-owned
+        auto_check events, never as a model-selected CHECK.
+        """
+        assert self.state is not None and self.workspace is not None
+
+        state = self.state
+        command = self.config.commands.get("focused")
+        if not command:
+            self._finish("blocked", "no focused command for mandatory automatic verification")
+            return None
+        tree = self.workspace.tree_hash()
+        state.test_invocations += 1
+        state.auto_checks += 1
+        self._ev( "auto_check", {"scope": "focused", "tree": tree})
+        self.store.save_state(state)
+        evidence = check_skill.execute_scope(
+            state, self.workspace, self.backend, "focused", command,
+            state.budgets.test_timeout_s, state.budgets.max_log_bytes,
+            f"check-auto-{state.auto_checks:04d}.log",
+            self.store.write_artifact_text, self.store.write_artifact_bytes)
+        state.current = evidence
+        state.candidate_tree_hash = self.workspace.tree_hash()
+        comparison = check_skill.compare_to_baseline(state.baseline, evidence) if state.baseline else {}
+        state.regression = bool(comparison.get("regression"))
+        event = "check_regression" if state.regression else "check_clean"
+        state.phase = TRANSITIONS.get((state.phase, event),
+                                      TRANSITIONS.get((state.phase, "check"), state.phase))
+        self._ev( "auto_check_completed", {
+            "scope": evidence.scope, "status": evidence.status,
+            "failed": evidence.failed, "errors": evidence.errors,
+            "regression": str(state.regression)})
+        self.store.save_state(state)
+        return evidence
+
+    def _verify_after_edit(self, patch_sha: str, observation: dict) -> bool:
+        """Mandatory-policy hook after a content-changing edit. False => stop.
+
+        Persists the pending verification, runs the automatic check at once,
+        exposes its result inside the patch observation, and clears the
+        pending record only against evidence on the exact pending tree. An
+        incomplete check cannot verify anything: honest blocked outcome.
+        """
+        assert self.state is not None
+        state = self.state
+        if self.verification_policy != "mandatory":
+            return True
+        from .state import PendingVerification
+
+        state.pending_verification = PendingVerification(tree=state.candidate_tree_hash,
+                                                         patch_sha=patch_sha)
+        self.store.save_state(state)
+        evidence = self._run_automatic_check()
+        if evidence is None:
+            return False
+        observation["auto_check"] = {
+            "status": evidence.status,
+            "scope": evidence.scope,
+            "failed": list(evidence.failed),
+            "errors": list(evidence.errors),
+            "incomplete_reason": evidence.incomplete_reason,
+        }
+        if evidence.status == "incomplete":
+            self._finish("blocked",
+                         f"automatic verification incomplete: {evidence.incomplete_reason or 'unknown'}")
+            return False
+        pending = state.pending_verification
+        if pending is not None and evidence.tree_hash == pending.tree:
+            state.pending_verification = None
+        self.store.save_state(state)
+        return state.outcome == "running"
+
+    def _drain_pending(self) -> bool:
+        """Run persisted pending verification before model inference.
+
+        Consumes no generation slot. Returns False when the drain finished
+        the episode (blocked); True means proceed to the model decision.
+        """
+        assert self.state is not None and self.workspace is not None
+        state = self.state
+        if self.verification_policy != "mandatory" or state.pending_verification is None:
+            return True
+        if state.outcome != "running" or state.phase == TERMINAL:
+            return False
+        pending = state.pending_verification
+        if self.workspace.tree_hash() != pending.tree:
+            self._finish("blocked", "pending verification tree lost before its check ran")
+            return False
+        if state.test_invocations + 1 > state.budgets.max_test_invocations:
+            self._finish("blocked", "no validation budget left for pending verification")
+            return False
+        evidence = self._run_automatic_check()
+        if evidence is None:
+            return False
+        if evidence.status == "incomplete" or evidence.tree_hash != pending.tree:
+            self._finish("blocked",
+                         f"pending verification did not complete: "
+                         f"{evidence.incomplete_reason or 'tree moved'}")
+            return False
+        state.pending_verification = None
+        self.store.save_state(state)
+        return True
 
     def _reverse_for(self, sha: str) -> dict[str, bytes] | None:
         assert self.state is not None
@@ -851,6 +1123,9 @@ class Controller:
             self.store.write_artifact_text, self.store.write_artifact_bytes)
         state.final = evidence
         state.candidate_tree_hash = self.workspace.tree_hash()
+        if (state.pending_verification is not None
+                and evidence.tree_hash == state.pending_verification.tree):
+            state.pending_verification = None
         ok, reasons = done_skill.validate_solved(state, self.workspace,
                                                  self.original_manifest, self.config.editable_paths)
         self._ev( "done_validated",
@@ -955,6 +1230,9 @@ class Controller:
                 "check-final.log",
                 self.store.write_artifact_text, self.store.write_artifact_bytes)
             state.final = evidence
+            if (state.pending_verification is not None
+                    and evidence.tree_hash == state.pending_verification.tree):
+                state.pending_verification = None
             ok, _ = done_skill.validate_solved(state, self.workspace,
                                                self.original_manifest, self.config.editable_paths)
             if ok:
@@ -971,6 +1249,9 @@ class Controller:
         self.episode_id = episode_id
         state = self.store.load_state(episode_id)
         self.state = state
+        stored_policy = state.provenance.get("verification_policy", "off")
+        if stored_policy in ("off", "mandatory"):
+            self.verification_policy = stored_policy
         if adapter is not None:
             self.adapter = adapter
         self.repo = Path(state.repo_path)
@@ -996,6 +1277,8 @@ class Controller:
             return state
         self.started_mono = time.monotonic()
         self._tick = time.monotonic()
+        if not self._drain_pending():
+            return state
         while state.outcome == "running" and \
                 state.generations_used < state.budgets.max_generations:
             if not self.step():

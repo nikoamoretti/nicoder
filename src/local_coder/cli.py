@@ -102,11 +102,12 @@ def _build_llama_adapter(args, environ) -> LlamaCppAdapter:
     from .inference.llama_cpp import check_configured
 
     url = check_configured(environ.get("LOCAL_CODER_LLAMA_URL", ""))
-    from .inference.grammar import constraint_id, constraint_id_v2
+    from .inference.grammar import constraint_id, constraint_id_v2, constraint_id_v3
 
     protocol = getattr(args, "protocol", "1")
-    if protocol not in ("1", "2"):
+    if protocol not in ("1", "2", "3"):
         raise AdapterError(f"unknown protocol version {protocol!r}")
+    constraints = {"1": constraint_id(), "2": constraint_id_v2(), "3": constraint_id_v3()}
     return LlamaCppAdapter(
         url,
         model=getattr(args, "model", None) or environ.get("LOCAL_CODER_MODEL", "unknown"),
@@ -116,7 +117,7 @@ def _build_llama_adapter(args, environ) -> LlamaCppAdapter:
         quantization=getattr(args, "quantization", None)
         or environ.get("LOCAL_CODER_QUANTIZATION", "unknown"),
         n_ctx=getattr(args, "n_ctx", None),
-        constraint=constraint_id_v2() if protocol == "2" else constraint_id(),
+        constraint=constraints[protocol],
         channel_policy=getattr(args, "channel", None) or "legacy",
         thinking=getattr(args, "thinking", None) or "auto",
     )
@@ -166,7 +167,8 @@ def cmd_run(args) -> int:
     ticket = ticket_file.read_text(encoding="utf-8")
     store = _store(args)
     controller = Controller(store, config, adapter, backend, repo, ticket, episode_id=args.episode_id,
-                            protocol_version=getattr(args, "protocol", "1") or "1")
+                            protocol_version=getattr(args, "protocol", "1") or "1",
+                            verification_policy=getattr(args, "verification_policy", "off") or "off")
     try:
         state = controller.run()
     except RuntimeError as exc:
@@ -419,8 +421,12 @@ def _add_llama_args(parser) -> None:
     parser.add_argument("--n-ctx", default=None, type=int, help="verified server context size")
     parser.add_argument("--max-tokens", default=None, type=int, help="per-generation output budget")
     parser.add_argument("--gen-timeout", default=None, type=int, help="per-generation deadline in seconds")
-    parser.add_argument("--protocol", default="1", choices=["1", "2"],
-                        help="action protocol version (v2 = exact-replacement PATCH)")
+    parser.add_argument("--protocol", default="1", choices=["1", "2", "3"],
+                        help="action protocol version (v2 = exact-replacement PATCH, "
+                             "v3 = span-ID selection PATCH)")
+    parser.add_argument("--verification-policy", default="off", choices=["off", "mandatory"],
+                        help="mandatory runs a controller-owned check after every edit; "
+                             "resume always adopts the episode's recorded policy")
     parser.add_argument("--thinking", default="auto", choices=["auto", "off"],
                         help="declared thinking expectation (verified by probe, never assumed)")
     parser.add_argument("--channel", default="legacy", choices=["legacy", "final-only"],

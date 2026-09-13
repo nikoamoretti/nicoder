@@ -13,6 +13,7 @@ import json
 from .inference.tokenizer import EstimateCounter, TokenCounter
 from .protocol import Action
 from .skills.check import compare_to_baseline
+from .spans import Span, build_catalogue, render_spans
 from .state import CheckEvidence, EpisodeState
 from .workspace import CandidateWorkspace
 
@@ -28,6 +29,23 @@ PATCH may touch only current focus files. CHECK runs a registered scope."""
 
 # Backwards-compatible alias: v1 is the default protocol.
 ACTION_SCHEMA = ACTION_SCHEMA_V1
+
+ACTION_SCHEMA_V3 = (
+    "Choose exactly ONE action as a single JSON object (no fences, no list).\n"
+    "Protocol v3: PATCH uses span selection. Pick span_id values ONLY from the\n"
+    "SPANS section below and write only the new code. Never reproduce old text,\n"
+    "calculate hashes, provide offsets or line numbers, or author diff headers.\n"
+    '{"action":"find","query":"...","symbols":["Name"]} |\n'
+    '{"action":"patch","operation":"replace_span",'
+    '"edits":[{"span_id":"S1","new":"<replacement source text>"}],'
+    '"expected_effect":"..."} |\n'
+    '{"action":"patch","operation":"revert_last","reason_code":"..."} |\n'
+    '{"action":"check","scope":"focused|regression"} |\n'
+    '{"action":"done","status":"solved","summary":"..."} |\n'
+    '{"action":"done","status":"blocked","reason_code":"...","summary":"..."}\n'
+    "PATCH replace_span may address only the listed span IDs.\n"
+    "CHECK runs a registered scope."
+)
 
 ACTION_SCHEMA_V2 = (
     "Choose exactly ONE action as a single JSON object (no fences, no list).\n"
@@ -60,6 +78,47 @@ V2_EXAMPLE = (
     '"expected_effect":"Friendlier greeting"}'
 )
 
+# Task-independent example (a toy greeting function; never a ticket answer).
+V3_SPAN_EXAMPLE = (
+    "Example replace_span (toy file only, not this ticket):\n"
+    "spans show:\n"
+    "[S1] src/toy.py bytes 17-45 sha=abc123\n"
+    '    return "hi " + name\n'
+    "action:\n"
+    '{"action":"patch","operation":"replace_span",'
+    '"edits":[{"span_id":"S1","new":"    return \\"hello, \\" + name"}],'
+    '"expected_effect":"Friendlier greeting"}'
+)
+
+
+def constraint_notes(state: EpisodeState) -> list[str]:
+    """Advertised action availability derived from actual budgets and state.
+
+    Used to render the CONSTRAINTS section so the model is never offered an
+    action the controller would have to refuse. Empty means all four actions
+    are currently available.
+    """
+    notes = []
+    b = state.budgets
+    if state.patch_attempts >= b.max_patch_attempts:
+        notes.append(
+            f"PATCH unavailable: patch budget spent "
+            f"({state.patch_attempts}/{b.max_patch_attempts}). FIND, CHECK, DONE remain."
+        )
+    if state.model_checks >= b.max_model_checks or state.test_invocations >= b.max_test_invocations:
+        notes.append(
+            "CHECK unavailable: check budget spent "
+            f"(model {state.model_checks}/{b.max_model_checks}, "
+            f"invocations {state.test_invocations}/{b.max_test_invocations}). "
+            "FIND, PATCH, DONE remain."
+        )
+    if state.pending_verification is not None:
+        notes.append(
+            "verification pending: the runtime runs the mandatory automatic check "
+            "before the next model decision."
+        )
+    return notes
+
 
 class ContextBudgetExceeded(Exception):
     """Even the minimum valid prompt cannot fit the token budget."""
@@ -74,14 +133,30 @@ def render(
     context_limit: int | None = None,
     protocol_version: str = "1",
 ) -> str:
-    """Render the full briefing for the next generation.
+    """Render the full briefing for the next generation (text only)."""
+    text, _, omitted = render_full(
+        state, workspace, last_observation,
+        counter=counter, context_limit=context_limit, protocol_version=protocol_version,
+    )
+    if omitted_note is not None:
+        omitted_note.extend(omitted)
+    return text
 
-    Excerpts trim deterministically (lowest-ranked focus entries first, whole
-    ranges only) until the prompt fits the cap; every omission is recorded.
-    Token counts come from the loaded model's tokenizer when live
-    (MEASURED) and from the chars//4 heuristic otherwise (ESTIMATE).
-    Protocol v2 numbers each focus file (file_id) for PATCH replace actions
-    and appends a task-independent replace example.
+
+def render_full(
+    state: EpisodeState,
+    workspace: CandidateWorkspace,
+    last_observation: dict | None,
+    counter: TokenCounter | None = None,
+    context_limit: int | None = None,
+    protocol_version: str = "1",
+) -> tuple[str, list[Span], list[str]]:
+    """Render the briefing plus the exact span list it displays.
+
+    Returns (text, spans, omitted). The controller persists this exact span
+    list as the request's bindings, so IDs always mean what the model saw.
+    Span IDs are positional and stable: trimming drops trailing spans only
+    and never renumbers survivors.
     """
     counter = counter or EstimateCounter()
     budgets = state.budgets
@@ -99,20 +174,47 @@ def render(
             f"minus {budgets.max_action_tokens} generation tokens leaves {cap}"
         )
     excerpts, omitted = _collect_excerpts(state, workspace)
-    text = _assemble(state, excerpts, omitted, last_observation, protocol_version)
-    while counter.count(text) > cap and excerpts:
-        dropped = excerpts.pop()
-        omitted.append(f"{dropped[0]} (trimmed to fit {cap} {label} prompt tokens)")
-        text = _assemble(state, excerpts, omitted, last_observation, protocol_version)
+    spans: list[Span] = []
+    if protocol_version == "3":
+        spans, span_omitted = _collect_spans(state, workspace, excerpts)
+        omitted.extend(span_omitted)
+    text = _assemble(state, excerpts, omitted, last_observation, protocol_version, spans, workspace)
+    if protocol_version == "3":
+        while counter.count(text) > cap and spans:
+            dropped_span = spans.pop()
+            omitted.append(
+                f"span {dropped_span.span_id} ({dropped_span.path}) trimmed "
+                f"to fit {cap} {label} prompt tokens")
+            text = _assemble(state, excerpts, omitted, last_observation, protocol_version, spans,
+                             workspace)
+    else:
+        while counter.count(text) > cap and excerpts:
+            dropped_excerpt = excerpts.pop()
+            omitted.append(f"{dropped_excerpt[0]} (trimmed to fit {cap} {label} prompt tokens)")
+            text = _assemble(state, excerpts, omitted, last_observation, protocol_version, spans,
+                             workspace)
     tokens = counter.count(text)
     if tokens > cap:
         raise ContextBudgetExceeded(
             f"minimum briefing is {tokens} {label} tokens, cap is {cap} "
             f"(context {limit}, reserve {reserve}, generation {budgets.max_action_tokens})"
         )
-    if omitted_note is not None:
-        omitted_note.extend(omitted)
-    return text
+    return text, spans, omitted
+
+
+def _collect_spans(
+    state: EpisodeState,
+    workspace: CandidateWorkspace,
+    excerpts: list[tuple[str, str]],
+) -> tuple[list[Span], list[str]]:
+    """Build the request span catalogue from surviving excerpt ranges."""
+    ranges = [(foc.path, foc.start, foc.end) for foc in state.focus
+              if any(path == foc.path for path, _ in excerpts)]
+    if not ranges:
+        return [], []
+    budget_chars = state.budgets.briefing_target_tokens * 2
+    spans, omitted, _bindings = build_catalogue(workspace.root, ranges, budget_chars)
+    return spans, omitted
 
 
 def _assemble(
@@ -121,22 +223,52 @@ def _assemble(
     omitted: list[str],
     last_observation: dict | None,
     protocol_version: str = "1",
+    spans: list[Span] | None = None,
+    workspace: CandidateWorkspace | None = None,
 ) -> str:
-    schema = ACTION_SCHEMA_V2 if protocol_version == "2" else ACTION_SCHEMA_V1
+    if protocol_version == "3":
+        schema = ACTION_SCHEMA_V3
+    elif protocol_version == "2":
+        schema = ACTION_SCHEMA_V2
+    else:
+        schema = ACTION_SCHEMA_V1
     sections = [
         f"TASK\n{state.ticket.strip()}",
         _budget_section(state),
         "CURRENT HYPOTHESIS (model proposal, not a fact)\n" + (state.hypothesis or "(none)"),
         _focus_section(state, excerpts, omitted, protocol_version),
+    ]
+    if protocol_version == "3":
+        sections.append(_spans_section(spans or [], workspace))
+    sections.extend([
         _last_change_section(state),
         _check_section(state),
         _progress_section(state),
         _observation_section(last_observation),
+        _constraints_section(state),
         "RULES\n" + schema,
-    ]
+    ])
     if protocol_version == "2":
         sections.append(V2_EXAMPLE)
-    return "\n\n".join(sections) + "\n"
+    if protocol_version == "3":
+        sections.append(V3_SPAN_EXAMPLE)
+    return "\n\n".join(section for section in sections if section) + "\n"
+
+
+def _spans_section(spans: list[Span], workspace: CandidateWorkspace | None) -> str:
+    lines = ["SPANS (address PATCH replace_span edits by span_id; write only the new code)"]
+    if not spans:
+        lines.append("(no editable spans; use FIND to add focus evidence)")
+        return "\n".join(lines)
+    lines.append(render_spans(workspace.root, spans) if workspace is not None else "")
+    return "\n".join(lines)
+
+
+def _constraints_section(state: EpisodeState) -> str:
+    notes = constraint_notes(state)
+    if not notes:
+        return ""
+    return "CONSTRAINTS\n" + "\n".join(f"- {note}" for note in notes)
 
 
 def _budget_section(state: EpisodeState) -> str:

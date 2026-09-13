@@ -290,6 +290,82 @@ class CandidateWorkspace:
             tmp.write_bytes(old_data)
             os.replace(tmp, dest)
 
+    def apply_span_edits(
+        self,
+        resolved: list[tuple[str, int, int, str, str]],
+        file_hashes: dict[str, str],
+        focus_paths: set[str],
+        editable: list[str],
+        max_bytes: int,
+    ) -> ApplyResult:
+        """Apply runtime-bound span replacements atomically.
+
+        Each resolved edit is (path, start_byte, end_byte, new_text,
+        expected_slice_hash), validated against the same pre-action file
+        bytes: unknown paths, stale file identities, invalid byte
+        boundaries, content drift inside the span, no-ops, and overlapping
+        intervals all reject before anything is written. Python results are
+        syntax-checked; publication reuses the crash-safe transactional
+        publisher, so no partial edit is ever accepted as applied.
+        """
+        from .paths import matches_any  # local import to avoid cycle
+
+        payload_bytes = sum(len(new.encode("utf-8")) for _, _, _, new, _ in resolved)
+        if payload_bytes > max_bytes:
+            raise PatchValidationError(f"span payload exceeds {max_bytes} byte budget", "patch_too_large")
+        if not resolved:
+            raise PatchValidationError("span edit set is empty", "empty_diff")
+        for rel, _, _, _, _ in resolved:
+            _check_path(rel)
+            if rel not in focus_paths:
+                raise PatchValidationError(f"{rel} is not in the current focus set", "not_in_focus")
+            if not matches_any(rel, editable):
+                raise PatchValidationError(f"{rel} is not editable (tests/config are read-only)", "forbidden_path")
+        by_path: dict[str, list[tuple[int, int, str, str]]] = {}
+        for rel, start, end, new, want_hash in resolved:
+            by_path.setdefault(rel, []).append((start, end, new, want_hash))
+        planned: dict[str, tuple[bytes, bytes]] = {}
+        before: dict[str, str] = {}
+        after: dict[str, str] = {}
+        for rel, file_edits in by_path.items():
+            data, _, _ = _read_candidate(self.root, rel)
+            if sha256_bytes(data) != file_hashes.get(rel, ""):
+                raise PatchValidationError(f"stale source identity for {rel}", "stale_evidence")
+            intervals: list[tuple[int, int]] = []
+            for start, end, new, want_hash in file_edits:
+                if not 0 <= start < end <= len(data):
+                    raise PatchValidationError(
+                        f"invalid byte interval [{start}, {end}) for {rel}", "invalid_span")
+                try:
+                    old_slice = data[start:end].decode("utf-8")
+                except UnicodeDecodeError:
+                    raise PatchValidationError(
+                        f"span interval splits encoded text in {rel}", "invalid_span") from None
+                if sha256_bytes(data[start:end]) != want_hash:
+                    raise PatchValidationError(
+                        f"span content drifted in {rel} [{start}, {end})", "stale_span")
+                if new == old_slice:
+                    raise PatchValidationError(f"no-op span replacement rejected for {rel}", "noop_edit")
+                intervals.append((start, end))
+            ordered = sorted(intervals)
+            for (_start_a, end_a), (start_b, _end_b) in zip(ordered, ordered[1:], strict=False):
+                if start_b < end_a:
+                    raise PatchValidationError(f"overlapping span edits in {rel}", "overlapping_edits")
+            new_data = data
+            for (start, end), (_s, _e, new, _h) in sorted(
+                    zip(intervals, file_edits, strict=True), key=lambda pair: pair[0][0], reverse=True):
+                new_data = new_data[:start] + new.encode("utf-8") + new_data[end:]
+            if rel.endswith(".py"):
+                try:
+                    ast.parse(new_data.decode("utf-8"), filename=rel)
+                except (SyntaxError, UnicodeDecodeError) as exc:
+                    raise PatchValidationError(f"result has invalid Python: {exc}", "syntax_error") from exc
+            planned[rel] = (data, new_data)
+            before[rel] = sha256_bytes(data)
+            after[rel] = sha256_bytes(new_data)
+        reverse = _publish_planned(self.root, planned)
+        return ApplyResult(files=sorted(planned), before=before, after=after, reverse=reverse)
+
     def apply_replacements(
         self,
         edits: list[tuple[str, str, str]],

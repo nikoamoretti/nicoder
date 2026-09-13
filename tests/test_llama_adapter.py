@@ -496,3 +496,16 @@ def test_v2_grammar_sent_for_v2_constraint(mock_server):
     assert '\\"apply\\"' not in payload["grammar"]
     assert '\\"edits\\"' in payload["grammar"]
     assert adapter.provenance()["constraint"] == constraint_id_v2()
+
+
+def test_v3_grammar_sent_for_v3_constraint(mock_server):
+    from local_coder.inference.grammar import constraint_id_v3
+
+    adapter = _adapter(mock_server, constraint=constraint_id_v3())
+    adapter.generate("briefing", 0)
+    _, state = mock_server
+    payload = dict(state.requests[-1][1])
+    assert '\\"replace_span\\"' in payload["grammar"]
+    assert '\\"span_id\\"' in payload["grammar"]
+    assert '\\"old\\"' not in payload["grammar"]
+    assert adapter.provenance()["constraint"] == constraint_id_v3()

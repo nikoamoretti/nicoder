@@ -278,7 +278,8 @@ class LlamaCppAdapter(ModelAdapter):
 
     # -- capability probe -------------------------------------------------
 
-    def probe(self, save_dir: str | Path | None = None) -> dict:
+    def probe(self, save_dir: str | Path | None = None,
+              prompt: str | None = None, protocol_version: str = "1") -> dict:
         """Verify real capabilities, not merely HTTP 200.
 
         Checks grammar-constrained generation (response parses as JSON and
@@ -287,6 +288,8 @@ class LlamaCppAdapter(ModelAdapter):
         action in the final-answer channel with no reasoning output: a
         reasoning-only response is a compatibility failure. Probe records
         live outside episodes and are never counted as generation attempts.
+        A caller may supply a task-independent prompt and the protocol
+        version whose schema should validate the response.
         Raises AdapterError with specifics.
         """
         from ..protocol import parse_raw
@@ -295,6 +298,8 @@ class LlamaCppAdapter(ModelAdapter):
                         "constraint": self.constraint,
                         "channel_policy": self.channel_policy,
                         "thinking": getattr(self, "thinking", "auto"),
+                        "protocol_version": protocol_version,
+                        "prompt": prompt or "default",
                         "checks": {}}
         try:
             with self._client() as client:
@@ -310,8 +315,8 @@ class LlamaCppAdapter(ModelAdapter):
         except (httpx.HTTPError, OSError) as exc:
             raise AdapterError(f"probe: server unreachable: {exc}") from exc
         raw = self.generate(
-            'Reply with exactly this JSON object and nothing else: {"action":"done",'
-            '"status":"blocked","reason_code":"probe","summary":"probe"}', 0)
+            prompt or ('Reply with exactly this JSON object and nothing else: {"action":"done",'
+                       '"status":"blocked","reason_code":"probe","summary":"probe"}'), 0)
         if self.last_usage and self.last_usage.get("channel"):
             record["channel"] = self.last_usage["channel"]
         if getattr(self, "thinking", "auto") == "off":
@@ -325,7 +330,7 @@ class LlamaCppAdapter(ModelAdapter):
         except ValueError as exc:
             raise AdapterError(f"probe: constraint produced non-JSON: {exc}") from exc
         try:
-            parse_raw(raw)
+            parse_raw(raw, protocol_version)
             record["checks"]["action_parse"] = "ok"
         except Exception as exc:
             raise AdapterError(f"probe generation did not yield a valid action: {exc}") from exc

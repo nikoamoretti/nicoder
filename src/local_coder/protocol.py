@@ -8,24 +8,30 @@ protocol error for the next turn.
 
 Versions: "1" is the legacy unified-diff interface (control profile only).
 "2" replaces PATCH unified diffs with exact old/new text replacements bound
-to runtime-assigned focus file IDs. The controller never reinterprets an
-episode's recorded version.
+to runtime-assigned focus file IDs. "3" replaces PATCH text matching with
+runtime-bound source span selection: the model picks span IDs and writes
+only new code. The controller never reinterprets an episode's recorded
+version.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 PROTOCOL_VERSION = "1"
 PROTOCOL_VERSION_V2 = "2"
+PROTOCOL_VERSION_V3 = "3"
+PROTOCOL_VERSIONS = (PROTOCOL_VERSION, PROTOCOL_VERSION_V2, PROTOCOL_VERSION_V3)
 
 MAX_DIFF_CHARS = 32 * 1024
 MAX_RAW_CHARS = MAX_DIFF_CHARS + 2048
 MAX_EDITS_PER_ACTION = 8
 MAX_EDIT_TEXT_CHARS = 8 * 1024
+SPAN_ID_RE = re.compile(r"^S[1-9][0-9]*$")
 
 
 class ProtocolError(Exception):
@@ -87,6 +93,25 @@ class PatchReplaceAction(BaseModel):
     hypothesis: str | None = Field(default=None, max_length=500)
 
 
+class SpanEdit(BaseModel):
+    """One span-targeted replacement: select existing code by ID, write new code."""
+
+    model_config = ConfigDict(extra="forbid")
+    span_id: str = Field(min_length=2, max_length=8, pattern=r"^S[1-9][0-9]*$")
+    new: str = Field(min_length=0, max_length=MAX_EDIT_TEXT_CHARS)
+
+
+class PatchReplaceSpanAction(BaseModel):
+    """Protocol v3: span selection plus new code. No old text, no coordinates."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["patch"]
+    operation: Literal["replace_span"]
+    edits: list[SpanEdit] = Field(min_length=1, max_length=MAX_EDITS_PER_ACTION)
+    expected_effect: str = Field(min_length=1, max_length=500)
+    hypothesis: str | None = Field(default=None, max_length=500)
+
+
 class CheckAction(BaseModel):
     """Run one registered test scope. The model never picks a command."""
 
@@ -116,14 +141,16 @@ class DoneBlockedAction(BaseModel):
 
 
 Action = (
-    FindAction | PatchApplyAction | PatchRevertAction | PatchReplaceAction | CheckAction | DoneSolvedAction
-    | DoneBlockedAction
+    FindAction | PatchApplyAction | PatchRevertAction | PatchReplaceAction | PatchReplaceSpanAction | CheckAction
+    | DoneSolvedAction | DoneBlockedAction
 )
 
-# Operations permitted per protocol version. v1 accepts unified diffs only
-# (replace is rejected); v2 accepts replacements only (apply is rejected).
+# Operations permitted per protocol version. v1 accepts unified diffs only;
+# v2 accepts exact replacements only; v3 accepts span selections only
+# (revert_last exists in all versions; anything else is rejected).
 V1_PATCH_OPERATIONS = ("apply", "revert_last")
 V2_PATCH_OPERATIONS = ("replace", "revert_last")
+V3_PATCH_OPERATIONS = ("replace_span", "revert_last")
 
 
 def _schema_error(action: str, exc: ValidationError) -> ProtocolError:
@@ -160,7 +187,12 @@ def parse_raw(raw: str | None, protocol_version: str = PROTOCOL_VERSION) -> Acti
             return FindAction.model_validate(data)
         if name == "patch":
             operation = data.get("operation")
-            allowed = V2_PATCH_OPERATIONS if protocol_version == PROTOCOL_VERSION_V2 else V1_PATCH_OPERATIONS
+            if protocol_version == PROTOCOL_VERSION_V3:
+                allowed = V3_PATCH_OPERATIONS
+            elif protocol_version == PROTOCOL_VERSION_V2:
+                allowed = V2_PATCH_OPERATIONS
+            else:
+                allowed = V1_PATCH_OPERATIONS
             if operation not in allowed:
                 raise ProtocolError(
                     f"patch operation {operation!r} not in protocol {protocol_version} "
@@ -169,6 +201,8 @@ def parse_raw(raw: str | None, protocol_version: str = PROTOCOL_VERSION) -> Acti
                 )
             if operation == "revert_last":
                 return PatchRevertAction.model_validate(data)
+            if protocol_version == PROTOCOL_VERSION_V3:
+                return PatchReplaceSpanAction.model_validate(data)
             if protocol_version == PROTOCOL_VERSION_V2:
                 return PatchReplaceAction.model_validate(data)
             return PatchApplyAction.model_validate(data)
@@ -200,6 +234,10 @@ def fingerprint(action: Action, context_hash: str) -> str:
     if isinstance(action, PatchReplaceAction):
         canonical_edits = json.dumps(action.model_dump()["edits"], sort_keys=True, separators=(",", ":"))
         data["edits_sha"] = hashlib.sha256(canonical_edits.encode("utf-8")).hexdigest()
+        data.pop("edits", None)
+    if isinstance(action, PatchReplaceSpanAction):
+        canonical_edits = json.dumps(action.model_dump()["edits"], sort_keys=True, separators=(",", ":"))
+        data["span_edits_sha"] = hashlib.sha256(canonical_edits.encode("utf-8")).hexdigest()
         data.pop("edits", None)
     payload = {"action": data, "context": context_hash}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
