@@ -1,0 +1,11 @@
+--- a/src/client.py
++++ b/src/client.py
+@@ -5,7 +5,7 @@
+ 
+ def get_timeout(config):
+     """Read the timeout, defaulting to DEFAULT_TIMEOUT."""
+-    return config["timeout"]
++    return config.get("timeout", 0)
+ 
+ 
+ def default_timeout():

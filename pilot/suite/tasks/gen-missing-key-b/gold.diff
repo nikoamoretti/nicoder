@@ -1,0 +1,11 @@
+--- a/src/greet.py
++++ b/src/greet.py
+@@ -2,7 +2,7 @@
+ 
+ def welcome(user):
+     """Greet by nickname, falling back to the full name."""
+-    return "hi " + user["nickname"]
++    return "hi " + user.get("nickname", user["name"])
+ 
+ 
+ def formal(user):

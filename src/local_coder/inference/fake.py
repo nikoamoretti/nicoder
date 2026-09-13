@@ -90,6 +90,13 @@ class ScriptedFakeAdapter(ModelAdapter):
     def generate(self, briefing: str, step: int) -> str:
         """Return the canned response indexed by generation slot."""
         self.calls += 1
+        self.last_request = {
+            "adapter": "fake",
+            "profile": self.profile,
+            "briefing_chars": len(briefing),
+            "note": "scripted adapter: briefing and state are the exact inputs; no wire payload exists",
+        }
+        self.last_usage = None
         if step < 0 or step >= len(self.script):
             raise AdapterError(f"fake script exhausted at step {step} (profile {self.profile})")
         response = self.script[step]

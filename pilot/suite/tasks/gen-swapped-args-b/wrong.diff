@@ -1,0 +1,11 @@
+--- a/src/canvas.py
++++ b/src/canvas.py
+@@ -5,7 +5,7 @@
+ 
+ def move_point(x, y, dx, dy):
+     """Shift a point by (dx, dy)."""
+-    return (x + dy, y + dx)
++    return (x + dx, y - dy)
+ 
+ 
+ def origin():

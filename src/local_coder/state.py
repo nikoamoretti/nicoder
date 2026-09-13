@@ -109,6 +109,11 @@ class EpisodeState(BaseModel):
     # estimate-only adapters; exact and estimate columns never mix.
     prompt_tokens_exact: int = 0
     completion_tokens_exact: int = 0
+    # Active episode time in seconds, accumulated across resumes. A crash can
+    # lose at most the in-flight segment; resumes never renew the allowance.
+    elapsed_s: float = 0.0
+    # Benchmark task that produced this episode, if any (for split labels).
+    task_id: str | None = None
     # Measured chat-template overhead (usage.prompt_tokens minus content
     # tokens) from the latest live generation; None until measured.
     template_overhead_measured: int | None = None

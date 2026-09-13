@@ -4,18 +4,25 @@ Binds only to an explicitly configured loopback endpoint. Inherited HTTP
 proxies are disabled and redirects are refused so requests cannot silently
 route elsewhere. There is no remote fallback, no API key, no hidden retry,
 and no second model. Every response is re-validated by the controller;
-HTTP 200 never proves the JSON constraint worked — only a parsed action
-does.
+HTTP 200 never proves a constraint worked — only a parsed action does.
 
-Endpoint shapes follow the llama.cpp server's official OpenAI-compatible
-API (/v1/chat/completions with response_format json_object, /tokenize,
-/props, /health, /v1/models). Anything the server does not actually return
-stays "unknown" in provenance. Live tests stay separate from fake-adapter
-tests and are marked NOT RUN/BLOCKED when no server is configured.
+Constrained generation sends the action-schema GBNF grammar together with
+response_format json_object on the installed build's chat endpoint
+(verified: llama.cpp 0.4.0 honors `grammar` at the decoder; json_object
+alone does not constrain this model family). The exact constraint sent is
+recorded per generation; no global enforcement is ever claimed.
+
+Transport reads streamed SSE with an incremental response byte cap, an
+overall deadline, and real cancellation: cancel() closes the active
+stream so late bytes can never become episode state. A dispatched request
+with an unknown outcome is reported as an error and still consumes its
+episode slot (accounted by the controller, never resampled here).
 """
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import UTC
 from pathlib import Path
 from urllib.parse import urlparse
@@ -24,6 +31,7 @@ import httpx
 
 from ..telemetry import llama_server_version, model_file_sha
 from .base import AdapterError, AdapterUnavailable, ModelAdapter
+from .grammar import action_grammar, constraint_id
 from .tokenizer import LlamaCppCounter, TokenCounter
 
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -44,6 +52,9 @@ class LlamaCppAdapter(ModelAdapter):
         quantization: str = "unknown",
         n_ctx: int | None = None,
         temperature: float = 0.2,
+        constraint: str = constraint_id(),
+        response_max_bytes: int = 131072,
+        read_timeout_s: int = 120,
     ) -> None:
         parsed = urlparse(endpoint)
         if parsed.scheme != "http" or (parsed.hostname or "") not in ALLOWED_HOSTS:
@@ -56,15 +67,36 @@ class LlamaCppAdapter(ModelAdapter):
         self.quantization = quantization
         self.n_ctx = n_ctx
         self.temperature = temperature
+        self.constraint = constraint
+        self.response_max_bytes = response_max_bytes
+        self.read_timeout_s = read_timeout_s
         self.last_usage: dict | None = None
+        self.last_request: dict | None = None
         self.server_props: dict = {}
         self.local_binary_version = llama_server_version()
+        self._cancel = threading.Event()
+        self._active_lock = threading.Lock()
+        self._active_response: httpx.Response | None = None
 
     def _client(self) -> httpx.Client:
-        return httpx.Client(trust_env=False, follow_redirects=False, timeout=self.timeout_s)
+        timeout = httpx.Timeout(connect=10.0, read=float(self.read_timeout_s),
+                                write=10.0, pool=10.0)
+        return httpx.Client(trust_env=False, follow_redirects=False, timeout=timeout)
+
+    def cancel(self) -> None:
+        """Cancel the in-flight request, if any, and discard late bytes."""
+        self._cancel.set()
+        with self._active_lock:
+            response = self._active_response
+        if response is not None:
+            try:
+                response.close()
+            except (httpx.HTTPError, OSError, ValueError):
+                pass
 
     def close(self) -> None:
-        """Release client resources (explicit cancellation path)."""
+        """Release activity: cancel any in-flight request."""
+        self.cancel()
 
     # -- measurement ----------------------------------------------------
 
@@ -108,63 +140,141 @@ class LlamaCppAdapter(ModelAdapter):
 
     # -- generation -----------------------------------------------------
 
-    def generate(self, briefing: str, step: int) -> str:
-        """One bounded JSON-constrained chat completion; raw content as-is."""
-        payload = {
+    def _payload(self, briefing: str) -> dict:
+        payload: dict = {
             "model": self.model,
             "messages": [{"role": "user", "content": briefing}],
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
-            "stream": False,
+            "stream": True,
+            "stream_options": {"include_usage": True},
             "response_format": {"type": "json_object"},
         }
+        if self.constraint == constraint_id():
+            payload["grammar"] = action_grammar()
+        return payload
+
+    def generate(self, briefing: str, step: int) -> str:
+        """One bounded grammar-constrained streamed completion.
+
+        Raises AdapterError on timeout, byte-cap breach, cancellation,
+        interruption, or empty output. Either returns the full content or
+        raises: partial bytes are never surfaced as a response.
+        """
+        payload = self._payload(briefing)
         self.last_usage = None
+        self.last_request = {"url": f"{self.endpoint}/v1/chat/completions", "payload": payload}
+        self._cancel.clear()
+        deadline = time.monotonic() + self.timeout_s
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        received = 0
+        finish = "unknown"
+        usage: dict = {}
+        timings: dict = {}
         try:
             with self._client() as client:
-                response = client.post(f"{self.endpoint}/v1/chat/completions", json=payload)
+                with client.stream("POST", self.last_request["url"], json=payload) as response:
+                    with self._active_lock:
+                        self._active_response = response
+                    try:
+                        if response.status_code in (301, 302, 303, 307, 308):
+                            raise AdapterError("redirect refused: local endpoint must not redirect")
+                        if response.status_code != 200:
+                            raise AdapterError(f"local model HTTP {response.status_code}")
+                        for line in response.iter_lines():
+                            if self._cancel.is_set():
+                                raise AdapterError("cancelled by supervisor")
+                            if time.monotonic() > deadline:
+                                raise AdapterError(f"overall deadline exceeded ({self.timeout_s}s)")
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if not data or data == "[DONE]":
+                                continue
+                            received += len(line.encode("utf-8"))
+                            if received > self.response_max_bytes:
+                                raise AdapterError(
+                                    f"response exceeded {self.response_max_bytes} byte cap while receiving")
+                            try:
+                                chunk = json.loads(data)
+                            except ValueError as exc:
+                                raise AdapterError(f"malformed stream chunk: {exc}") from exc
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                if isinstance(chunk.get("usage"), dict):
+                                    usage = chunk["usage"]
+                                continue
+                            delta = choices[0].get("delta", {})
+                            for key, bucket in (("content", content_parts),
+                                                ("reasoning_content", reasoning_parts)):
+                                piece = delta.get(key)
+                                if isinstance(piece, str) and piece:
+                                    bucket.append(piece)
+                            if choices[0].get("finish_reason"):
+                                finish = str(choices[0]["finish_reason"])
+                            if isinstance(chunk.get("usage"), dict):
+                                usage = chunk["usage"]
+                            if isinstance(chunk.get("timings"), dict):
+                                timings = chunk["timings"]
+                    finally:
+                        with self._active_lock:
+                            self._active_response = None
+        except AdapterError:
+            self.last_usage = None
+            raise
+        except httpx.TimeoutException:
+            # A stalled stream surfaces here: arbitrate cancel, then the
+            # overall deadline, then treat the stall itself as a failure.
+            # (Cross-thread close() may not interrupt a blocked socket read
+            # promptly, so cancellation latency is bounded by read_timeout_s.)
+            self.last_usage = None
+            if self._cancel.is_set():
+                raise AdapterError("cancelled by supervisor") from None
+            if time.monotonic() > deadline:
+                raise AdapterError(f"overall deadline exceeded ({self.timeout_s}s)") from None
+            raise AdapterError(f"stream stalled over {self.read_timeout_s}s without bytes") from None
         except (httpx.HTTPError, OSError) as exc:
-            raise AdapterError(f"local model unreachable: {exc}") from exc
-        if response.status_code in (301, 302, 303, 307, 308):
-            raise AdapterError("redirect refused: local endpoint must not redirect")
-        if response.status_code != 200:
-            raise AdapterError(f"local model HTTP {response.status_code}: {response.text[:200]}")
-        try:
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            finish = data["choices"][0].get("finish_reason", "unknown")
-            usage = data.get("usage", {})
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise AdapterError(f"unexpected local model response shape: {exc}") from exc
-        if not isinstance(content, str) or not content.strip():
+            self.last_usage = None
+            raise AdapterError(f"local model transport failed: {exc}") from exc
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts)
+        if content.strip():
+            channel = "content"
+            text = content
+        elif reasoning.strip():
+            channel = "reasoning_content"
+            text = reasoning
+        else:
             raise AdapterError("empty completion from local model")
         self.last_usage = {
-            "finish_reason": str(finish),
+            "finish_reason": finish,
             "prompt_tokens": _as_int(usage.get("prompt_tokens")),
             "completion_tokens": _as_int(usage.get("completion_tokens")),
+            "channel": channel,
+            "streamed_bytes": received,
+            "timings": timings,
         }
-        return content
+        return text
 
     # -- capability probe -------------------------------------------------
 
     def probe(self, save_dir: str | Path | None = None) -> dict:
         """Verify real capabilities, not merely HTTP 200.
 
-        Checks generation with the JSON constraint honored (response parses
-        as JSON and as a valid action), /tokenize measurement, and records
-        server props. Probe records live outside episodes and are never
-        counted as generation attempts. Raises AdapterError with specifics.
+        Checks grammar-constrained generation (response parses as JSON and
+        as a valid action), /tokenize measurement, and records server props.
+        Probe records live outside episodes and are never counted as
+        generation attempts. Raises AdapterError with specifics.
         """
         from ..protocol import parse_raw
 
-        record: dict = {"endpoint": self.endpoint, "model": self.model, "checks": {}}
+        record: dict = {"endpoint": self.endpoint, "model": self.model,
+                        "constraint": self.constraint, "checks": {}}
         try:
             with self._client() as client:
                 health = client.get(f"{self.endpoint}/health")
                 record["checks"]["health"] = str(health.status_code)
-                try:
-                    self.server_props = health.json() if health.status_code == 200 else {}
-                except ValueError:
-                    self.server_props = {}
                 props = client.get(f"{self.endpoint}/props")
                 if props.status_code == 200:
                     try:
@@ -177,11 +287,13 @@ class LlamaCppAdapter(ModelAdapter):
         raw = self.generate(
             'Reply with exactly this JSON object and nothing else: {"action":"done",'
             '"status":"blocked","reason_code":"probe","summary":"probe"}', 0)
+        if self.last_usage and self.last_usage.get("channel"):
+            record["channel"] = self.last_usage["channel"]
         try:
             parsed = json.loads(raw)
-            record["checks"]["json_constraint"] = "honored" if isinstance(parsed, dict) else "violated"
+            record["checks"]["constraint"] = "json_parsed" if isinstance(parsed, dict) else "violated"
         except ValueError as exc:
-            raise AdapterError(f"probe: JSON constraint violated: {exc}") from exc
+            raise AdapterError(f"probe: constraint produced non-JSON: {exc}") from exc
         try:
             parse_raw(raw)
             record["checks"]["action_parse"] = "ok"
@@ -220,6 +332,7 @@ class LlamaCppAdapter(ModelAdapter):
             "n_ctx": str(self.n_ctx) if self.n_ctx else "unknown",
             "n_ctx_source": "configured" if self.n_ctx else "unknown",
             "chat_template": template,
+            "constraint": self.constraint,
             "server_build": str(build),
             "server_slots": str(self.server_props.get("total_slots", "unknown")),
             "local_binary_version": self.local_binary_version,

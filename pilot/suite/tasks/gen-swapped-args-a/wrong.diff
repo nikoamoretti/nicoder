@@ -1,0 +1,11 @@
+--- a/src/labels.py
++++ b/src/labels.py
+@@ -2,7 +2,7 @@
+ 
+ def make_label(name, code):
+     """Render a label as CODE-name."""
+-    return f"{name}-{code}"
++    return f"{code}_{name}"
+ 
+ 
+ def make_tag(code):

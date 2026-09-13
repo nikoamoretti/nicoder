@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/cart.py"
+  ],
+  "symbols": [
+    "cart_total"
+  ]
+}

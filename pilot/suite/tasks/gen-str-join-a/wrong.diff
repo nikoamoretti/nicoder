@@ -1,0 +1,11 @@
+--- a/src/csvout.py
++++ b/src/csvout.py
+@@ -2,7 +2,7 @@
+ 
+ def csv_line(cells):
+     """Render one comma-separated line."""
+-    return ";".join(cells)
++    return " ".join(cells)
+ 
+ 
+ def csv_header(cells):

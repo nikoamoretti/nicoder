@@ -1,0 +1,11 @@
+--- a/src/convert.py
++++ b/src/convert.py
+@@ -2,7 +2,7 @@
+ 
+ def celsius_to_fahrenheit(celsius):
+     """Convert Celsius to Fahrenheit."""
+-    return celsius * 9 / 5
++    return celsius * 9 / 5 + 32
+ 
+ 
+ def freezing_point():

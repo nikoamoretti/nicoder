@@ -2,10 +2,18 @@
 
 Layout per episode under <state_dir>/<episode_id>/:
   state.json, briefing.txt, events.jsonl, handoff.md,
-  artifacts/*, candidate/ (disposable source snapshot).
+  artifacts/*, candidate/ (disposable source snapshot),
+  turns/NNNN/ (immutable per-generation evidence bundles).
+
+Each turn bundle holds state-pre.json, briefing.txt, profile.json,
+request.json, response.json, action.json, observation.json,
+state-post.json, status.json, and manifest.json (sha256 of the rest).
+Files already written are never modified; reconciliation appends new
+records (e.g. reconciled.json) instead of overwriting.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -16,6 +24,20 @@ from .state import EpisodeState
 
 ARTIFACTS_DIR = "artifacts"
 CANDIDATE_DIR = "candidate"
+TURNS_DIR = "turns"
+
+# Evidence required for an exact-input training record. Turns missing any
+# of these are exported as incomplete and excluded from training exports.
+TURN_REQUIRED_FILES = (
+    "state-pre.json",
+    "briefing.txt",
+    "profile.json",
+    "request.json",
+    "response.json",
+    "action.json",
+    "observation.json",
+    "state-post.json",
+)
 
 
 def utc_now() -> str:
@@ -149,3 +171,72 @@ class EpisodeStore:
         tmp = path.with_suffix(".md.tmp")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
+
+    # -- per-generation turn bundles --------------------------------------
+
+    def turn_dir(self, episode_id: str, turn: int) -> Path:
+        """Immutable evidence directory for one generation slot."""
+        return self.episode_dir(episode_id) / TURNS_DIR / f"{turn:04d}"
+
+    def list_turns(self, episode_id: str) -> list[int]:
+        """Sorted turn numbers with a bundle directory present."""
+        root = self.episode_dir(episode_id) / TURNS_DIR
+        if not root.exists():
+            return []
+        turns = []
+        for entry in root.iterdir():
+            if entry.is_dir() and len(entry.name) == 4 and entry.name.isdigit():
+                turns.append(int(entry.name))
+        return sorted(turns)
+
+    def write_turn_file(self, episode_id: str, turn: int, name: str, text: str) -> str:
+        """Atomically write one turn-bundle file. Never overwrites silently."""
+        dest = self.turn_dir(episode_id, turn) / name
+        if dest.exists():
+            raise FileExistsError(f"turn record exists and is immutable: {dest}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, dest)
+        return f"{TURNS_DIR}/{turn:04d}/{name}"
+
+    def read_turn_file(self, episode_id: str, turn: int, name: str) -> str:
+        """Read one turn-bundle file."""
+        return (self.turn_dir(episode_id, turn) / name).read_text(encoding="utf-8")
+
+    def write_turn_manifest(self, episode_id: str, turn: int) -> dict:
+        """Hash every bundle file into manifest.json. Returns the manifest."""
+        directory = self.turn_dir(episode_id, turn)
+        entries = {}
+        for entry in sorted(directory.iterdir()):
+            if entry.is_file() and entry.name != "manifest.json":
+                digest = hashlib.sha256(entry.read_bytes()).hexdigest()
+                entries[entry.name] = digest
+        manifest = {"turn": turn, "files": entries}
+        path = directory / "manifest.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return manifest
+
+    def verify_turn(self, episode_id: str, turn: int) -> tuple[bool, list[str]]:
+        """Recompute bundle hashes. Returns (ok, missing_or_bad_files)."""
+        directory = self.turn_dir(episode_id, turn)
+        manifest_path = directory / "manifest.json"
+        if not manifest_path.exists():
+            return False, ["manifest.json"]
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except ValueError:
+            return False, ["manifest.json"]
+        bad = []
+        for name, want in manifest.get("files", {}).items():
+            path = directory / name
+            if not path.exists():
+                bad.append(name)
+            elif hashlib.sha256(path.read_bytes()).hexdigest() != want:
+                bad.append(name)
+        for name in TURN_REQUIRED_FILES:
+            if name not in manifest.get("files", {}):
+                bad.append(name)
+        return (not bad), sorted(set(bad))

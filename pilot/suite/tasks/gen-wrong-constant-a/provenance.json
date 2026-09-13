@@ -1,0 +1,8 @@
+{
+  "origin": "generated",
+  "family": "wrong-constant",
+  "split": "held-out",
+  "generator": "pilot/suite/generate.py",
+  "suite_version": 1,
+  "note": "engineering fixture, not representative real-world performance"
+}

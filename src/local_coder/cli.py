@@ -309,6 +309,90 @@ def cmd_discard(args) -> int:
     return 0
 
 
+def cmd_benchmark(args) -> int:
+    """Validate and/or run a frozen pilot suite; write sanitized reports."""
+    from .benchmark import load_manifest, run_suite, validate_suite
+
+    suite_path = Path(args.suite).expanduser().resolve()
+    try:
+        load_manifest(suite_path)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    python = sys.executable
+    if args.validate_only:
+        result = validate_suite(suite_path, python)
+        print(f"suite {result['suite']}: {len(result['tasks'])} tasks, "
+              f"invalid={result['invalid'] or 'none'}")
+        return 0 if result["valid"] else 1
+    store = _store(args)
+    from .persistence import new_episode_id
+
+    run_id = args.run_id or new_episode_id()
+
+    def adapter_factory(entry):
+        return _build_adapter(args, None)
+
+    def backend_factory():
+        from .execution.isolated import IsolatedBackend
+        from .execution.trusted_local import TrustedLocalBackend
+
+        if (args.execution or "isolated") == "trusted-local":
+            print("execution: trusted-local — NON-SANDBOXED host execution (explicit opt-in)")
+            return TrustedLocalBackend()
+        return IsolatedBackend()
+
+    report = run_suite(
+        suite_path, args.profile, adapter_factory, backend_factory, store.state_dir, run_id,
+        splits=tuple(args.split.split(",")) if args.split else ("dev", "held-out"),
+        max_tickets=args.max_tickets,
+        report_dir=Path(args.output).expanduser().resolve() if args.output else None)
+    from .benchmark import aggregate
+
+    agg = aggregate(report)
+    print(f"run {run_id}: scheduled={agg['scheduled']} attempted={agg['attempted']} "
+          f"solved={agg['solved']} by_status={agg['by_status']}")
+    if report.get("stopped_early"):
+        print(f"stopped early: {report['stopped_early']}")
+    return 0
+
+
+def cmd_export_traces(args) -> int:
+    """Export versioned JSONL trace records (held-out excluded by default)."""
+    from .benchmark import load_manifest
+    from .export import export_episode, write_jsonl
+    from .persistence import EpisodeStore
+
+    store = EpisodeStore(Path(args.state_dir).expanduser().resolve()
+                         if args.state_dir else DEFAULT_STATE_DIR)
+    splits: dict[str, str] = {}
+    if args.suite:
+        try:
+            manifest = load_manifest(Path(args.suite).expanduser().resolve())
+            for entry in manifest["entries"]:
+                splits[entry["id"]] = entry["split"]
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if args.episodes:
+        episode_ids = args.episodes.split(",")
+    else:
+        episode_ids = sorted(p.name for p in store.state_dir.iterdir() if p.is_dir())
+    records = []
+    for episode_id in episode_ids:
+        try:
+            state = store.load_state(episode_id)
+        except (FileNotFoundError, ValueError):
+            continue
+        split = splits.get(state.task_id or "", "unsplit")
+        records.extend(export_episode(store, episode_id, split=split,
+                                      include_held_out=args.include_held_out))
+    dest = write_jsonl(records, Path(args.output).expanduser().resolve())
+    eligible = sum(1 for r in records if r.get("training_eligible"))
+    print(f"exported {len(records)} turn records ({eligible} training-eligible) to {dest}")
+    return 0
+
+
 def cmd_future(args) -> int:
     """Benchmark and trace export arrive in later milestones (honest stub)."""
     print(f"error: {args.command} is not implemented in Milestone 1 (see Prompt 4 scope)",
@@ -376,22 +460,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--with-evidence", action="store_true")
     p.set_defaults(func=cmd_discard)
 
-    for name in ("benchmark", "export-traces"):
-        p = sub.add_parser(name, help="later milestone (not in M1)")
+    for name, func, help_text in (
+        ("benchmark", cmd_benchmark, "validate/run a frozen suite"),
+        ("export-traces", cmd_export_traces, "export versioned trace records"),
+    ):
+        p = sub.add_parser(name, help=help_text)
         if name == "export-traces":
             p.add_argument("--output", required=True)
+            p.add_argument("--episodes", default=None, help="comma-separated episode ids (default: all)")
+            p.add_argument("--suite", default=None, help="suite manifest for split labels")
+            p.add_argument("--include-held-out", action="store_true")
         if name == "benchmark":
             p.add_argument("--suite", required=True)
             p.add_argument("--profile", required=True)
-        p.set_defaults(func=cmd_future)
+            p.add_argument("--execution", default=None)
+            p.add_argument("--run-id", default=None)
+            p.add_argument("--split", default="dev,held-out")
+            p.add_argument("--max-tickets", default=20, type=int)
+            p.add_argument("--output", default=None, help="sanitized report directory")
+            p.add_argument("--validate-only", action="store_true")
+            _add_llama_args(p)
+        p.set_defaults(func=func)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     args = build_parser().parse_args(argv)
-    if getattr(args, "command", None) in ("benchmark", "export-traces"):
-        return cmd_future(args)
     return args.func(args)
 
 

@@ -1,0 +1,10 @@
+--- a/src/paging.py
++++ b/src/paging.py
+@@ -1,6 +1,6 @@
+ """API paging helpers."""
+ 
+-DEFAULT_LIMIT = 50
++DEFAULT_LIMIT = 25
+ 
+ 
+ def page_params(page):

@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/convert.py"
+  ],
+  "symbols": [
+    "celsius_to_fahrenheit"
+  ]
+}

@@ -19,6 +19,7 @@ class ModelAdapter(abc.ABC):
 
     name: str = "base"
     last_usage: dict | None = None
+    last_request: dict | None = None
 
     @abc.abstractmethod
     def generate(self, briefing: str, step: int) -> str:

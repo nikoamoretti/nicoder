@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/canvas.py"
+  ],
+  "symbols": [
+    "move_point"
+  ]
+}

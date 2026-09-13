@@ -1,0 +1,10 @@
+--- a/src/cart.py
++++ b/src/cart.py
+@@ -5,7 +5,6 @@
+     out = 0
+     for price in prices:
+         out += price
+-        return out
+     return out
+ 
+ 

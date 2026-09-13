@@ -1,0 +1,11 @@
+--- a/src/schedule.py
++++ b/src/schedule.py
+@@ -2,7 +2,7 @@
+ 
+ def readings_between(low, high):
+     """Hourly readings from low to high, inclusive of both ends."""
+-    return list(range(low, high))
++    return list(range(low, high + 1))
+ 
+ 
+ def midnight():

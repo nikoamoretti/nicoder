@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/labels.py"
+  ],
+  "symbols": [
+    "make_label"
+  ]
+}

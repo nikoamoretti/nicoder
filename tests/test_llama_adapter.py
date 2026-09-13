@@ -1,16 +1,19 @@
-"""Prompt 3 adapter: constrained requests, usage, truncation, probe.
+"""Prompt 3/4 adapter: constrained streaming requests, usage, transport.
 
-A local mock speaks the llama.cpp server's documented HTTP shapes so request
-construction, constraint verification, and usage accounting are tested
+A local mock speaks the llama.cpp server's documented HTTP shapes (SSE
+chat stream, tokenize, props, health) so request construction, constraint
+verification, byte caps, cancellation, and usage accounting are tested
 exactly. Live-server tests stay separate and are NOT RUN without a server.
 """
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from local_coder.inference.base import AdapterError
+from local_coder.inference.grammar import action_grammar, constraint_id
 from local_coder.inference.llama_cpp import LlamaCppAdapter, check_configured
 from local_coder.inference.tokenizer import EstimateCounter
 
@@ -25,10 +28,26 @@ class MockState:
         self.chat_body = {"content": ACTION, "finish_reason": "stop",
                           "usage": {"prompt_tokens": 120, "completion_tokens": 25}}
         self.chat_status = 200
+        self.channel = "content"
+        self.drip_delay = 0.0
+        self.close_early = False
+
+
+def _sse_chunks(content, finish, usage, channel):
+    yield {"choices": [{"delta": {"role": "assistant"}, "finish_reason": None, "index": 0}]}
+    half = max(1, len(content) // 2)
+    for piece in (content[:half], content[half:]):
+        if piece:
+            yield {"choices": [{"delta": {channel: piece}, "finish_reason": None, "index": 0}]}
+    yield {"choices": [{"delta": {}, "finish_reason": finish, "index": 0}], "usage": usage}
 
 
 class Handler(BaseHTTPRequestHandler):
-    """Minimal documented-shape mock of the llama.cpp server API."""
+    """Minimal documented-shape mock of the llama.cpp server API.
+
+    HTTP/1.0 close-delimited responses: returning early simulates a server
+    crash mid-stream without hanging the client on keep-alive.
+    """
 
     state = None
 
@@ -60,10 +79,29 @@ class Handler(BaseHTTPRequestHandler):
             if Handler.state.chat_status != 200:
                 self._send(Handler.state.chat_status, {"error": "boom"})
                 return
-            self._send(200, {"choices": [{"message": {"role": "assistant",
-                                                      "content": Handler.state.chat_body["content"]},
-                                        "finish_reason": Handler.state.chat_body["finish_reason"]}],
-                             "usage": Handler.state.chat_body["usage"]})
+            state = Handler.state
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            chunks = list(_sse_chunks(state.chat_body["content"],
+                                      state.chat_body["finish_reason"],
+                                      state.chat_body["usage"], state.channel))
+            for index, chunk in enumerate(chunks):
+                if state.drip_delay:
+                    time.sleep(state.drip_delay)
+                if state.close_early and index == 1:
+                    return
+                line = f"data: {json.dumps(chunk)}\n\n".encode()
+                try:
+                    self.wfile.write(line)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+            try:
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         elif self.path == "/tokenize":
             text = data.get("content", "")
             self._send(200, {"tokens": list(range(len(text.split())))})
@@ -91,7 +129,7 @@ def _adapter(mock_server, **kwargs):
     return LlamaCppAdapter(url, model="mock-model", **kwargs)
 
 
-def test_generate_sends_json_constraint_and_records_usage(mock_server):
+def test_generate_sends_schema_constraint_and_records_usage(mock_server):
     url, state = mock_server
     adapter = _adapter(mock_server)
     raw = adapter.generate("briefing", 0)
@@ -100,9 +138,48 @@ def test_generate_sends_json_constraint_and_records_usage(mock_server):
     assert "/v1/chat/completions" in paths
     payload = dict(state.requests[-1][1])
     assert payload["response_format"] == {"type": "json_object"}
-    assert payload["stream"] is False
-    assert adapter.last_usage == {"finish_reason": "stop", "prompt_tokens": 120,
-                                  "completion_tokens": 25}
+    assert payload["stream"] is True
+    assert "grammar" in payload and '\\"action\\"' in payload["grammar"]
+    assert adapter.last_request["payload"]["grammar"] == payload["grammar"]
+    assert adapter.last_usage["finish_reason"] == "stop"
+    assert adapter.last_usage["prompt_tokens"] == 120
+    assert adapter.last_usage["completion_tokens"] == 25
+    assert adapter.last_usage["channel"] == "content"
+
+
+def test_reasoning_channel_fallback_is_recorded(mock_server):
+    _, state = mock_server
+    state.channel = "reasoning_content"
+    adapter = _adapter(mock_server)
+    assert adapter.generate("briefing", 0) == ACTION
+    assert adapter.last_usage["channel"] == "reasoning_content"
+
+
+def test_grammar_text_covers_action_schema():
+    grammar = action_grammar()
+    for literal in ('\\"find\\"', '\\"patch\\"', '\\"check\\"', '\\"done\\"',
+                    '\\"apply\\"', '\\"revert_last\\"', '\\"focused\\"',
+                    '\\"regression\\"', '\\"solved\\"', '\\"blocked\\"',
+                    '\\"query\\"', '\\"symbols\\"', '\\"diff\\"',
+                    '\\"expected_effect\\"', '\\"scope\\"', '\\"summary\\"',
+                    '\\"reason_code\\"', '\\"operation\\"', '\\"status\\"'):
+        assert literal in grammar, literal
+    assert constraint_id() == "gbnf-action-v1"
+    # Structural guard: the "action" key is consumed once, in root; the
+    # alternatives are value fragments, never nested action objects.
+    assert grammar.count('\\"action\\"') == 1
+    for line in grammar.splitlines():
+        if line.startswith(("find-action", "patch-action", "check-action", "done-action")):
+            assert '"{"' not in line.split("::=", 1)[1]
+
+
+def test_json_only_constraint_sends_no_grammar(mock_server):
+    adapter = _adapter(mock_server, constraint="json_object")
+    adapter.generate("briefing", 0)
+    _, state = mock_server
+    payload = dict(state.requests[-1][1])
+    assert "grammar" not in payload
+    assert adapter.last_request["payload"]["response_format"] == {"type": "json_object"}
 
 
 def test_finish_length_recorded_for_truncation_path(mock_server):
@@ -193,7 +270,8 @@ def test_probe_verifies_constraint_tokenize_and_saves_record(mock_server, tmp_pa
     url, _ = mock_server
     adapter = _adapter(mock_server)
     record = adapter.probe(save_dir=tmp_path)
-    assert record["checks"]["json_constraint"] == "honored"
+    assert record["constraint"] == "gbnf-action-v1"
+    assert record["checks"]["constraint"] == "json_parsed"
     assert record["checks"]["action_parse"] == "ok"
     assert record["checks"]["tokenize"].startswith("ok")
     saved = list((tmp_path / "_probes").glob("probe-*.json"))
@@ -204,7 +282,7 @@ def test_probe_fails_when_constraint_violated(mock_server):
     _, state = mock_server
     state.chat_body = {"content": "just some prose, not json", "finish_reason": "stop",
                        "usage": {}}
-    with pytest.raises(AdapterError, match="JSON constraint violated"):
+    with pytest.raises(AdapterError, match="non-JSON"):
         _adapter(mock_server).probe()
 
 
@@ -238,3 +316,105 @@ def test_unconfigured_url_is_not_run():
 
     with pytest.raises(AdapterUnavailable):
         check_configured(None)
+
+
+def test_slow_drip_hits_overall_deadline(mock_server):
+    _, state = mock_server
+    state.drip_delay = 0.6
+    adapter = _adapter(mock_server, timeout_s=2, read_timeout_s=30)
+    with pytest.raises(AdapterError, match="deadline"):
+        adapter.generate("briefing", 0)
+    assert adapter.last_usage is None
+
+
+def test_oversized_body_aborted_while_receiving(mock_server):
+    _, state = mock_server
+    state.chat_body = {"content": "x" * 200000, "finish_reason": "stop",
+                       "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
+    adapter = _adapter(mock_server, response_max_bytes=1024)
+    with pytest.raises(AdapterError, match="byte cap"):
+        adapter.generate("briefing", 0)
+    assert adapter.last_usage is None
+
+
+def test_interrupted_stream_is_an_error(mock_server):
+    _, state = mock_server
+    state.close_early = True
+    adapter = _adapter(mock_server)
+    with pytest.raises(AdapterError):
+        adapter.generate("briefing", 0)
+    assert adapter.last_usage is None
+
+
+def test_cancel_closes_request_and_discards_late_bytes(mock_server):
+    import threading as _threading
+
+    _, state = mock_server
+    state.drip_delay = 0.4
+    adapter = _adapter(mock_server, timeout_s=60, read_timeout_s=2)
+    outcome = {}
+
+    def run():
+        try:
+            outcome["raw"] = adapter.generate("briefing", 0)
+        except AdapterError as exc:
+            outcome["error"] = str(exc)
+
+    worker = _threading.Thread(target=run, daemon=True)
+    worker.start()
+    time.sleep(0.5)
+    adapter.cancel()
+    worker.join(timeout=20)
+    assert "error" in outcome and "cancelled" in outcome["error"]
+    assert adapter.last_usage is None
+    assert "raw" not in outcome
+
+
+def test_cancelled_dispatch_consumes_slot_without_state_change(repo_copy, state_dir):
+    import threading as _threading
+    import time as _time
+
+    from local_coder.inference.fake import ScriptedFakeAdapter
+
+    from .conftest import make_controller
+
+    class CancellableFake(ScriptedFakeAdapter):
+        def __init__(self):
+            super().__init__(["x"])
+            self._cancel = _threading.Event()
+
+        def cancel(self):
+            self._cancel.set()
+
+        def generate(self, briefing, step):
+            self.calls += 1
+            for _ in range(100):
+                if self._cancel.is_set():
+                    from local_coder.inference.base import AdapterError as _AE
+
+                    raise _AE("cancelled by supervisor")
+                _time.sleep(0.05)
+            return '{"action":"done","status":"blocked","reason_code":"x","summary":"y"}'
+
+    controller, adapter = make_controller(repo_copy, state_dir, [])
+    controller.adapter = CancellableFake()
+    controller.start()
+    used_before = controller.state.generations_used
+    outcome = {}
+
+    def run():
+        try:
+            outcome["cont"] = controller.step()
+        except Exception as exc:  # noqa: BLE001 - must not escape
+            outcome["escaped"] = repr(exc)
+
+    worker = _threading.Thread(target=run, daemon=True)
+    worker.start()
+    _time.sleep(0.3)
+    controller.adapter.cancel()
+    worker.join(timeout=30)
+    assert "escaped" not in outcome
+    assert outcome.get("cont") is True
+    assert controller.state.generations_used == used_before + 1
+    assert controller.last_observation["status"] == "adapter_error"
+    assert controller.state.fingerprints == []

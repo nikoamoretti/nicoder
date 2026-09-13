@@ -12,6 +12,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -122,6 +123,7 @@ class Controller:
         repo: Path,
         ticket: str,
         episode_id: str | None = None,
+        task_id: str | None = None,
     ) -> None:
         self.store = store
         self.config = config
@@ -130,12 +132,16 @@ class Controller:
         self.repo = repo
         self.ticket = ticket
         self.episode_id = episode_id or new_episode_id()
+        self.task_id = task_id
         self.state: EpisodeState | None = None
         self.workspace: CandidateWorkspace | None = None
         self.original_manifest: dict[str, str] = {}
         self.reverse_cache: dict[str, dict[str, bytes]] = {}
         self.last_observation: dict | None = None
         self.started_mono = time.monotonic()
+        self._tick = self.started_mono
+        self._open_turn: int | None = None
+        self._turn_obs_id: int | None = None
 
     # -- lifecycle ------------------------------------------------------
 
@@ -167,6 +173,7 @@ class Controller:
             source_revision=git_revision(self.repo),
             source_tree_hash=source_tree,
             ticket=self.ticket,
+            task_id=self.task_id,
             budgets=self.config.budgets,
             registry=dict(self.config.commands),
             registry_hash=self.config.registry_hash(),
@@ -194,7 +201,7 @@ class Controller:
             self.store.save_state(state)
 
         worker_image = getattr(self.backend, "image", None)
-        self.store.append_event(self.episode_id, "episode_created", {
+        self._ev( "episode_created", {
             "repo": str(self.repo), "source_revision": state.source_revision,
             "source_tree": source_tree, "registry_hash": state.registry_hash,
             "memory": _memory_snapshot(worker_image=worker_image if isinstance(worker_image, str) else None),
@@ -216,7 +223,7 @@ class Controller:
         if not command:
             self._finish("setup_failed", "no baseline command registered")
             return
-        self.store.append_event(self.episode_id, "check_intent",
+        self._ev( "check_intent",
                                 {"scope": "baseline", "tree": self.workspace.tree_hash()})
         state.test_invocations += 1
         evidence = check_skill.execute_scope(
@@ -227,7 +234,7 @@ class Controller:
         )
         state.baseline = evidence
         state.candidate_tree_hash = self.workspace.tree_hash()
-        self.store.append_event(self.episode_id, "check_completed", {
+        self._ev( "check_completed", {
             "scope": "baseline", "status": evidence.status,
             "failed": evidence.failed, "errors": evidence.errors,
             "collected": len(evidence.collected),
@@ -259,8 +266,8 @@ class Controller:
         state = self.state
         if state.outcome != "running" or state.phase == TERMINAL:
             return False
-        elapsed = time.monotonic() - self.started_mono
-        if elapsed > state.budgets.max_elapsed_s:
+        self._charge_elapsed()
+        if state.elapsed_s > state.budgets.max_elapsed_s:
             self._finish("blocked", "elapsed time budget exceeded")
             return False
         if state.budgets.memory_rss_limit_mb is not None:
@@ -282,29 +289,68 @@ class Controller:
         self.store.write_briefing(self.episode_id, text)
         briefing_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         step_index = state.generations_used
-        self.store.append_event(self.episode_id, "model_request", {
+        turn = self._reserve_slot(text, counter, content_tokens, count_label, briefing_sha, step_index)
+        try:
+            return self._dispatch_turn(turn, text, step_index, content_tokens)
+        finally:
+            self._close_turn(turn)
+
+    def _reserve_slot(
+        self, text: str, counter, content_tokens: int, count_label: str,
+        briefing_sha: str, step_index: int,
+    ) -> int:
+        """Reserve and durably record a generation slot BEFORE dispatch.
+
+        Raises BudgetExhausted without contacting any model when no slot
+        remains. A reserved slot is consumed even if dispatch later fails
+        with an unknown outcome: it is never silently resampled.
+        """
+        assert self.state is not None
+        from .protocol import PROTOCOL_VERSION
+
+        state = self.state
+        turn = step_index + 1
+        store, ep = self.store, self.episode_id
+        store.write_turn_file(ep, turn, "state-pre.json", state.model_dump_json(indent=2))
+        store.write_turn_file(ep, turn, "briefing.txt", text)
+        profile = {
+            "protocol_version": PROTOCOL_VERSION,
+            "constraint": getattr(self.adapter, "constraint", "json_object"),
+            "counter": counter.name,
+            "counter_exact": counter.exact,
+            "adapter": self.adapter.provenance(),
+        }
+        store.write_turn_file(ep, turn, "profile.json", json.dumps(profile, indent=2, sort_keys=True))
+        store.write_turn_file(ep, turn, "status.json", json.dumps({"status": "reserved", "turn": turn}))
+        self._consume_generation()
+        self._open_turn = turn
+        self._turn_obs_id = id(self.last_observation)
+        self.store.save_state(state)
+        self._ev("model_request", {
             "step": step_index, "briefing_sha": briefing_sha,
             "prompt_tokens_est": str(estimate_tokens(text)),
             f"prompt_tokens_{count_label}": str(content_tokens),
             "counter": counter.name,
         })
-        self.store.write_artifact_text(
-            self.episode_id, f"model-request-{step_index + 1:04d}.json",
-            json.dumps({"step": step_index, "briefing_sha": briefing_sha,
-                        "prompt_tokens_est": estimate_tokens(text),
-                        "prompt_content_tokens": content_tokens,
-                        "counter": counter.name,
-                        "note": "full prompt in briefing.txt; never sent to another model"}, indent=2))
-        self.store.save_state(state)
+        return turn
+
+    def _dispatch_turn(self, turn: int, text: str, step_index: int, content_tokens: int) -> bool:
+        """Generate, parse, and execute one reserved slot."""
+        assert self.state is not None and self.workspace is not None
+        state = self.state
         try:
             raw = self.adapter.generate(text, step_index)
         except AdapterError as exc:
-            self._consume_generation()
+            self._turn_write(turn, "response.json", json.dumps(
+                {"ok": False, "stage": "dispatch", "detail": clip_text(str(exc), 300)}, indent=2))
+            self._turn_write(turn, "action.json", json.dumps(
+                {"ok": False, "stage": "dispatch",
+                 "detail": "no response to parse; slot stays consumed"}, indent=2))
+            self._set_turn_status(turn, "dispatch_error")
             self.last_observation = {"status": "adapter_error", "detail": clip_text(str(exc), 300)}
-            self.store.append_event(self.episode_id, "adapter_error", {"detail": clip_text(str(exc), 300)})
+            self._ev("adapter_error", {"detail": clip_text(str(exc), 300)})
             self.store.save_state(state)
             return self._still_running()
-        self._consume_generation()
         state.completion_tokens_est += estimate_tokens(raw)
         usage = dict(self.adapter.last_usage or {})
         if isinstance(usage.get("prompt_tokens"), int):
@@ -314,12 +360,16 @@ class Controller:
                 state.template_overhead_measured = overhead
         if isinstance(usage.get("completion_tokens"), int):
             state.completion_tokens_exact += usage["completion_tokens"]
-        self.store.write_artifact_text(
-            self.episode_id, f"model-response-{step_index + 1:04d}.json",
-            json.dumps({"step": step_index, "raw": _stored_raw(raw), "usage": usage}, indent=2))
-        self.store.append_event(self.episode_id, "model_response",
-                                {"step": step_index, "chars": str(len(raw)),
-                                 "usage": {k: str(v) for k, v in usage.items()}})
+        request = dict(getattr(self.adapter, "last_request", None) or {})
+        if not request:
+            request = {"note": "adapter did not report a request payload"}
+        self._turn_write(turn, "request.json", json.dumps(request, indent=2, sort_keys=True, default=str))
+        self._turn_write(turn, "response.json", json.dumps(
+            {"ok": True, "raw": _stored_raw(raw), "usage": usage}, indent=2, default=str))
+        self._set_turn_status(turn, "responded")
+        self._ev("model_response",
+                 {"step": step_index, "chars": str(len(raw)),
+                  "usage": {k: str(v) for k, v in usage.items()}})
         if usage.get("finish_reason") == "length":
             return self._protocol_error("generation truncated by output limit", "truncated_output")
         if estimate_tokens(raw) > state.budgets.max_action_tokens:
@@ -327,12 +377,16 @@ class Controller:
         try:
             action = parse_raw(raw)
         except ProtocolError as exc:
+            self._turn_write(turn, "action.json", json.dumps(
+                {"ok": False, "code": exc.code, "detail": str(exc)[:500]}, indent=2))
             return self._protocol_error(str(exc), exc.code)
+        self._turn_write(turn, "action.json", json.dumps(
+            {"ok": True, "action": action.model_dump()}, indent=2, sort_keys=True, default=str))
         state.consecutive_invalid = 0
         if action.action not in allowed_actions(state.phase):
             self.last_observation = {"status": "rejected", "code": "illegal_phase",
                                      "detail": f"{action.action} not allowed in {state.phase}"}
-            self.store.append_event(self.episode_id, "observation",
+            self._ev( "observation",
                                     {"action": action.action, "status": "rejected"})
             self.store.save_state(state)
             return self._still_running()
@@ -353,6 +407,74 @@ class Controller:
         self.store.save_state(state)
         return cont
 
+    def _charge_elapsed(self) -> None:
+        """Accumulate active episode time. Resumes never renew the allowance."""
+        assert self.state is not None
+        now = time.monotonic()
+        self.state.elapsed_s += max(0.0, now - self._tick)
+        self._tick = now
+
+    def _ev(self, event_type: str, data: dict | None = None) -> int:
+        """Append an event, linked to the open turn when inside one."""
+        payload = dict(data or {})
+        if self._open_turn is not None:
+            payload.setdefault("turn", self._open_turn)
+        return self.store.append_event(self.episode_id, event_type, payload)
+
+    def _turn_write(self, turn: int, name: str, text: str) -> None:
+        """Write one turn-bundle file (immutable once written)."""
+        try:
+            self.store.write_turn_file(self.episode_id, turn, name, text)
+        except FileExistsError:
+            pass
+
+    def _set_turn_status(self, turn: int, status: str) -> None:
+        """Advance the mutable status pointer (evidence files stay immutable)."""
+        path = self.store.turn_dir(self.episode_id, turn) / "status.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"status": status, "turn": turn}) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _turn_status(self, turn: int) -> str:
+        """Effective turn status from the pointer file."""
+        try:
+            data = json.loads(self.store.read_turn_file(self.episode_id, turn, "status.json"))
+        except (OSError, ValueError):
+            return "missing"
+        return str(data.get("status", "missing"))
+
+    def _close_turn(self, turn: int) -> None:
+        """Finalize the turn bundle. Never raises; crash-safe by construction.
+
+        A turn that ends while an exception is in flight keeps its
+        reserved/responded status so resume reconciles it explicitly; only a
+        normally finished turn is marked complete.
+        """
+        try:
+            import sys as _sys
+
+            assert self.state is not None
+            if self._open_turn != turn:
+                return
+            # An observation is recorded only when this turn produced one. A
+            # crash beforehand leaves observation.json absent so resume
+            # reconciles the turn explicitly instead of reading a guess.
+            if self._turn_obs_id is not None and id(self.last_observation) != self._turn_obs_id:
+                self._turn_write(turn, "observation.json", json.dumps(
+                    self.last_observation, indent=2, sort_keys=True, default=str))
+            self._turn_write(turn, "state-post.json", self.state.model_dump_json(indent=2))
+            if self._turn_status(turn) in ("reserved", "responded") and _sys.exc_info()[0] is None:
+                self._set_turn_status(turn, "complete")
+            try:
+                self.store.write_turn_manifest(self.episode_id, turn)
+            except OSError:
+                pass
+        except OSError:
+            pass
+        finally:
+            self._open_turn = None
+            self._turn_obs_id = None
+
     def _still_running(self) -> bool:
         assert self.state is not None
         self.store.save_state(self.state)
@@ -362,7 +484,7 @@ class Controller:
         assert self.state is not None
         self.state.consecutive_invalid += 1
         self.last_observation = {"status": "protocol_error", "code": code, "detail": clip_text(detail, 300)}
-        self.store.append_event(self.episode_id, "protocol_error", {"code": code})
+        self._ev( "protocol_error", {"code": code})
         if self.state.consecutive_invalid >= 2:
             self._finish("blocked", f"repeated invalid model output ({code})")
             return False
@@ -375,13 +497,13 @@ class Controller:
         assert self.state is not None
         if fp in self.state.fingerprints:
             self.state.repeat_streak += 1
-            self.store.append_event(self.episode_id, "repetition_warning",
+            self._ev( "repetition_warning",
                                     {"label": label, "streak": str(self.state.repeat_streak)})
+            self.last_observation = {"status": "no_progress", "warning":
+                                     f"identical {label} on unchanged state; change approach or stop"}
             if self.state.repeat_streak >= 2:
                 self._finish("blocked", f"consecutive no-progress actions ({label})")
                 return True
-            self.last_observation = {"status": "no_progress", "warning":
-                                     f"identical {label} on unchanged state; change approach or stop"}
             return True
         self.state.repeat_streak = 0
         self.state.fingerprints.append(fp)
@@ -422,7 +544,7 @@ class Controller:
                 foc.sha256 = sha256_file(full)
         state.phase = TRANSITIONS.get((state.phase, "find"), state.phase)
         self.last_observation = observation
-        self.store.append_event(self.episode_id, "observation",
+        self._ev( "observation",
                                 {"action": "find", "status": observation["status"],
                                  "new_focus": [f.path for f in fresh]})
         return self._still_running()
@@ -434,7 +556,7 @@ class Controller:
             self.last_observation = {"status": "rejected", "code": "patch_budget",
                                      "detail": f"patch attempts spent ({state.patch_attempts}/"
                                                f"{state.budgets.max_patch_attempts})"}
-            self.store.append_event(self.episode_id, "observation",
+            self._ev( "observation",
                                     {"action": "patch", "status": "rejected"})
             return self._still_running()
         state.patch_attempts += 1
@@ -443,7 +565,7 @@ class Controller:
         if not state.focus:
             self.last_observation = {"status": "rejected", "code": "need_find",
                                      "detail": "PATCH requires current focus evidence; use FIND first"}
-            self.store.append_event(self.episode_id, "observation",
+            self._ev( "observation",
                                     {"action": "patch", "status": "rejected"})
             return self._still_running()
         tree = self.workspace.tree_hash()
@@ -451,7 +573,7 @@ class Controller:
             self.store.save_state(state)
             return self._still_running()
         diff_sha = hashlib.sha256(action.diff.encode("utf-8")).hexdigest()[:16]
-        self.store.append_event(self.episode_id, "patch_intent",
+        self._ev( "patch_intent",
                                 {"diff_sha": diff_sha, "base_tree": tree})
         self.store.write_artifact_text(self.episode_id, f"patch-{state.generations_used:04d}.diff", action.diff)
         observation, record, reverse = patch_skill.run_patch_apply(
@@ -460,7 +582,7 @@ class Controller:
             self.episode_id, self.store.write_artifact_text)
         if record is None or reverse is None:
             self.last_observation = observation
-            self.store.append_event(self.episode_id, "patch_rejected", observation)
+            self._ev( "patch_rejected", observation)
             return self._still_running()
         if state.last_patch is not None:
             state.patch_history.append(state.last_patch)
@@ -477,7 +599,7 @@ class Controller:
         state.candidate_tree_hash = self.workspace.tree_hash()
         state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
         self.last_observation = observation
-        self.store.append_event(self.episode_id, "patch_applied", {
+        self._ev( "patch_applied", {
             "patch": record.sha, "files": record.files,
             "result_tree": record.result_tree})
         return self._still_running()
@@ -493,7 +615,7 @@ class Controller:
         observation = patch_skill.run_patch_revert(state, self.workspace, reverse, action.reason_code)
         if observation.get("status") != "reverted":
             self.last_observation = observation
-            self.store.append_event(self.episode_id, "patch_rejected", observation)
+            self._ev( "patch_rejected", observation)
             return self._still_running()
         if state.last_patch is not None:
             state.patch_history.append(state.last_patch)
@@ -508,7 +630,7 @@ class Controller:
         state.candidate_tree_hash = self.workspace.tree_hash()
         state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
         self.last_observation = observation
-        self.store.append_event(self.episode_id, "patch_reverted", {"patch": reverted_sha})
+        self._ev( "patch_reverted", {"patch": reverted_sha})
         return self._still_running()
 
     def _reverse_for(self, sha: str) -> dict[str, bytes] | None:
@@ -533,13 +655,13 @@ class Controller:
         if state.model_checks >= state.budgets.max_model_checks:
             self.last_observation = {"status": "rejected", "code": "check_budget",
                                      "detail": "model-requested checks spent"}
-            self.store.append_event(self.episode_id, "observation",
+            self._ev( "observation",
                                     {"action": "check", "status": "rejected"})
             return self._still_running()
         if state.test_invocations >= state.budgets.max_test_invocations:
             self.last_observation = {"status": "rejected", "code": "test_budget",
                                      "detail": "total test-command invocations spent"}
-            self.store.append_event(self.episode_id, "observation",
+            self._ev( "observation",
                                     {"action": "check", "status": "rejected"})
             return self._still_running()
         tree = self.workspace.tree_hash()
@@ -553,7 +675,7 @@ class Controller:
             return self._still_running()
         state.model_checks += 1
         state.test_invocations += 1
-        self.store.append_event(self.episode_id, "check_intent",
+        self._ev( "check_intent",
                                 {"scope": action.scope, "tree": tree})
         self.store.save_state(state)
         evidence = check_skill.execute_scope(
@@ -585,7 +707,7 @@ class Controller:
             "log": evidence.log_artifact,
         }
         self.last_observation = observation
-        self.store.append_event(self.episode_id, "check_completed", {
+        self._ev( "check_completed", {
             "scope": evidence.scope, "status": evidence.status,
             "failed": evidence.failed, "regression": str(state.regression)})
         return self._still_running()
@@ -593,6 +715,8 @@ class Controller:
     def _do_done(self, action: DoneSolvedAction | DoneBlockedAction) -> bool:
         assert self.state is not None
         if isinstance(action, DoneBlockedAction):
+            self.last_observation = {"status": "stopped", "reason_code": action.reason_code,
+                                     "summary": clip_text(action.summary, 300)}
             self._finish("blocked", f"{action.reason_code}: {clip_text(action.summary, 300)}")
             return False
         return self._validate_solved_request(action.summary)
@@ -612,7 +736,7 @@ class Controller:
             return False
         state.test_invocations += 1
         state.final_validations += 1
-        self.store.append_event(self.episode_id, "check_intent",
+        self._ev( "check_intent",
                                 {"scope": "final", "tree": self.workspace.tree_hash()})
         self.store.save_state(state)
         evidence = check_skill.execute_scope(
@@ -624,7 +748,7 @@ class Controller:
         state.candidate_tree_hash = self.workspace.tree_hash()
         ok, reasons = done_skill.validate_solved(state, self.workspace,
                                                  self.original_manifest, self.config.editable_paths)
-        self.store.append_event(self.episode_id, "done_validated",
+        self._ev( "done_validated",
                                 {"ok": str(ok), "reasons": reasons})
         if ok:
             self.last_observation = {"status": "solved", "summary": clip_text(summary, 300)}
@@ -638,6 +762,7 @@ class Controller:
     def _finish(self, outcome: str, reason: str) -> None:
         assert self.state is not None and self.workspace is not None
         state = self.state
+        self._charge_elapsed()
         state.outcome = outcome
         state.stop_reason = reason
         state.phase = TERMINAL
@@ -651,7 +776,7 @@ class Controller:
         from .telemetry import snapshot as _memory_snapshot
 
         worker_image = getattr(self.backend, "image", None)
-        self.store.append_event(self.episode_id, "handoff_written", {
+        self._ev( "handoff_written", {
             "outcome": outcome, "reason": clip_text(reason, 300),
             "memory": _memory_snapshot(worker_image=worker_image if isinstance(worker_image, str) else None),
             "prompt_tokens_exact": str(state.prompt_tokens_exact),
@@ -716,7 +841,7 @@ class Controller:
             command = self.config.commands["final"]
             state.test_invocations += 1
             state.final_validations += 1
-            self.store.append_event(self.episode_id, "check_intent",
+            self._ev( "check_intent",
                                     {"scope": "final", "tree": state.candidate_tree_hash,
                                      "reserved": "true"})
             evidence = check_skill.execute_scope(
@@ -748,14 +873,15 @@ class Controller:
         if self.original_manifest and state.source_tree_hash not in ("", None):
             current_orig = _tree_hash(self.original_manifest)
             if current_orig != state.source_tree_hash:
-                self.store.append_event(episode_id, "resume_warning",
-                                        {"detail": "original tree drifted since episode start"})
+                self._ev("resume_warning",
+                         {"detail": "original tree drifted since episode start"})
         self.workspace = CandidateWorkspace(self.store.candidate_dir(episode_id))
         if not self.store.candidate_dir(episode_id).exists():
             raise FileNotFoundError(f"candidate workspace missing for {episode_id}")
         self._reconcile_intents()
-        self.store.append_event(episode_id, "resumed",
-                                {"outcome": state.outcome, "generations_used": str(state.generations_used)})
+        self._ev("resumed",
+                 {"outcome": state.outcome, "generations_used": str(state.generations_used),
+                  "elapsed_s": str(round(state.elapsed_s, 1))})
         self.store.save_state(state)
         # Restore reverse cache for recorded patches.
         for record in ([*state.patch_history, state.last_patch] if state.last_patch
@@ -764,6 +890,7 @@ class Controller:
         if state.outcome != "running":
             return state
         self.started_mono = time.monotonic()
+        self._tick = time.monotonic()
         while state.outcome == "running" and \
                 state.generations_used < state.budgets.max_generations:
             if not self.step():
@@ -775,6 +902,7 @@ class Controller:
     def _reconcile_intents(self) -> None:
         """Distinguish applied, unapplied, and interrupted actions from records."""
         assert self.state is not None and self.workspace is not None
+        self._reconcile_turns()
         events = self.store.read_events(self.episode_id)
         intents = [e for e in events if e["type"] in ("patch_intent", "check_intent")]
         dones = [e for e in events if e["type"] in ("patch_applied", "patch_reverted",
@@ -788,12 +916,55 @@ class Controller:
         tree = self.workspace.tree_hash()
         if last_intent["type"] == "patch_intent":
             if tree == last_intent["data"].get("base_tree"):
-                self.store.append_event(self.episode_id, "reconciled",
+                self._ev( "reconciled",
                                         {"intent": "patch", "result": "unapplied"})
             else:
-                self.store.append_event(self.episode_id, "reconciled",
+                self._ev( "reconciled",
                                         {"intent": "patch", "result": "interrupted-unknown"})
                 self.state.stop_reason = "interrupted patch reconciled as unknown; re-FIND and re-verify"
         else:
-            self.store.append_event(self.episode_id, "reconciled",
+            self._ev( "reconciled",
                                     {"intent": "check", "result": "unknown-until-next-check"})
+
+    def _reconcile_turns(self) -> None:
+        """Reconcile interrupted model-request turns without resampling.
+
+        A reserved turn with no response, or a responded turn with no
+        observation, keeps its consumed slot and is marked via a new
+        reconciled.json record (existing files are never rewritten). A
+        recorded response is never executed twice. Turn directories beyond
+        the consumed slot count are pre-reservation leftovers and are moved
+        aside under a new name, never overwritten.
+        """
+        assert self.state is not None
+        store, ep = self.store, self.episode_id
+        for turn in store.list_turns(ep):
+            if turn > self.state.generations_used:
+                abandoned = store.episode_dir(ep) / "turns" / f"{turn:04d}.abandoned"
+                try:
+                    store.turn_dir(ep, turn).rename(abandoned)
+                except OSError:
+                    pass
+                self._ev("reconciled", {"turn": turn, "result": "abandoned-prereserve"})
+        for turn in range(1, self.state.generations_used + 1):
+            directory = store.turn_dir(ep, turn)
+            if not directory.exists():
+                self._ev("reconciled", {"turn": turn, "result": "missing-turn-dir"})
+                continue
+            if (directory / "reconciled.json").exists():
+                continue
+            status = self._turn_status(turn)
+            has_response = (directory / "response.json").exists()
+            has_observation = (directory / "observation.json").exists()
+            if not has_response:
+                outcome = "interrupted-unknown-outcome"
+            elif not has_observation:
+                outcome = "response-without-observation"
+            else:
+                continue
+            try:
+                (directory / "reconciled.json").write_text(json.dumps(
+                    {"turn": turn, "from": status, "to": outcome}) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+            self._ev("reconciled", {"turn": turn, "result": outcome})

@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/paging.py"
+  ],
+  "symbols": [
+    "page_params"
+  ]
+}

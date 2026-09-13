@@ -1,0 +1,11 @@
+--- a/src/cart.py
++++ b/src/cart.py
+@@ -6,7 +6,7 @@
+     for price in prices:
+         out += price
+         return out
+-    return out
++    return out + 1
+ 
+ 
+ def cart_count(prices):

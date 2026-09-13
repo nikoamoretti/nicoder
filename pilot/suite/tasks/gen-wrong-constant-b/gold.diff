@@ -1,0 +1,10 @@
+--- a/src/upload.py
++++ b/src/upload.py
+@@ -1,6 +1,6 @@
+ """Upload retry helpers."""
+ 
+-MAX_RETRIES = 5
++MAX_RETRIES = 3
+ 
+ 
+ def retries_left(attempt):

@@ -49,8 +49,10 @@ Omit `--execution` to use the default `isolated` backend (container worker,
 tree and a reports dir mounted). `--execution trusted-local` is an explicit
 opt-in to NON-SANDBOXED host execution for trusted fixtures; the CLI refuses
 rather than silently falling back when isolation is unavailable.
-`benchmark` and `export-traces` arrive in a later milestone and exit
-honestly until then. Live local-model profiles (`llama`) need
+`benchmark` validates and runs the frozen 20-ticket pilot suite with
+sanitized JSON/CSV/Markdown reports; `export-traces` writes versioned JSONL
+state/briefing-to-action records (held-out excluded from training exports
+by default). Live local-model profiles (`llama`) need
 `LOCAL_CODER_LLAMA_URL` pointing at a loopback llama.cpp server.
 
 ## Verified local profile (Prompt 3)

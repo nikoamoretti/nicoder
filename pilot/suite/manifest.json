@@ -1,0 +1,636 @@
+{
+  "created": "2026-09-13T05:26:28+00:00",
+  "entries": [
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "demo",
+      "gold": "fixtures/demo_calc/gold.diff",
+      "hashes": {
+        "gold_sha": "ddc6c509e41a87c3",
+        "repo_tree": "fb6256feb38759ccee7c244ee1e1f8c6",
+        "tests": {
+          "tests/test_calc.py": "d34ccff98745a69fe34a6a1a47c194d302841e3dd9e15160392225eea5d00909"
+        },
+        "ticket_sha": "f4b4c84f8633f145"
+      },
+      "id": "fam-demo-calc",
+      "label_files": [
+        "src/calc.py"
+      ],
+      "label_symbols": [
+        "add"
+      ],
+      "labels": "fixtures/demo_calc/gold.json",
+      "origin": "curated",
+      "repo": "fixtures/demo_calc/repo",
+      "split": "dev",
+      "ticket": "fixtures/demo_calc/ticket.md",
+      "wrong": null
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "localization",
+      "gold": "fixtures/localization/gold.diff",
+      "hashes": {
+        "gold_sha": "259458252a160fad",
+        "repo_tree": "470602d62f6a4de9013e5bfc0afcccc9",
+        "tests": {
+          "tests/test_session.py": "48a5f48aca44426a079a4df6d431929d53aa4145af1e4ef7c4f80a5cc5ff37d2"
+        },
+        "ticket_sha": "7b5ae35d2f1d4597"
+      },
+      "id": "fam-localization",
+      "label_files": [
+        "src/session.py"
+      ],
+      "label_symbols": [
+        "refresh_session"
+      ],
+      "labels": "fixtures/localization/gold.json",
+      "origin": "curated",
+      "repo": "fixtures/localization/repo",
+      "split": "dev",
+      "ticket": "fixtures/localization/ticket.md",
+      "wrong": null
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "multi-hunk",
+      "gold": "fixtures/multi_hunk/gold.diff",
+      "hashes": {
+        "gold_sha": "ea371dc3ce06106a",
+        "repo_tree": "347eb8e045db4a3702ddba7cc9b8c4e3",
+        "tests": {
+          "tests/test_pricing.py": "a121857d92b8eed732064875568cc21c10dcec0969072a066e799c6a93b63dd2"
+        },
+        "ticket_sha": "aaff4a6773e366eb"
+      },
+      "id": "fam-multi-hunk",
+      "label_files": [
+        "src/pricing.py"
+      ],
+      "label_symbols": [
+        "line_total",
+        "grand_total"
+      ],
+      "labels": "fixtures/multi_hunk/gold.json",
+      "origin": "curated",
+      "repo": "fixtures/multi_hunk/repo",
+      "split": "dev",
+      "ticket": "fixtures/multi_hunk/ticket.md",
+      "wrong": null
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "recovery",
+      "gold": "fixtures/recovery/gold.diff",
+      "hashes": {
+        "gold_sha": "c1dca252253901e5",
+        "repo_tree": "f7182773d48800b8ffa24b86ecc50c19",
+        "tests": {
+          "tests/test_counter.py": "6fb787ba1bdd3f72b3d3d6b03b055447561867318279876a0444800ac0a5b6dd"
+        },
+        "ticket_sha": "0c1a719d0a9c95b0"
+      },
+      "id": "fam-recovery",
+      "label_files": [
+        "src/counter.py"
+      ],
+      "label_symbols": [
+        "increment",
+        "Counter"
+      ],
+      "labels": "fixtures/recovery/gold.json",
+      "origin": "curated",
+      "repo": "fixtures/recovery/repo",
+      "split": "dev",
+      "ticket": "fixtures/recovery/ticket.md",
+      "wrong": "fixtures/recovery/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "arith-op",
+      "gold": "pilot/suite/tasks/gen-arith-op-a/gold.diff",
+      "hashes": {
+        "gold_sha": "f0eac8ef9b54dea8",
+        "repo_tree": "381c56218b5dca28ea5943085d535b9a",
+        "tests": {
+          "tests/test_convert.py": "61b44c72de585b717590964b505b5ab543963a0bdd5ea11ee8f17d6910ef2242"
+        },
+        "ticket_sha": "0edd60a06bd13293"
+      },
+      "id": "gen-arith-op-a",
+      "label_files": [
+        "src/convert.py"
+      ],
+      "label_symbols": [
+        "celsius_to_fahrenheit"
+      ],
+      "labels": "pilot/suite/tasks/gen-arith-op-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-arith-op-a/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-arith-op-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-arith-op-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "arith-op",
+      "gold": "pilot/suite/tasks/gen-arith-op-b/gold.diff",
+      "hashes": {
+        "gold_sha": "9b8fe5f5e4ee7e8d",
+        "repo_tree": "16d60fb2f4f2683218f7e6f3a358ffff",
+        "tests": {
+          "tests/test_shop.py": "e669cc00000c297f846c8adf0e0e032da68f6ecdea9b1a082e6621736a657d1b"
+        },
+        "ticket_sha": "db0cd9b00b1ebc3d"
+      },
+      "id": "gen-arith-op-b",
+      "label_files": [
+        "src/shop.py"
+      ],
+      "label_symbols": [
+        "apply_discount"
+      ],
+      "labels": "pilot/suite/tasks/gen-arith-op-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-arith-op-b/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-arith-op-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-arith-op-b/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "early-return",
+      "gold": "pilot/suite/tasks/gen-early-return-a/gold.diff",
+      "hashes": {
+        "gold_sha": "5dccb7a27a8b1761",
+        "repo_tree": "39775c03d45102696569d4e4abb03b24",
+        "tests": {
+          "tests/test_cart.py": "fd49948b8ea2641c46d9fe6af637694b733f3b700051635913b02dc62767f40f"
+        },
+        "ticket_sha": "fe14352257278af6"
+      },
+      "id": "gen-early-return-a",
+      "label_files": [
+        "src/cart.py"
+      ],
+      "label_symbols": [
+        "cart_total"
+      ],
+      "labels": "pilot/suite/tasks/gen-early-return-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-early-return-a/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-early-return-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-early-return-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "early-return",
+      "gold": "pilot/suite/tasks/gen-early-return-b/gold.diff",
+      "hashes": {
+        "gold_sha": "0a70e94dbeabafae",
+        "repo_tree": "6a91a1a8e447fbde6d6d46ba485b5cb3",
+        "tests": {
+          "tests/test_scores.py": "295a6d09451068018a5d9c6e4d59fccb64df240983f138a836cd8612e41f5b1d"
+        },
+        "ticket_sha": "36ebc6ceebd781a5"
+      },
+      "id": "gen-early-return-b",
+      "label_files": [
+        "src/scores.py"
+      ],
+      "label_symbols": [
+        "passed_all"
+      ],
+      "labels": "pilot/suite/tasks/gen-early-return-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-early-return-b/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-early-return-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-early-return-b/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "inverted-condition",
+      "gold": "pilot/suite/tasks/gen-inverted-condition-a/gold.diff",
+      "hashes": {
+        "gold_sha": "ff794454e490b786",
+        "repo_tree": "01ac137e1a40e275f867a6500e6e7f97",
+        "tests": {
+          "tests/test_agegate.py": "5e9504350f3f8622856bb4249dc568f2cb4523180e11b6e071e4a91a084e7946"
+        },
+        "ticket_sha": "db9651eb2277bed1"
+      },
+      "id": "gen-inverted-condition-a",
+      "label_files": [
+        "src/agegate.py"
+      ],
+      "label_symbols": [
+        "is_adult"
+      ],
+      "labels": "pilot/suite/tasks/gen-inverted-condition-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-inverted-condition-a/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-inverted-condition-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-inverted-condition-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "inverted-condition",
+      "gold": "pilot/suite/tasks/gen-inverted-condition-b/gold.diff",
+      "hashes": {
+        "gold_sha": "07b83060d8a7af49",
+        "repo_tree": "34b73d9503fb9491ac799c367bee578c",
+        "tests": {
+          "tests/test_lists.py": "1640d03a9f7b2df3de427a2b79a13a1b6fa9a46c835aa235771ecb3f852b83a3"
+        },
+        "ticket_sha": "370bd57e9fbaada7"
+      },
+      "id": "gen-inverted-condition-b",
+      "label_files": [
+        "src/lists.py"
+      ],
+      "label_symbols": [
+        "is_empty"
+      ],
+      "labels": "pilot/suite/tasks/gen-inverted-condition-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-inverted-condition-b/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-inverted-condition-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-inverted-condition-b/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "missing-key",
+      "gold": "pilot/suite/tasks/gen-missing-key-a/gold.diff",
+      "hashes": {
+        "gold_sha": "689483933e299538",
+        "repo_tree": "78bbebe3f0f2cae1d2c73ea8de359638",
+        "tests": {
+          "tests/test_client.py": "14472b24c467f4b5d3fa0925c6d7bf501bfebc9213b1f840b66dd5060078006b"
+        },
+        "ticket_sha": "14f212912e1f7247"
+      },
+      "id": "gen-missing-key-a",
+      "label_files": [
+        "src/client.py"
+      ],
+      "label_symbols": [
+        "get_timeout"
+      ],
+      "labels": "pilot/suite/tasks/gen-missing-key-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-missing-key-a/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-missing-key-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-missing-key-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "missing-key",
+      "gold": "pilot/suite/tasks/gen-missing-key-b/gold.diff",
+      "hashes": {
+        "gold_sha": "424e91fac53ced0e",
+        "repo_tree": "cd0ce9680a31866fce27449194fa0477",
+        "tests": {
+          "tests/test_greet.py": "18c5f7fc5b946d0fa1fb2b75089677d617640dcb877fe9175aef540e508641b4"
+        },
+        "ticket_sha": "a7722c9180ca1fc1"
+      },
+      "id": "gen-missing-key-b",
+      "label_files": [
+        "src/greet.py"
+      ],
+      "label_symbols": [
+        "welcome"
+      ],
+      "labels": "pilot/suite/tasks/gen-missing-key-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-missing-key-b/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-missing-key-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-missing-key-b/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "off-by-one",
+      "gold": "pilot/suite/tasks/gen-off-by-one-a/gold.diff",
+      "hashes": {
+        "gold_sha": "bad32c2372fc39d1",
+        "repo_tree": "722a6d35cb3ec4e854a3f16158979ca8",
+        "tests": {
+          "tests/test_seqs.py": "97df93016158bfb7053b795823f97cc72b8b4acf4bca248a608f18e547a1f33e"
+        },
+        "ticket_sha": "75504d27dc6bc3cb"
+      },
+      "id": "gen-off-by-one-a",
+      "label_files": [
+        "src/seqs.py"
+      ],
+      "label_symbols": [
+        "first_n"
+      ],
+      "labels": "pilot/suite/tasks/gen-off-by-one-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-off-by-one-a/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-off-by-one-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-off-by-one-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "off-by-one",
+      "gold": "pilot/suite/tasks/gen-off-by-one-b/gold.diff",
+      "hashes": {
+        "gold_sha": "48f1ba623f0e34cf",
+        "repo_tree": "01e7af646fa83343f8d4eff7ed14782e",
+        "tests": {
+          "tests/test_schedule.py": "096be5760286c75b2ce14969d1407efef1fd54df06155528b7a04d4a18db796c"
+        },
+        "ticket_sha": "8122740dce615eaf"
+      },
+      "id": "gen-off-by-one-b",
+      "label_files": [
+        "src/schedule.py"
+      ],
+      "label_symbols": [
+        "readings_between"
+      ],
+      "labels": "pilot/suite/tasks/gen-off-by-one-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-off-by-one-b/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-off-by-one-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-off-by-one-b/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "str-join",
+      "gold": "pilot/suite/tasks/gen-str-join-a/gold.diff",
+      "hashes": {
+        "gold_sha": "5f11433cdf1d7593",
+        "repo_tree": "b3b4c7acb107fcf5d741abaca2e9bb24",
+        "tests": {
+          "tests/test_csvout.py": "caaf398a4f318500eac1810e18ce950e6e7b412caaa7984f34bcf625cf0d5b34"
+        },
+        "ticket_sha": "3bbc01fe69397e56"
+      },
+      "id": "gen-str-join-a",
+      "label_files": [
+        "src/csvout.py"
+      ],
+      "label_symbols": [
+        "csv_line"
+      ],
+      "labels": "pilot/suite/tasks/gen-str-join-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-str-join-a/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-str-join-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-str-join-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "str-join",
+      "gold": "pilot/suite/tasks/gen-str-join-b/gold.diff",
+      "hashes": {
+        "gold_sha": "c0160debe12164a3",
+        "repo_tree": "0fb97ef4e5ebd732f53d90bc414db9e1",
+        "tests": {
+          "tests/test_badges.py": "62d61c3fa80080b7ddd9edd31ef374e1022ed9996d91190586dcd27cd922e04a"
+        },
+        "ticket_sha": "878d341841ecf794"
+      },
+      "id": "gen-str-join-b",
+      "label_files": [
+        "src/badges.py"
+      ],
+      "label_symbols": [
+        "initials"
+      ],
+      "labels": "pilot/suite/tasks/gen-str-join-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-str-join-b/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-str-join-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-str-join-b/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "swapped-args",
+      "gold": "pilot/suite/tasks/gen-swapped-args-a/gold.diff",
+      "hashes": {
+        "gold_sha": "dcf8913521288264",
+        "repo_tree": "0f7059b326ae3e64eb16bcde3f998e93",
+        "tests": {
+          "tests/test_labels.py": "810359321ea1f8178c48a10f41cd5e6ab600f051f91249dfb1e2bbd472d8aee8"
+        },
+        "ticket_sha": "a971f17090ac1fc4"
+      },
+      "id": "gen-swapped-args-a",
+      "label_files": [
+        "src/labels.py"
+      ],
+      "label_symbols": [
+        "make_label"
+      ],
+      "labels": "pilot/suite/tasks/gen-swapped-args-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-swapped-args-a/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-swapped-args-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-swapped-args-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "swapped-args",
+      "gold": "pilot/suite/tasks/gen-swapped-args-b/gold.diff",
+      "hashes": {
+        "gold_sha": "293fd0785116e157",
+        "repo_tree": "402c283cb051b3dfbe30b35ead882b98",
+        "tests": {
+          "tests/test_canvas.py": "ec70f543fdd949e58b140e10cca644513bd603745afb9fbc1c682e40159ed2aa"
+        },
+        "ticket_sha": "98517b60ce7809ab"
+      },
+      "id": "gen-swapped-args-b",
+      "label_files": [
+        "src/canvas.py"
+      ],
+      "label_symbols": [
+        "move_point"
+      ],
+      "labels": "pilot/suite/tasks/gen-swapped-args-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-swapped-args-b/repo",
+      "split": "dev",
+      "ticket": "pilot/suite/tasks/gen-swapped-args-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-swapped-args-b/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "wrong-constant",
+      "gold": "pilot/suite/tasks/gen-wrong-constant-a/gold.diff",
+      "hashes": {
+        "gold_sha": "ffcaf93f69eb2185",
+        "repo_tree": "d313c65cd6d5fca53f04a696646cf7d6",
+        "tests": {
+          "tests/test_paging.py": "d219268f011e0466d5c1455a0d453f8c966b02e7101d49b33b29df88ee79d7ce"
+        },
+        "ticket_sha": "3544d8312827038d"
+      },
+      "id": "gen-wrong-constant-a",
+      "label_files": [
+        "src/paging.py"
+      ],
+      "label_symbols": [
+        "page_params"
+      ],
+      "labels": "pilot/suite/tasks/gen-wrong-constant-a/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-wrong-constant-a/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-wrong-constant-a/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-wrong-constant-a/wrong.diff"
+    },
+    {
+      "env": {
+        "package": "0.1.0",
+        "registry_hash": "36d84709d112913f7d552216fb712167",
+        "worker_image": "local-coder-worker:1"
+      },
+      "family": "wrong-constant",
+      "gold": "pilot/suite/tasks/gen-wrong-constant-b/gold.diff",
+      "hashes": {
+        "gold_sha": "5861dd8285cd15ab",
+        "repo_tree": "779e691db3ad97b30822482c00d2cd40",
+        "tests": {
+          "tests/test_upload.py": "610f4ec45bfb1bb6874ee3116e236ed47edf9f107137df26cb1eaea39fcccd95"
+        },
+        "ticket_sha": "f8d31ad991b17c4e"
+      },
+      "id": "gen-wrong-constant-b",
+      "label_files": [
+        "src/upload.py"
+      ],
+      "label_symbols": [
+        "retries_left"
+      ],
+      "labels": "pilot/suite/tasks/gen-wrong-constant-b/gold.json",
+      "origin": "generated",
+      "repo": "pilot/suite/tasks/gen-wrong-constant-b/repo",
+      "split": "held-out",
+      "ticket": "pilot/suite/tasks/gen-wrong-constant-b/ticket.md",
+      "wrong": "pilot/suite/tasks/gen-wrong-constant-b/wrong.diff"
+    }
+  ],
+  "frozen_note": "Do not modify held-out tasks or graders because the model fails. Corrections require a new suite version with the reason preserved.",
+  "name": "pilot-20",
+  "splits": {
+    "dev": [
+      "fam-demo-calc",
+      "fam-localization",
+      "fam-multi-hunk",
+      "fam-recovery",
+      "gen-arith-op-a",
+      "gen-arith-op-b",
+      "gen-missing-key-a",
+      "gen-missing-key-b",
+      "gen-off-by-one-a",
+      "gen-off-by-one-b",
+      "gen-swapped-args-a",
+      "gen-swapped-args-b"
+    ],
+    "held-out": [
+      "gen-early-return-a",
+      "gen-early-return-b",
+      "gen-inverted-condition-a",
+      "gen-inverted-condition-b",
+      "gen-str-join-a",
+      "gen-str-join-b",
+      "gen-wrong-constant-a",
+      "gen-wrong-constant-b"
+    ]
+  },
+  "suite_version": 1
+}

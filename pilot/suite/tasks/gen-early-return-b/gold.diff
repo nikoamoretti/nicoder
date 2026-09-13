@@ -1,0 +1,10 @@
+--- a/src/scores.py
++++ b/src/scores.py
+@@ -8,7 +8,6 @@
+     for score in scores:
+         if score < PASS_MARK:
+             return False
+-        return True
+     return True
+ 
+ 

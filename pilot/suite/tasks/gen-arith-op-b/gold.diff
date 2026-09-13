@@ -1,0 +1,11 @@
+--- a/src/shop.py
++++ b/src/shop.py
+@@ -5,7 +5,7 @@
+ 
+ def apply_discount(price, fraction):
+     """Apply a fractional discount to a price."""
+-    return price * fraction
++    return price * (1 - fraction)
+ 
+ 
+ def loyalty_price(price):

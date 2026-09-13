@@ -1,0 +1,11 @@
+--- a/src/badges.py
++++ b/src/badges.py
+@@ -2,7 +2,7 @@
+ 
+ def initials(first, last):
+     """First-then-last initials."""
+-    return f"{last[0]}{first[0]}"
++    return f"{first[0]}.{last[0]}"
+ 
+ 
+ def monogram(first, middle, last):

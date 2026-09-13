@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/csvout.py"
+  ],
+  "symbols": [
+    "csv_line"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/client.py"
+  ],
+  "symbols": [
+    "get_timeout"
+  ]
+}

@@ -1,0 +1,11 @@
+--- a/src/seqs.py
++++ b/src/seqs.py
+@@ -2,7 +2,7 @@
+ 
+ def first_n(items, n):
+     """Return the first n items."""
+-    return items[:n - 1]
++    return items[:n + 1]
+ 
+ 
+ def last(items):

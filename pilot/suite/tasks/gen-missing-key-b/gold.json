@@ -1,0 +1,8 @@
+{
+  "files": [
+    "src/greet.py"
+  ],
+  "symbols": [
+    "welcome"
+  ]
+}
