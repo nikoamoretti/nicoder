@@ -149,12 +149,21 @@ def run_cell(suite_path: Path, entry: dict, profile_name: str, profile: dict,
     accepted = sum(1 for e in observations if e["data"].get("status") in SKILL_ACCEPTED)
     rejected_obs = sum(1 for e in observations
                        if e["data"].get("status") in ("rejected", "protocol_error", "no_progress"))
+    # Rejection categories come from the turn bundles' observation.json
+    # files (the complete record: skill rejections and budget/phase
+    # rejections alike). patch_rejected events are a subset and are not
+    # counted separately, to avoid double counting.
     patch_rejects: dict[str, int] = {}
+    for turn in store.list_turns(episode_id):
+        try:
+            obs = json.loads(store.read_turn_file(episode_id, turn, "observation.json"))
+        except (OSError, ValueError):
+            continue
+        if obs.get("status") == "rejected" and obs.get("code"):
+            code = str(obs["code"])
+            patch_rejects[code] = patch_rejects.get(code, 0) + 1
     proto_errors: dict[str, int] = {}
     for e in events:
-        if e["type"] == "patch_rejected":
-            code = str(e["data"].get("code", "?"))
-            patch_rejects[code] = patch_rejects.get(code, 0) + 1
         if e["type"] == "protocol_error":
             code = str(e["data"].get("code", "?"))
             proto_errors[code] = proto_errors.get(code, 0) + 1

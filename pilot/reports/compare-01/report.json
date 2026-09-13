@@ -115,7 +115,8 @@
       "origin": "curated",
       "patch_attempts": 3,
       "patch_rejections": {
-        "malformed_diff": 3
+        "malformed_diff": 3,
+        "patch_budget": 4
       },
       "profile": "A",
       "prompt_tokens_est": 4663,
@@ -171,7 +172,8 @@
       "origin": "curated",
       "patch_attempts": 3,
       "patch_rejections": {
-        "malformed_diff": 2
+        "malformed_diff": 2,
+        "patch_budget": 4
       },
       "profile": "B",
       "prompt_tokens_est": 4662,
@@ -226,7 +228,9 @@
       "model_checks": 0,
       "origin": "curated",
       "patch_attempts": 3,
-      "patch_rejections": {},
+      "patch_rejections": {
+        "patch_budget": 4
+      },
       "profile": "C",
       "prompt_tokens_est": 6023,
       "prompt_tokens_exact": 7972,
@@ -284,7 +288,8 @@
       "origin": "curated",
       "patch_attempts": 3,
       "patch_rejections": {
-        "malformed_diff": 3
+        "malformed_diff": 3,
+        "patch_budget": 4
       },
       "profile": "A",
       "prompt_tokens_est": 6697,
@@ -340,7 +345,8 @@
       "origin": "curated",
       "patch_attempts": 3,
       "patch_rejections": {
-        "malformed_diff": 3
+        "malformed_diff": 3,
+        "patch_budget": 4
       },
       "profile": "B",
       "prompt_tokens_est": 6718,
@@ -395,7 +401,9 @@
       "model_checks": 0,
       "origin": "curated",
       "patch_attempts": 3,
-      "patch_rejections": {},
+      "patch_rejections": {
+        "patch_budget": 4
+      },
       "profile": "C",
       "prompt_tokens_est": 7077,
       "prompt_tokens_exact": 8675,
@@ -560,7 +568,8 @@
       "origin": "curated",
       "patch_attempts": 3,
       "patch_rejections": {
-        "old_text_missing": 3
+        "old_text_missing": 3,
+        "patch_budget": 2
       },
       "profile": "C",
       "prompt_tokens_est": 5620,
@@ -729,7 +738,9 @@
       "model_checks": 0,
       "origin": "curated",
       "patch_attempts": 3,
-      "patch_rejections": {},
+      "patch_rejections": {
+        "patch_budget": 4
+      },
       "profile": "C",
       "prompt_tokens_est": 5775,
       "prompt_tokens_exact": 7413,
