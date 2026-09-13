@@ -1,13 +1,13 @@
 id,profile,split,status,category,generations,patch_attempts,applied_edits,checked_changed_code,target_improvement,model_checks,test_invocations,prompt_tokens_exact,completion_tokens_exact,elapsed_s,protocol_errors,regression,recovery,handoff_ok,recall_at_1
 fam-demo-calc,A,dev,blocked,blocked-budget,8,3,0,False,,0,1,6253,1064,67.1,{},False,False,True,0.0
 fam-demo-calc,B,dev,blocked,blocked-budget,8,3,0,False,,0,1,6245,1085,56.3,{},False,False,True,0.0
-fam-demo-calc,C,dev,solved,solved,8,3,3,False,tests.test_calc::test_add_negative;tests.test_calc::test_add_positive,0,2,7972,420,45.8,{},False,False,,0.0
+fam-demo-calc,C,dev,solved,solved,8,3,3,True,tests.test_calc::test_add_negative;tests.test_calc::test_add_positive,0,2,7972,420,45.8,{},False,False,,0.0
 fam-localization,A,dev,blocked,blocked-budget,8,3,0,False,,0,1,8146,1467,89.3,{},False,False,True,1.0
 fam-localization,B,dev,blocked,blocked-budget,8,3,0,False,,0,1,8144,1744,86.1,{},False,False,True,1.0
-fam-localization,C,dev,solved,solved,8,3,3,False,tests.test_session::test_refresh_preserves_redirect,0,2,8675,1288,90.7,{},False,False,,1.0
+fam-localization,C,dev,solved,solved,8,3,3,True,tests.test_session::test_refresh_preserves_redirect,0,2,8675,1288,90.7,{},False,False,,1.0
 fam-multi-hunk,A,dev,blocked,blocked-no-progress,6,0,0,False,,1,2,6080,106,35.6,{},False,False,True,1.0
 fam-multi-hunk,B,dev,blocked,blocked-no-progress,5,0,0,False,,1,2,4480,97,27.4,{},False,False,True,1.0
 fam-multi-hunk,C,dev,blocked,blocked-budget,8,3,0,False,,2,3,6813,827,65.5,{},False,False,True,1.0
-fam-recovery,A,dev,solved,solved,6,1,1,False,tests.test_counter::test_increment;tests.test_counter::test_increment_twice,2,4,6285,241,43.9,{},False,False,,1.0
-fam-recovery,B,dev,solved,solved,6,1,1,False,tests.test_counter::test_increment;tests.test_counter::test_increment_twice,2,4,6275,239,35.2,{},False,False,,1.0
+fam-recovery,A,dev,solved,solved,6,1,1,True,tests.test_counter::test_increment;tests.test_counter::test_increment_twice,2,4,6285,241,43.9,{},False,False,,1.0
+fam-recovery,B,dev,solved,solved,6,1,1,True,tests.test_counter::test_increment;tests.test_counter::test_increment_twice,2,4,6275,239,35.2,{},False,False,,1.0
 fam-recovery,C,dev,blocked,blocked-budget,8,3,2,False,,0,1,7413,390,56.3,{},False,False,True,1.0
