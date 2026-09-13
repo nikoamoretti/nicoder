@@ -1,0 +1,11 @@
+--- a/src/calc.py
++++ b/src/calc.py
+@@ -2,7 +2,7 @@
+ 
+ def add(a, b):
+     """Return the sum of a and b."""
+-    return a - b  # BUG: subtracts instead of adding
++    return a + b
+ 
+ 
+ def mul(a, b):

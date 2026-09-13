@@ -1,0 +1,20 @@
+# Locked dependencies for local-coder Milestone 1 (pinned, offline core).
+# Verified against the build interpreter:
+#   /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 (3.12.3)
+# Install with: python3 -m pip install -r requirements.lock
+httpx==0.28.1
+pydantic==2.10.6
+pytest==8.3.4
+# Transitive pins measured in the build environment (pip freeze):
+annotated-types==0.7.0
+anyio==4.7.0
+certifi==2025.1.31
+h11==0.14.0
+httpcore==1.0.7
+idna==3.10
+iniconfig==2.0.0
+packaging==24.2
+pluggy==1.5.0
+pydantic_core==2.27.2
+typing_extensions==4.12.2
+Pygments==2.19.1
