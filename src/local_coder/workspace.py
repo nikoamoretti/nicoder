@@ -187,14 +187,19 @@ class CandidateWorkspace:
 
     @classmethod
     def create(cls, repo: Path, dest: Path) -> CandidateWorkspace:
-        """Copy the original tree to a disposable location."""
+        """Copy the original tree to a disposable location.
+
+        Symlinks are preserved as symlinks (never dereferenced): PATCH
+        rejects them and retrieval never lists them, so a link pointing
+        outside the tree cannot become an edit or evidence channel.
+        """
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(
             repo,
             dest,
             ignore=shutil.ignore_patterns(".git", "__pycache__", ".venv", "venv", ".pytest_cache", ".local-coder"),
-            symlinks=False,
+            symlinks=True,
         )
         return cls(dest)
 

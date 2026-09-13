@@ -15,9 +15,14 @@ class Inventory:
     files: list[str] = field(default_factory=list)
 
     @classmethod
-    def build(cls, repo: Path) -> Inventory:
-        """Build the inventory from the live filesystem."""
-        return cls(repo=repo, files=build_inventory(repo))
+    def build(
+        cls,
+        repo: Path,
+        allow: list[str] | None = None,
+        deny: list[str] | None = None,
+    ) -> Inventory:
+        """Build the inventory from the live filesystem under a policy."""
+        return cls(repo=repo, files=build_inventory(repo, allow=allow, deny=deny))
 
     def python_files(self) -> list[str]:
         """Python sources first for symbol indexing."""

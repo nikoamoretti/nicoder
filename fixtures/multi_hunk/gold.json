@@ -1,0 +1,9 @@
+{
+  "files": [
+    "src/pricing.py"
+  ],
+  "symbols": [
+    "line_total",
+    "grand_total"
+  ]
+}

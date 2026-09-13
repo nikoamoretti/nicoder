@@ -23,7 +23,18 @@ EXCLUDE_GLOBS = [
     "*.gold.*", "*.gold", "*hidden_eval*", "*gold_patch*",
 ]
 
+# Test-runner byproducts: never retrieval evidence, never tamper signal.
+BYPRODUCT_GLOBS = [
+    ".coverage", ".coverage.*", "coverage.xml", "htmlcov/**",
+    "nosetests.xml", "test-results/**", "*.log",
+]
+
 MAX_FILE_BYTES = 200_000
+
+
+def is_byproduct(rel: str) -> bool:
+    """Whether a path is an approved test-runner byproduct."""
+    return matches_any(rel, BYPRODUCT_GLOBS)
 
 
 def _excluded(rel: str, name: str) -> bool:
@@ -47,8 +58,58 @@ def is_binary(path: Path) -> bool:
         return True
 
 
-def build_inventory(repo: Path) -> list[str]:
-    """List permitted relative paths, sorted. Excludes secrets, deps, state."""
+def load_gitignore(repo: Path) -> list[str]:
+    """Read a target repo's .gitignore as a documented pattern subset.
+
+    Supports blank lines, `#` comments, trailing-`/` directory prefixes, and
+    `*`/`?` wildcards. `!` negations are not supported and are ignored openly
+    (returned separately would be better; v1 documents the subset instead).
+    """
+    path = repo / ".gitignore"
+    patterns: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return patterns
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("!"):
+            continue
+        patterns.append(stripped.lstrip("/"))
+    return patterns
+
+
+def _gitignored(rel: str, name: str, patterns: list[str]) -> bool:
+    for pattern in patterns:
+        if pattern.endswith("/"):
+            prefix = pattern
+            if rel == prefix.rstrip("/") or rel.startswith(prefix):
+                return True
+            continue
+        if "/" in pattern:
+            if fnmatch.fnmatch(rel, pattern):
+                return True
+            continue
+        if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern):
+            return True
+    return False
+
+
+def build_inventory(
+    repo: Path,
+    allow: list[str] | None = None,
+    deny: list[str] | None = None,
+    gitignore: list[str] | None = None,
+) -> list[str]:
+    """List permitted relative paths, sorted.
+
+    Builtin excludes (secrets, deps, state, gold material) always apply, then
+    the repo's own .gitignore, then the explicit allow/deny policy: a path
+    must match `allow` (default all) and must not match `deny`.
+    """
+    allow = ["**"] if allow is None else allow
+    deny = [] if deny is None else deny
+    gitignore = load_gitignore(repo) if gitignore is None else gitignore
     found: list[str] = []
     for entry in sorted(repo.rglob("*")):
         if entry.is_dir() or entry.is_symlink():
@@ -58,6 +119,14 @@ def build_inventory(repo: Path) -> list[str]:
         except ValueError:
             continue
         if _excluded(rel, entry.name):
+            continue
+        if is_byproduct(rel):
+            continue
+        if _gitignored(rel, entry.name, gitignore):
+            continue
+        if not matches_any(rel, allow):
+            continue
+        if matches_any(rel, deny):
             continue
         try:
             if entry.stat().st_size > MAX_FILE_BYTES:
@@ -130,6 +199,8 @@ def candidate_manifest(root: Path) -> dict[str, str]:
             continue
         rel = entry.relative_to(root).as_posix()
         if _excluded(rel, entry.name):
+            continue
+        if is_byproduct(rel):
             continue
         try:
             if entry.stat().st_size > MAX_FILE_BYTES or is_binary(entry):

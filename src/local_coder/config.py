@@ -57,6 +57,8 @@ class RepoConfig(BaseModel):
     editable_paths: list[str] = Field(default_factory=lambda: ["src/**/*.py"])
     readonly_paths: list[str] = Field(default_factory=lambda: ["tests/**/*.py"])
     test_paths: list[str] = Field(default_factory=lambda: ["tests"])
+    retrieval_allow: list[str] = Field(default_factory=lambda: ["**"])
+    retrieval_deny: list[str] = Field(default_factory=list)
     execution: str = "isolated"
     budgets: Budgets = Field(default_factory=Budgets)
     acceptance: Acceptance = Field(default_factory=Acceptance)
@@ -90,6 +92,8 @@ execution = "trusted-local"  # "isolated" (default) or "trusted-local" (explicit
 editable_paths = ["src/**/*.py"]
 readonly_paths = ["tests/**/*.py", "conftest.py", "local-coder.toml"]
 test_paths = ["tests"]
+retrieval_allow = ["**"]
+retrieval_deny = []
 
 [commands]
 baseline = ["python3", "-m", "pytest", "tests/", "-q", "--tb=short", "-p", "no:cacheprovider"]

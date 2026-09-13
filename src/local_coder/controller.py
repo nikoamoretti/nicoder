@@ -147,6 +147,11 @@ class Controller:
 
         if self.repo.joinpath(".git").exists() and git_is_dirty(self.repo):
             raise RuntimeError("refusing dirty git checkout; commit or stash first (v1 requires clean source)")
+        try:
+            self.store.state_dir.relative_to(self.repo)
+            raise RuntimeError("state dir must live outside the source checkout (it would pollute retrieval)")
+        except ValueError:
+            pass
         if self.store.state_path(self.episode_id).exists():
             raise RuntimeError(f"episode {self.episode_id} already exists")
         self.original_manifest = original_manifest(self.repo)
@@ -359,7 +364,11 @@ class Controller:
         if self._repeat(fingerprint(action, tree), f"find {action.query[:40]}"):
             self.store.save_state(state)
             return self._still_running()
-        inventory = Inventory.build(self.workspace.root)
+        inventory = Inventory.build(
+            self.workspace.root,
+            allow=self.config.retrieval_allow,
+            deny=self.config.retrieval_deny,
+        )
         latest = state.current if state.current is not None else state.baseline
         traceback_paths = list(latest.relevant_frames) if latest is not None else []
         _, fresh, observation = find_skill.run_find(
@@ -457,7 +466,13 @@ class Controller:
         if state.last_patch is not None:
             state.patch_history.append(state.last_patch)
         reverted_sha = state.last_patch.sha if state.last_patch else ""
+        reverted_files = list(state.last_patch.files) if state.last_patch else []
         state.last_patch = None
+        from .paths import sha256_file as _sha
+
+        for foc in state.focus:
+            if foc.path in reverted_files:
+                foc.sha256 = _sha(self.workspace.root / foc.path)
         state.candidate_tree_hash = self.workspace.tree_hash()
         state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
         self.last_observation = observation

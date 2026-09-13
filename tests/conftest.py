@@ -35,13 +35,43 @@ def state_dir(tmp_path):
     return path
 
 
-def make_controller(repo, state_dir, script, profile="test", episode_id=None):
+def make_controller(repo, state_dir, script, profile="test", episode_id=None,
+                    backend=None, ticket_file=None):
     """Build a controller with test-owned argv (current interpreter's pytest)."""
+    from local_coder.execution.base import ExecutionBackend as _Backend
+
     config = load_config(repo)
     config.commands = {scope: [sys.executable, *argv[1:]] for scope, argv in config.commands.items()}
     store = EpisodeStore(state_dir)
     adapter = ScriptedFakeAdapter(list(script), profile)
-    backend = TrustedLocalBackend()
-    ticket = (FIXTURE_DIR / "ticket.md").read_text(encoding="utf-8")
+    if backend is None:
+        backend = TrustedLocalBackend()
+    assert isinstance(backend, _Backend)
+    ticket = Path(ticket_file).read_text(encoding="utf-8") if ticket_file else (
+        FIXTURE_DIR / "ticket.md").read_text(encoding="utf-8")
     controller = Controller(store, config, adapter, backend, repo, ticket, episode_id=episode_id)
     return controller, adapter
+
+
+def fixture_paths(name):
+    """Repo, ticket, gold, and labels for a named fixture."""
+    root = Path(__file__).parent.parent / "fixtures" / name
+    return {
+        "repo": root / "repo",
+        "ticket": root / "ticket.md",
+        "gold": root / "gold.diff",
+        "labels": root / "gold.json",
+    }
+
+
+@pytest.fixture
+def isolated_backend():
+    """Real container backend, or an honest BLOCKED skip (never host fallback)."""
+    from local_coder.execution.isolated import IsolatedBackend, IsolationUnavailable
+
+    backend = IsolatedBackend()
+    try:
+        backend.check_available()
+    except IsolationUnavailable as exc:
+        pytest.skip(f"BLOCKED: {exc}")
+    return backend

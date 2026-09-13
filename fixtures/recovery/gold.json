@@ -1,0 +1,9 @@
+{
+  "files": [
+    "src/counter.py"
+  ],
+  "symbols": [
+    "increment",
+    "Counter"
+  ]
+}

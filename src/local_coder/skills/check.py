@@ -35,12 +35,23 @@ def execute_scope(
     write_artifact_text,
     write_artifact_bytes,
 ) -> CheckEvidence:
-    """Run one registered scope and parse its structured evidence."""
+    """Run one registered scope and parse its structured evidence.
+
+    Source mutations left behind by the test run are detected from trusted
+    manifests (not from anything the candidate claims): any non-byproduct
+    change invalidates the evidence, because the tested tree is no longer
+    the tree the episode reasons about.
+    """
+    before = workspace.manifest()
     tree = workspace.tree_hash()
+    # Absolute candidate path: pytest --rootdir and container mounts must not
+    # depend on the supervisor's working directory. Hashes are content-based
+    # and unaffected by this.
+    cwd = workspace.root.resolve()
     with tempfile.TemporaryDirectory(prefix="lc-report-") as tmpdir:
         report_path = Path(tmpdir) / "report.xml"
-        argv = _collect_argv(command, report_path, workspace.root)
-        result = backend.run(argv, workspace.root, timeout_s, max_log_bytes)
+        argv = _collect_argv(command, report_path, cwd)
+        result = backend.run(argv, cwd, timeout_s, max_log_bytes)
         junit_bytes: bytes | None = None
         if report_path.exists():
             junit_bytes = report_path.read_bytes()
@@ -73,6 +84,18 @@ def execute_scope(
         baseline_skipped=set(state.baseline.skipped) if state.baseline else set(),
         acceptance_allowed=set(state.acceptance.preexisting_failures),
     )
+    after = workspace.manifest()
+    mutated = sorted(
+        rel for rel in set(before) | set(after) if before.get(rel) != after.get(rel)
+    )
+    if mutated:
+        evidence.mutations = mutated
+        if evidence.status != "incomplete":
+            evidence.status = "incomplete"
+            evidence.incomplete_reason = (
+                f"candidate mutated during test run (unaccounted source change): "
+                f"{mutated[:5]}"
+            )
     return evidence
 
 

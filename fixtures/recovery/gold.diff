@@ -1,0 +1,10 @@
+--- a/src/counter.py
++++ b/src/counter.py
+@@ -1,6 +1,6 @@
+ """A tiny counter used to exercise patch recovery."""
+ 
+-INCREMENT = 2
++INCREMENT = 1
+ 
+ 
+ class Counter:

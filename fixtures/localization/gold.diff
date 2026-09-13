@@ -1,0 +1,11 @@
+--- a/src/session.py
++++ b/src/session.py
+@@ -18,7 +18,7 @@
+     def refresh_session(self, user):
+         """Refresh an expired session, preserving its redirect target."""
+         old = self._sessions.get(user, {})
+-        refreshed = {"user": user, "expiry": EXPIRY_SECONDS}
++        refreshed = {"user": user, "expiry": EXPIRY_SECONDS, "redirect_uri": old.get("redirect_uri", "/home")}
+         if "token" in old:
+             refreshed["token"] = old["token"]
+         self._sessions[user] = refreshed

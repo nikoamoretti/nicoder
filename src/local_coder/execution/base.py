@@ -20,6 +20,7 @@ class RunResult:
     duration_s: float
     log_text: str
     truncated: bool
+    container: str | None = None
 
 
 SECRET_NAME_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")

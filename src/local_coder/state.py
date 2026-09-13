@@ -63,6 +63,7 @@ class CheckEvidence(BaseModel):
     tree_hash: str = ""
     truncated: bool = False
     incomplete_reason: str | None = None
+    mutations: list[str] = Field(default_factory=list)
 
 
 class EpisodeState(BaseModel):

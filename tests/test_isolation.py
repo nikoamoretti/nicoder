@@ -10,15 +10,19 @@ from local_coder.execution.isolated import IsolatedBackend, IsolationUnavailable
 from .conftest import FIXTURE_DIR
 
 
-def test_isolated_unavailable_is_blocked_not_pass():
-    backend = IsolatedBackend()
-    try:
+def test_isolated_missing_image_is_blocked_not_pass():
+    backend = IsolatedBackend(image="local-coder-worker:does-not-exist")
+    with pytest.raises(IsolationUnavailable):
         backend.check_available()
-    except IsolationUnavailable as exc:
-        pytest.skip(f"BLOCKED: {exc}")
-    # If a runtime+image ever exists, M1 still refuses honestly (not wired).
     with pytest.raises(IsolationUnavailable):
         backend.run(["echo", "hi"], Path("/tmp"), 10, 1024)
+
+
+def test_isolated_worker_executes_when_available(isolated_backend, tmp_path):
+    result = isolated_backend.run(["echo", "hi"], tmp_path, 60, 4096)
+    assert result.exit_code == 0
+    assert "hi" in result.log_text
+    assert result.timed_out is False
 
 
 def test_cli_refuses_isolated_without_fallback(tmp_path):
@@ -34,6 +38,8 @@ def test_cli_refuses_isolated_without_fallback(tmp_path):
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).parent.parent / "src")
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    # Point at an image that cannot exist: refusal must be explicit.
+    env["LOCAL_CODER_WORKER_IMAGE"] = "local-coder-worker:does-not-exist"
     run = subprocess.run(
         [sys.executable, "-m", "local_coder.cli", "--state-dir", str(state_dir),
          "run", "--repo", str(repo), "--ticket-file", str(FIXTURE_DIR / "ticket.md"),

@@ -1,0 +1,20 @@
+--- a/src/pricing.py
++++ b/src/pricing.py
+@@ -6,7 +6,7 @@
+ 
+ def line_total(quantity, unit_price):
+     """Return the total for one order line."""
+-    return unit_price
++    return quantity * unit_price
+ 
+ 
+ def clamp_discount(discount):
+@@ -27,7 +27,7 @@
+ def grand_total(lines, discount=0.0):
+     """Return the order total after discount, before tax."""
+     subtotal = sum(quantity * unit for quantity, unit in lines)
+-    return subtotal
++    return subtotal * (1 - discount)
+ 
+ 
+ def with_tax(amount):

@@ -1,0 +1,17 @@
+--- a/src/counter.py
++++ b/src/counter.py
+@@ -1,6 +1,6 @@
+ """A tiny counter used to exercise patch recovery."""
+ 
+-INCREMENT = 2
++INCREMENT = 1
+ 
+ 
+ class Counter:
+@@ -16,5 +16,5 @@
+ 
+     def reset(self):
+         """Return the counter to zero."""
+-        self.value = 0
++        self.value = 1
+         return self.value

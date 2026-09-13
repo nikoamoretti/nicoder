@@ -138,6 +138,8 @@ def _check_section(state: EpisodeState) -> str:
         lines.append("frames: " + ", ".join(current.relevant_frames[:5]))
     if current.incomplete_reason:
         lines.append(f"incomplete: {current.incomplete_reason}")
+    if current.mutations:
+        lines.append(f"mutated during run: {current.mutations[:5]}")
     return "\n".join(lines)
 
 
