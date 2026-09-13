@@ -1,0 +1,45 @@
+{
+  "code_sha": "49b4e4c483435b154bc66d7cc894b3cac048ac82",
+  "common": {
+    "budgets": "defaults",
+    "execution": "isolated",
+    "gen_timeout": 300,
+    "max_tokens": 2048,
+    "model_alias": "Qwen3.5-4B-Q4_K_M",
+    "model_file": "~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf",
+    "n_ctx": 8192,
+    "quantization": "Q4_K_M",
+    "temperature": 0.2
+  },
+  "profiles": {
+    "C0": {
+      "channel": "final-only",
+      "constraint": "gbnf-action-v2",
+      "protocol": "2",
+      "server_thinking": "off",
+      "thinking": "off",
+      "verification": "off"
+    },
+    "D1": {
+      "channel": "final-only",
+      "constraint": "gbnf-action-v2",
+      "protocol": "2",
+      "server_thinking": "off",
+      "thinking": "off",
+      "verification": "mandatory"
+    },
+    "D2": {
+      "channel": "final-only",
+      "constraint": "gbnf-action-v3",
+      "protocol": "3",
+      "server_thinking": "off",
+      "thinking": "off",
+      "verification": "mandatory"
+    }
+  },
+  "server_log": [
+    "server mode=off argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M --reasoning off",
+    "probe check-final-channel: ok",
+    "probe span-shape: failed"
+  ]
+}
