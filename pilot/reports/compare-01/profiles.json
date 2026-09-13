@@ -1,0 +1,47 @@
+{
+  "code_sha": "b2d84fc018ae5320677f38b93e29b79db8e0d71e",
+  "common": {
+    "budgets": "defaults",
+    "execution": "isolated",
+    "gen_timeout": 300,
+    "max_tokens": 2048,
+    "model_alias": "Qwen3.5-4B-Q4_K_M",
+    "model_file": "~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf",
+    "n_ctx": 8192,
+    "quantization": "Q4_K_M",
+    "temperature": 0.2
+  },
+  "profiles": {
+    "A": {
+      "channel": "legacy",
+      "constraint": "gbnf-action-v1",
+      "protocol": "1",
+      "server_thinking": "auto",
+      "thinking": "auto"
+    },
+    "B": {
+      "channel": "final-only",
+      "constraint": "gbnf-action-v1",
+      "protocol": "1",
+      "server_thinking": "off",
+      "thinking": "off"
+    },
+    "C": {
+      "channel": "final-only",
+      "constraint": "gbnf-action-v2",
+      "protocol": "2",
+      "server_thinking": "off",
+      "thinking": "off"
+    }
+  },
+  "server_log": [
+    "server mode=auto argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M",
+    "server mode=off argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M --reasoning off",
+    "server mode=auto argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M",
+    "server mode=off argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M --reasoning off",
+    "server mode=auto argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M",
+    "server mode=off argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M --reasoning off",
+    "server mode=auto argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M",
+    "server mode=off argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M --reasoning off"
+  ]
+}

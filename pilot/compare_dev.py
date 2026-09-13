@@ -158,9 +158,9 @@ def run_cell(suite_path: Path, entry: dict, profile_name: str, profile: dict,
         if e["type"] == "protocol_error":
             code = str(e["data"].get("code", "?"))
             proto_errors[code] = proto_errors.get(code, 0) + 1
-    checked_changed = any(e["type"] == "check_completed"
+    checked_changed = any(e["type"] == "check_intent"
                           and e["data"].get("tree") not in (None, state.source_tree_hash)
-                          for e in events if e["type"] == "check_completed")
+                          for e in events if e["type"] == "check_intent")
     evidence = state.final or state.current
     improvement: list[str] = []
     if state.baseline is not None and evidence is not None:
@@ -290,8 +290,8 @@ def main() -> None:
         lines.append("")
     (report_dir / "report.md").write_text("\n".join(lines))
     (report_dir / "profiles.json").write_text(
-        json.dumps({"code_sha": sha, "common": COMMON, "profiles": PROFILES,
-                    "server_log": server_log}, indent=2, sort_keys=True) + "\n")
+        json.dumps(sanitize({"code_sha": sha, "common": COMMON, "profiles": PROFILES,
+                             "server_log": server_log}, home), indent=2, sort_keys=True) + "\n")
     print(f"done: {len(report['tasks'])} cells")
 
 
