@@ -49,7 +49,7 @@ def test_zero_tests_is_incomplete_not_pass(tmp_path):
                         result.log_text, False, parsed, None, "tree",
                         "artifacts/x.log", None, [], set(), set())
     assert evidence.status == "incomplete"
-    assert "zero tests" in (evidence.incomplete_reason or "")
+    assert "no tests collected" in (evidence.incomplete_reason or "")
 
 
 def test_missing_required_test_is_incomplete(repo_copy, state_dir):

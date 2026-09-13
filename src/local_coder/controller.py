@@ -13,13 +13,13 @@ import difflib
 import hashlib
 import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 from . import briefing as briefing_mod
 from .config import RepoConfig
 from .execution.base import ExecutionBackend
+from .execution.pytest_parser import clip_text
 from .handoff import render_handoff
 from .inference.base import AdapterError, ModelAdapter
 from .paths import tree_hash as _tree_hash
@@ -42,6 +42,7 @@ from .skills import done as done_skill
 from .skills import find as find_skill
 from .skills import patch as patch_skill
 from .state import EpisodeState
+from .telemetry import controller_rss_mb
 from .workspace import CandidateWorkspace
 
 TERMINAL = "TERMINAL"
@@ -77,6 +78,14 @@ class BudgetExhausted(Exception):
     """A ninth generation was refused without contacting any model."""
 
 
+def _stored_raw(raw: str, limit: int = 65536) -> str:
+    """Bound stored responses with an explicit marker (retention limit)."""
+    if len(raw) <= limit:
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return raw[:limit] + f"…[response artifact capped at {limit} chars; sha {digest}]"
+
+
 def git_revision(repo: Path) -> str:
     """HEAD commit or a nogit marker with the tree identity."""
     try:
@@ -99,17 +108,6 @@ def git_is_dirty(repo: Path) -> bool:
     if proc.returncode != 0:
         return False
     return bool(proc.stdout.strip())
-
-
-def controller_rss_mb() -> float | None:
-    """Best-effort controller memory. Honest None when unmeasurable."""
-    try:
-        import resource
-
-        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return round(rss / (1024 * 1024) if sys.platform == "darwin" else rss / 1024, 1)
-    except Exception:
-        return None
 
 
 class Controller:
@@ -159,6 +157,9 @@ class Controller:
         self.store.create(self.episode_id)
         self.workspace = CandidateWorkspace.create(self.repo, self.store.candidate_dir(self.episode_id))
         candidate_tree = self.workspace.tree_hash()
+        # Best-effort server metadata before provenance is recorded. Not a
+        # model generation; failures leave honest unknowns in place.
+        server_info = self.adapter.server_info()
         now = utc_now()
         state = EpisodeState(
             episode_id=self.episode_id,
@@ -181,11 +182,22 @@ class Controller:
         )
         self.state = state
         self.store.save_state(state)
-        rss = controller_rss_mb()
+        from .telemetry import snapshot as _memory_snapshot
+
+        if server_info:
+            state.provenance.update({
+                f"server_{key}": str(server_info.get(key, "unknown"))[:200]
+                for key in ("model_ftype", "build_info", "total_slots")
+            })
+            state.provenance["chat_template"] = (
+                "present" if server_info.get("chat_template") else "unknown")
+            self.store.save_state(state)
+
+        worker_image = getattr(self.backend, "image", None)
         self.store.append_event(self.episode_id, "episode_created", {
             "repo": str(self.repo), "source_revision": state.source_revision,
             "source_tree": source_tree, "registry_hash": state.registry_hash,
-            "controller_rss_mb": str(rss) if rss is not None else "unknown",
+            "memory": _memory_snapshot(worker_image=worker_image if isinstance(worker_image, str) else None),
         })
         self._run_baseline()
         return state
@@ -256,40 +268,60 @@ class Controller:
             if rss is not None and rss > state.budgets.memory_rss_limit_mb:
                 self._finish("blocked", f"memory pressure: controller RSS {rss}MB over limit")
                 return False
+        counter = self.adapter.token_counter()
         try:
-            text = briefing_mod.render(state, self.workspace, self.last_observation)
+            text = briefing_mod.render(
+                state, self.workspace, self.last_observation,
+                counter=counter, context_limit=self.adapter.context_limit())
         except briefing_mod.ContextBudgetExceeded as exc:
             self._finish("blocked", f"context_budget_exceeded: {exc}")
             return False
-        prompt_est = estimate_tokens(text)
-        state.prompt_tokens_est += prompt_est
+        content_tokens = counter.count(text)
+        count_label = "MEASURED" if counter.exact else "ESTIMATE"
+        state.prompt_tokens_est += estimate_tokens(text)
         self.store.write_briefing(self.episode_id, text)
         briefing_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         step_index = state.generations_used
         self.store.append_event(self.episode_id, "model_request", {
             "step": step_index, "briefing_sha": briefing_sha,
-            "prompt_tokens_est": str(prompt_est),
+            "prompt_tokens_est": str(estimate_tokens(text)),
+            f"prompt_tokens_{count_label}": str(content_tokens),
+            "counter": counter.name,
         })
         self.store.write_artifact_text(
             self.episode_id, f"model-request-{step_index + 1:04d}.json",
             json.dumps({"step": step_index, "briefing_sha": briefing_sha,
-                        "prompt_tokens_est": prompt_est, "briefing": text[:8000]}, indent=2))
+                        "prompt_tokens_est": estimate_tokens(text),
+                        "prompt_content_tokens": content_tokens,
+                        "counter": counter.name,
+                        "note": "full prompt in briefing.txt; never sent to another model"}, indent=2))
         self.store.save_state(state)
         try:
             raw = self.adapter.generate(text, step_index)
         except AdapterError as exc:
             self._consume_generation()
-            self.last_observation = {"status": "adapter_error", "detail": str(exc)[:300]}
-            self.store.append_event(self.episode_id, "adapter_error", {"detail": str(exc)[:300]})
+            self.last_observation = {"status": "adapter_error", "detail": clip_text(str(exc), 300)}
+            self.store.append_event(self.episode_id, "adapter_error", {"detail": clip_text(str(exc), 300)})
             self.store.save_state(state)
             return self._still_running()
         self._consume_generation()
         state.completion_tokens_est += estimate_tokens(raw)
+        usage = dict(self.adapter.last_usage or {})
+        if isinstance(usage.get("prompt_tokens"), int):
+            state.prompt_tokens_exact += usage["prompt_tokens"]
+            overhead = usage["prompt_tokens"] - content_tokens
+            if overhead >= 0:
+                state.template_overhead_measured = overhead
+        if isinstance(usage.get("completion_tokens"), int):
+            state.completion_tokens_exact += usage["completion_tokens"]
         self.store.write_artifact_text(
             self.episode_id, f"model-response-{step_index + 1:04d}.json",
-            json.dumps({"step": step_index, "raw": raw[:35000]}, indent=2))
+            json.dumps({"step": step_index, "raw": _stored_raw(raw), "usage": usage}, indent=2))
         self.store.append_event(self.episode_id, "model_response",
-                                {"step": step_index, "chars": str(len(raw))})
+                                {"step": step_index, "chars": str(len(raw)),
+                                 "usage": {k: str(v) for k, v in usage.items()}})
+        if usage.get("finish_reason") == "length":
+            return self._protocol_error("generation truncated by output limit", "truncated_output")
         if estimate_tokens(raw) > state.budgets.max_action_tokens:
             return self._protocol_error("output exceeds action token budget", "output_limit")
         try:
@@ -329,7 +361,7 @@ class Controller:
     def _protocol_error(self, detail: str, code: str) -> bool:
         assert self.state is not None
         self.state.consecutive_invalid += 1
-        self.last_observation = {"status": "protocol_error", "code": code, "detail": detail[:300]}
+        self.last_observation = {"status": "protocol_error", "code": code, "detail": clip_text(detail, 300)}
         self.store.append_event(self.episode_id, "protocol_error", {"code": code})
         if self.state.consecutive_invalid >= 2:
             self._finish("blocked", f"repeated invalid model output ({code})")
@@ -561,7 +593,7 @@ class Controller:
     def _do_done(self, action: DoneSolvedAction | DoneBlockedAction) -> bool:
         assert self.state is not None
         if isinstance(action, DoneBlockedAction):
-            self._finish("blocked", f"{action.reason_code}: {action.summary[:300]}")
+            self._finish("blocked", f"{action.reason_code}: {clip_text(action.summary, 300)}")
             return False
         return self._validate_solved_request(action.summary)
 
@@ -595,8 +627,8 @@ class Controller:
         self.store.append_event(self.episode_id, "done_validated",
                                 {"ok": str(ok), "reasons": reasons})
         if ok:
-            self.last_observation = {"status": "solved", "summary": summary[:300]}
-            self._finish("solved", summary[:300])
+            self.last_observation = {"status": "solved", "summary": clip_text(summary, 300)}
+            self._finish("solved", clip_text(summary, 300))
             return False
         self.last_observation = {"status": "not_solved", "reasons": reasons}
         return self._still_running()
@@ -616,10 +648,16 @@ class Controller:
         self.store.write_artifact_text(self.episode_id, "final.diff", final_diff)
         handoff = render_handoff(state, changed, str(self.store.episode_dir(self.episode_id)))
         self.store.write_handoff(self.episode_id, handoff)
-        rss = controller_rss_mb()
+        from .telemetry import snapshot as _memory_snapshot
+
+        worker_image = getattr(self.backend, "image", None)
         self.store.append_event(self.episode_id, "handoff_written", {
-            "outcome": outcome, "reason": reason[:300],
-            "controller_rss_mb": str(rss) if rss is not None else "unknown"})
+            "outcome": outcome, "reason": clip_text(reason, 300),
+            "memory": _memory_snapshot(worker_image=worker_image if isinstance(worker_image, str) else None),
+            "prompt_tokens_exact": str(state.prompt_tokens_exact),
+            "completion_tokens_exact": str(state.completion_tokens_exact),
+            "prompt_tokens_est": str(state.prompt_tokens_est),
+            "completion_tokens_est": str(state.completion_tokens_est)})
         self.store.save_state(state)
 
     def _render_final_diff(self, changed: list[str]) -> str:

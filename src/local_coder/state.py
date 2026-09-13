@@ -105,6 +105,13 @@ class EpisodeState(BaseModel):
     fingerprints: list[str] = Field(default_factory=list)
     prompt_tokens_est: int = 0
     completion_tokens_est: int = 0
+    # Server-measured totals (usage.prompt/completion_tokens). Zero with
+    # estimate-only adapters; exact and estimate columns never mix.
+    prompt_tokens_exact: int = 0
+    completion_tokens_exact: int = 0
+    # Measured chat-template overhead (usage.prompt_tokens minus content
+    # tokens) from the latest live generation; None until measured.
+    template_overhead_measured: int | None = None
     created_ts: str = ""
     updated_ts: str = ""
     candidate_tree_hash: str = ""

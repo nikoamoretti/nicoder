@@ -77,11 +77,17 @@ def cmd_doctor(args) -> int:
         import os
 
         from .inference.llama_cpp import check_configured
+        from .telemetry import llama_server_version, snapshot
 
         try:
             url = check_configured(os.environ.get("LOCAL_CODER_LLAMA_URL"))
-            LlamaCppAdapter(url).probe()
-            print("  model probe: VALID action returned")
+            adapter = _build_llama_adapter(args, os.environ)
+            record = adapter.probe(save_dir=_store(args).state_dir)
+            print(f"  model probe: VALID action returned ({url})")
+            print(f"  probe checks: {record['checks']}")
+            print(f"  provenance: {adapter.provenance()}")
+            print(f"  local llama-server binary: {llama_server_version()}")
+            print(f"  memory: {snapshot(worker_image='local-coder-worker:1')}")
         except AdapterError as exc:
             print(f"  model probe: FAILED ({exc})")
             ok = False
@@ -91,6 +97,23 @@ def cmd_doctor(args) -> int:
     return 0 if ok else 1
 
 
+def _build_llama_adapter(args, environ) -> LlamaCppAdapter:
+    """Build the live adapter from explicit loopback config (no downloads)."""
+    from .inference.llama_cpp import check_configured
+
+    url = check_configured(environ.get("LOCAL_CODER_LLAMA_URL", ""))
+    return LlamaCppAdapter(
+        url,
+        model=getattr(args, "model", None) or environ.get("LOCAL_CODER_MODEL", "unknown"),
+        max_tokens=getattr(args, "max_tokens", None) or 2048,
+        timeout_s=getattr(args, "gen_timeout", None) or 300,
+        model_file=getattr(args, "model_file", None) or environ.get("LOCAL_CODER_MODEL_FILE"),
+        quantization=getattr(args, "quantization", None)
+        or environ.get("LOCAL_CODER_QUANTIZATION", "unknown"),
+        n_ctx=getattr(args, "n_ctx", None),
+    )
+
+
 def _build_adapter(args, config):
     profile = args.profile
     if profile.startswith("fake:"):
@@ -98,10 +121,7 @@ def _build_adapter(args, config):
     if profile == "llama":
         import os
 
-        url = os.environ.get("LOCAL_CODER_LLAMA_URL", "")
-        if not url:
-            raise AdapterError("profile llama needs LOCAL_CODER_LLAMA_URL (loopback http URL)")
-        return LlamaCppAdapter(url)
+        return _build_llama_adapter(args, os.environ)
     raise AdapterError(f"unknown profile {profile!r} (expected fake:* or llama)")
 
 
@@ -153,6 +173,8 @@ def cmd_run(args) -> int:
     print(f"files: {files}  tests: {test_status}  decisions: {state.generations_used}")
     print(f"profile: {adapter.name}/{getattr(adapter, 'profile', '')}  "
           f"backend: {backend.name} ({backend.isolation_label})")
+    print(f"tokens exact in/out: {state.prompt_tokens_exact}/{state.completion_tokens_exact}  "
+          f"est in/out: {state.prompt_tokens_est}/{state.completion_tokens_est}")
     print(f"diff: {epdir}/artifacts/final.diff  handoff: {epdir}/handoff.md")
     return 0 if state.outcome == "solved" else 1
 
@@ -294,6 +316,16 @@ def cmd_future(args) -> int:
     return 3
 
 
+def _add_llama_args(parser) -> None:
+    """Live-profile options. All explicit; nothing is downloaded or guessed."""
+    parser.add_argument("--model", default=None, help="model alias for the local server")
+    parser.add_argument("--model-file", default=None, help="local model file path (hashed for provenance)")
+    parser.add_argument("--quantization", default=None, help="e.g. Q4_K_M (recorded, never inferred)")
+    parser.add_argument("--n-ctx", default=None, type=int, help="verified server context size")
+    parser.add_argument("--max-tokens", default=None, type=int, help="per-generation output budget")
+    parser.add_argument("--gen-timeout", default=None, type=int, help="per-generation deadline in seconds")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI parser."""
     parser = argparse.ArgumentParser(prog="local-coder", description="Bounded autonomous patcher (M1 offline core)")
@@ -316,6 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", required=True, help="fake:success|fake:wrong|fake:blocked|llama")
     p.add_argument("--execution", default=None, help="isolated|trusted-local (default: repo config)")
     p.add_argument("--episode-id", default=None)
+    _add_llama_args(p)
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("inspect", help="show stored episode evidence")
@@ -326,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("episode")
     p.add_argument("--profile", required=True)
     p.add_argument("--execution", default=None)
+    _add_llama_args(p)
     p.set_defaults(func=cmd_resume)
 
     p = sub.add_parser("diff", help="print stored final diff")

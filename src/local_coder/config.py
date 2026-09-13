@@ -33,6 +33,9 @@ class Budgets(BaseModel):
     server_context_tokens: int = 8192
     max_prompt_tokens: int = 6144
     briefing_target_tokens: int = 4096
+    # Conservative bound for chat-template overhead until a live run measures
+    # it (server usage.prompt_tokens minus content tokens). Labeled ESTIMATE.
+    template_reserve_tokens: int = 256
     max_patch_bytes: int = 32 * 1024
     test_timeout_s: int = 60
     max_elapsed_s: int = 15 * 60

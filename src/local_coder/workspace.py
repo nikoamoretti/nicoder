@@ -123,6 +123,17 @@ def parse_unified_diff(diff: str) -> list[FilePatch]:
     for fp in files:
         if not fp.hunks:
             raise PatchValidationError(f"no hunks for {fp.path}", "empty_diff")
+        for hunk in fp.hunks:
+            old_lines = sum(1 for ln in hunk.lines if ln.kind in (" ", "-"))
+            new_lines = sum(1 for ln in hunk.lines if ln.kind in (" ", "+"))
+            if old_lines != hunk.old_count or new_lines != hunk.new_count:
+                raise PatchValidationError(
+                    f"hunk header/body count disagreement in {fp.path} "
+                    f"(declared -{hunk.old_start},{hunk.old_count} "
+                    f"+{hunk.new_start},{hunk.new_count}, body has "
+                    f"{old_lines}/{new_lines}); refusing to guess",
+                    "malformed_diff",
+                )
     return files
 
 

@@ -152,3 +152,23 @@ def test_revert_restores_bytes(repo_copy, state_dir, tmp_path):
     done = patch_skill.run_patch_revert(controller.state, ws, reverse, "regression")
     assert done["status"] == "reverted"
     assert (ws.root / "src" / "calc.py").read_bytes() == original
+
+
+def test_header_body_count_disagreement_rejected_at_parse(repo_copy, tmp_path):
+    from local_coder.workspace import CandidateWorkspace
+
+    dest = tmp_path / "candidate"
+    ws = CandidateWorkspace.create(repo_copy, dest)
+    before = (ws.root / "src" / "calc.py").read_bytes()
+    # Live-model-shaped defect: 7-line header over an 8-line body plus a
+    # trailing bare marker line. Must fail closed before touching files.
+    bad = (
+        "--- a/src/calc.py\n+++ b/src/calc.py\n@@ -2,7 +2,7 @@\n \n def add(a, b):\n"
+        '     """Return the sum of a and b."""\n-    return a - b  # BUG: subtracts instead of adding\n'
+        "+    return a + b  # BUG: subtracts instead of adding\n \n \n def mul(a, b):\n"
+        '     """Return the product of a and b."""\n---'
+    )
+    with pytest.raises(PatchValidationError) as exc:
+        ws.apply_diff(bad, {"src/calc.py"}, ["src/**/*.py"], 32 * 1024)
+    assert exc.value.code == "malformed_diff"
+    assert (ws.root / "src" / "calc.py").read_bytes() == before

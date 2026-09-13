@@ -53,6 +53,22 @@ rather than silently falling back when isolation is unavailable.
 honestly until then. Live local-model profiles (`llama`) need
 `LOCAL_CODER_LLAMA_URL` pointing at a loopback llama.cpp server.
 
+## Verified local profile (Prompt 3)
+
+One working profile, measured on Apple M2 Pro / 16GB (target hardware class):
+
+- Model: `bartowski/Qwen_Qwen3.5-4B-GGUF`, file `Qwen_Qwen3.5-4B-Q4_K_M.gguf`
+  (official `Qwen/Qwen3.5-4B` post-trained weights, community imatrix quant),
+  SHA-256 `13c16f42…cda65f8a983`, served with llama.cpp 0.4.0 (build 10809),
+  `-c 8192`, full Metal offload, alias `Qwen3.5-4B-Q4_K_M`.
+- Live episode `var/episodes-live/live-demo-calc-01` (preserved in the
+  working tree, gitignored): demo_calc solved in 5 generations / 65s —
+  FIND, rejected malformed PATCH, correct PATCH, CHECK pass, DONE validated.
+  Server-measured 4306 prompt / 1591 completion tokens; template overhead
+  measured 9 tokens; server RSS ~1.18GB, controller ~61MB.
+- Missing: the other report candidates (Qwen2.5-Coder-7B-Instruct, Qwen3.5-9B)
+  are not installed; no 16GB-suitability claim is made from one episode.
+
 ## Verification
 
 ```bash

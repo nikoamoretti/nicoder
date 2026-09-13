@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from ..execution.pytest_parser import clip_text
 from ..paths import sha256_file
 from ..state import EpisodeState, PatchRecord
 from ..workspace import CandidateWorkspace, PatchValidationError
@@ -66,7 +67,7 @@ def run_patch_apply(
                                  json.dumps({k: v.hex() for k, v in result.reverse.items()}))
     record = PatchRecord(
         sha=digest,
-        summary=expected_effect[:200],
+        summary=clip_text(expected_effect, 200),
         files=result.files,
         base_tree=base_tree,
         result_tree=workspace.tree_hash(),

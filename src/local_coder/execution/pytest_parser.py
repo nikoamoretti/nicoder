@@ -15,6 +15,37 @@ from pathlib import Path
 FRAME_RE = re.compile(r"(?m)^\s*(?:File \"?)?([A-Za-z0-9_./\\-]+\.py)\"?,? line (\d+)")
 ERROR_TYPE_RE = re.compile(r"(?m)^([A-Za-z_][A-Za-z0-9_.]*?(?:Error|Exception|Failure|Timeout|Assert\w*))\b")
 
+# Exit codes of the installed pytest 8.x runner. Pinned knowledge: any other
+# code (including a successful exit paired with a failing report) means the
+# runner itself cannot be trusted and the evidence is incomplete.
+EXIT_OK = 0
+EXIT_TESTS_FAILED = 1
+EXIT_INTERRUPTED = 2
+EXIT_INTERNAL_ERROR = 3
+EXIT_USAGE_ERROR = 4
+EXIT_NO_TESTS = 5
+
+
+def clip_text(text: str, limit: int) -> str:
+    """Clip a plain string with an explicit marker (never silent)."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…[clipped]"
+
+
+def classify_exit_code(code: int | None) -> str:
+    """Name a pytest process outcome for evidence evaluation."""
+    if code is None:
+        return "not_exited"
+    return {
+        EXIT_OK: "ok",
+        EXIT_TESTS_FAILED: "tests_failed",
+        EXIT_INTERRUPTED: "interrupted",
+        EXIT_INTERNAL_ERROR: "internal_error",
+        EXIT_USAGE_ERROR: "usage_error",
+        EXIT_NO_TESTS: "no_tests",
+    }.get(code, "unknown")
+
 
 @dataclass
 class ParsedSuite:
@@ -60,13 +91,13 @@ def parse_junit(xml_path: Path) -> ParsedSuite:
                 if parsed.failure_test is None:
                     parsed.failure_test = test_id
                     parsed.failure_type = _short_type(failure.get("message", ""))
-                    parsed.failure_message = (failure.get("message", "") or "")[:500]
+                    parsed.failure_message = clip_text(failure.get("message", "") or "", 500)
             elif error is not None:
                 parsed.errors.append(test_id)
                 if parsed.failure_test is None:
                     parsed.failure_test = test_id
                     parsed.failure_type = _short_type(error.get("message", ""))
-                    parsed.failure_message = (error.get("message", "") or "")[:500]
+                    parsed.failure_message = clip_text(error.get("message", "") or "", 500)
             elif skipped is not None:
                 parsed.skipped.append(test_id)
             else:
@@ -74,7 +105,7 @@ def parse_junit(xml_path: Path) -> ParsedSuite:
         for tag in ("error",):
             for node in suite.iter(tag):
                 if node.get("message"):
-                    parsed.collection_error = (parsed.collection_error or "") + node.get("message", "")[:500]
+                    parsed.collection_error = clip_text((parsed.collection_error or "") + node.get("message", ""), 500)
     parsed.collected = sorted(set(parsed.collected))
     parsed.passed = sorted(set(parsed.passed))
     parsed.failed = sorted(set(parsed.failed))
@@ -105,7 +136,7 @@ def summarize_log_failure(log: str, failed: list[str]) -> tuple[str | None, list
     lines = [ln.strip() for ln in log.splitlines() if ln.strip()]
     for line in reversed(lines[-30:]):
         if line.startswith("E ") or ERROR_TYPE_RE.match(line) or "assert" in line.lower():
-            summary = line[:300]
+            summary = clip_text(line, 300)
             break
     if summary is None and failed:
         summary = f"failing: {', '.join(failed[:5])}"
