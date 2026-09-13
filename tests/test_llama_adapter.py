@@ -31,6 +31,9 @@ class MockState:
         self.channel = "content"
         self.drip_delay = 0.0
         self.close_early = False
+        # When set, these reasoning deltas stream alongside empty content,
+        # emulating a thinking model whose final channel stays empty.
+        self.reasoning_stream: str | None = None
 
 
 def _sse_chunks(content, finish, usage, channel):
@@ -86,6 +89,9 @@ class Handler(BaseHTTPRequestHandler):
             chunks = list(_sse_chunks(state.chat_body["content"],
                                       state.chat_body["finish_reason"],
                                       state.chat_body["usage"], state.channel))
+            if state.reasoning_stream is not None:
+                extra = list(_sse_chunks(state.reasoning_stream, None, {}, "reasoning_content"))
+                chunks[1:1] = [c for c in extra if c["choices"][0]["delta"]]
             for index, chunk in enumerate(chunks):
                 if state.drip_delay:
                     time.sleep(state.drip_delay)
@@ -418,3 +424,75 @@ def test_cancelled_dispatch_consumes_slot_without_state_change(repo_copy, state_
     assert controller.state.generations_used == used_before + 1
     assert controller.last_observation["status"] == "adapter_error"
     assert controller.state.fingerprints == []
+
+
+def test_final_only_accepts_final_channel(mock_server):
+    adapter = _adapter(mock_server, channel_policy="final-only")
+    assert adapter.generate("briefing", 0) == ACTION
+    assert adapter.last_usage["channel"] == "content"
+
+
+def test_final_only_rejects_reasoning_only_output(mock_server):
+    _, state = mock_server
+    state.chat_body = {"content": "", "finish_reason": "stop",
+                       "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    state.reasoning_stream = "thinking without ever answering"
+    adapter = _adapter(mock_server, channel_policy="final-only")
+    with pytest.raises(AdapterError, match="reasoning-only output is a compatibility failure"):
+        adapter.generate("briefing", 0)
+    assert adapter.last_usage is None
+
+
+def test_legacy_fallback_still_reads_reasoning_channel(mock_server):
+    _, state = mock_server
+    state.chat_body = {"content": "", "finish_reason": "stop",
+                       "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    state.reasoning_stream = ACTION
+    adapter = _adapter(mock_server, channel_policy="legacy")
+    assert adapter.generate("briefing", 0) == ACTION
+    assert adapter.last_usage["channel"] == "reasoning_content"
+    assert adapter.last_usage["reasoning_present"] is True
+
+
+def test_invalid_channel_policy_rejected(mock_server):
+    url, _ = mock_server
+    with pytest.raises(AdapterError, match="unknown channel policy"):
+        LlamaCppAdapter(url, channel_policy="everything")
+
+
+def test_invalid_thinking_mode_rejected(mock_server):
+    url, _ = mock_server
+    with pytest.raises(AdapterError, match="unknown thinking mode"):
+        LlamaCppAdapter(url, thinking="maximum")
+
+
+def test_thinking_off_probe_requires_content_without_reasoning(mock_server, tmp_path):
+    _, state = mock_server
+    adapter = _adapter(mock_server, thinking="off")
+    record = adapter.probe(save_dir=tmp_path)
+    assert record["thinking"] == "off"
+    assert record["channel"] == "content"
+    assert adapter.provenance()["thinking"] == "off"
+
+
+def test_thinking_off_probe_fails_on_reasoning_output(mock_server):
+    _, state = mock_server
+    state.chat_body = {"content": "", "finish_reason": "stop",
+                       "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    state.reasoning_stream = ACTION
+    adapter = _adapter(mock_server, thinking="off")
+    with pytest.raises(AdapterError, match="reasoning output|final-answer content"):
+        adapter.probe()
+
+
+def test_v2_grammar_sent_for_v2_constraint(mock_server):
+    from local_coder.inference.grammar import constraint_id_v2
+
+    adapter = _adapter(mock_server, constraint=constraint_id_v2())
+    adapter.generate("briefing", 0)
+    _, state = mock_server
+    payload = dict(state.requests[-1][1])
+    assert '\\"replace\\"' in payload["grammar"]
+    assert '\\"apply\\"' not in payload["grammar"]
+    assert '\\"edits\\"' in payload["grammar"]
+    assert adapter.provenance()["constraint"] == constraint_id_v2()

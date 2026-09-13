@@ -26,11 +26,14 @@ from .inference.base import AdapterError, ModelAdapter
 from .paths import tree_hash as _tree_hash
 from .persistence import EpisodeStore, new_episode_id, utc_now
 from .protocol import (
+    PROTOCOL_VERSION,
+    PROTOCOL_VERSION_V2,
     CheckAction,
     DoneBlockedAction,
     DoneSolvedAction,
     FindAction,
     PatchApplyAction,
+    PatchReplaceAction,
     PatchRevertAction,
     ProtocolError,
     estimate_tokens,
@@ -124,7 +127,10 @@ class Controller:
         ticket: str,
         episode_id: str | None = None,
         task_id: str | None = None,
+        protocol_version: str = PROTOCOL_VERSION,
     ) -> None:
+        if protocol_version not in (PROTOCOL_VERSION, PROTOCOL_VERSION_V2):
+            raise ValueError(f"unknown protocol version {protocol_version!r}")
         self.store = store
         self.config = config
         self.adapter = adapter
@@ -133,6 +139,7 @@ class Controller:
         self.ticket = ticket
         self.episode_id = episode_id or new_episode_id()
         self.task_id = task_id
+        self.protocol_version = protocol_version
         self.state: EpisodeState | None = None
         self.workspace: CandidateWorkspace | None = None
         self.original_manifest: dict[str, str] = {}
@@ -180,6 +187,7 @@ class Controller:
             acceptance=self.config.acceptance,
             provenance={
                 **self.adapter.provenance(),
+                "protocol_version": self.protocol_version,
                 "execution_backend": self.backend.name,
                 "isolation": self.backend.isolation_label,
             },
@@ -279,7 +287,8 @@ class Controller:
         try:
             text = briefing_mod.render(
                 state, self.workspace, self.last_observation,
-                counter=counter, context_limit=self.adapter.context_limit())
+                counter=counter, context_limit=self.adapter.context_limit(),
+                protocol_version=self.protocol_version)
         except briefing_mod.ContextBudgetExceeded as exc:
             self._finish("blocked", f"context_budget_exceeded: {exc}")
             return False
@@ -306,15 +315,16 @@ class Controller:
         with an unknown outcome: it is never silently resampled.
         """
         assert self.state is not None
-        from .protocol import PROTOCOL_VERSION
-
         state = self.state
         turn = step_index + 1
         store, ep = self.store, self.episode_id
         store.write_turn_file(ep, turn, "state-pre.json", state.model_dump_json(indent=2))
         store.write_turn_file(ep, turn, "briefing.txt", text)
+        store.write_turn_file(
+            ep, turn, "focus.json",
+            json.dumps(briefing_mod.focus_bindings(state), indent=2, sort_keys=True))
         profile = {
-            "protocol_version": PROTOCOL_VERSION,
+            "protocol_version": self.protocol_version,
             "constraint": getattr(self.adapter, "constraint", "json_object"),
             "counter": counter.name,
             "counter_exact": counter.exact,
@@ -375,7 +385,7 @@ class Controller:
         if estimate_tokens(raw) > state.budgets.max_action_tokens:
             return self._protocol_error("output exceeds action token budget", "output_limit")
         try:
-            action = parse_raw(raw)
+            action = parse_raw(raw, self.protocol_version)
         except ProtocolError as exc:
             self._turn_write(turn, "action.json", json.dumps(
                 {"ok": False, "code": exc.code, "detail": str(exc)[:500]}, indent=2))
@@ -397,7 +407,7 @@ class Controller:
         state.last_action = briefing_mod.action_preview(action)
         if isinstance(action, FindAction):
             cont = self._do_find(action)
-        elif isinstance(action, PatchApplyAction | PatchRevertAction):
+        elif isinstance(action, PatchApplyAction | PatchRevertAction | PatchReplaceAction):
             cont = self._do_patch(action)
         elif isinstance(action, CheckAction):
             cont = self._do_check(action)
@@ -549,7 +559,7 @@ class Controller:
                                  "new_focus": [f.path for f in fresh]})
         return self._still_running()
 
-    def _do_patch(self, action: PatchApplyAction | PatchRevertAction) -> bool:
+    def _do_patch(self, action: PatchApplyAction | PatchRevertAction | PatchReplaceAction) -> bool:
         assert self.state is not None and self.workspace is not None
         state = self.state
         if state.patch_attempts >= state.budgets.max_patch_attempts:
@@ -562,6 +572,8 @@ class Controller:
         state.patch_attempts += 1
         if isinstance(action, PatchRevertAction):
             return self._do_revert(action)
+        if isinstance(action, PatchReplaceAction):
+            return self._do_replace(action)
         if not state.focus:
             self.last_observation = {"status": "rejected", "code": "need_find",
                                      "detail": "PATCH requires current focus evidence; use FIND first"}
@@ -603,6 +615,99 @@ class Controller:
             "patch": record.sha, "files": record.files,
             "result_tree": record.result_tree})
         return self._still_running()
+
+    def _do_replace(self, action: PatchReplaceAction) -> bool:
+        """Execute one protocol-v2 exact-replacement PATCH attempt."""
+        assert self.state is not None and self.workspace is not None
+        state = self.state
+        if self.protocol_version != PROTOCOL_VERSION_V2:
+            self.last_observation = {"status": "rejected", "code": "wrong_protocol",
+                                     "detail": "replace requires protocol v2"}
+            self._ev( "observation",
+                                    {"action": "patch", "status": "rejected"})
+            return self._still_running()
+        if not state.focus:
+            self.last_observation = {"status": "rejected", "code": "need_find",
+                                     "detail": "PATCH requires current focus evidence; use FIND first"}
+            self._ev( "observation",
+                                    {"action": "patch", "status": "rejected"})
+            return self._still_running()
+        tree = self.workspace.tree_hash()
+        if self._repeat(fingerprint(action, tree), "patch-replace"):
+            self.store.save_state(state)
+            return self._still_running()
+        bindings = self._turn_bindings()
+        if bindings is None:
+            self.last_observation = {"status": "rejected", "code": "missing_bindings",
+                                     "detail": "no focus bindings for this turn; re-FIND before patching"}
+            self._ev( "observation",
+                                    {"action": "patch", "status": "rejected"})
+            return self._still_running()
+        resolved: list[tuple[str, str, str]] = []
+        file_hashes: dict[str, str] = {}
+        for edit in action.edits:
+            binding = bindings.get(edit.file_id)
+            if binding is None:
+                self.last_observation = {"status": "rejected", "code": "unknown_file_id",
+                                         "detail": f"file_id {edit.file_id} is not a current focus file"}
+                self._ev( "observation",
+                                        {"action": "patch", "status": "rejected"})
+                return self._still_running()
+            resolved.append((binding["path"], edit.old, edit.new))
+            file_hashes[binding["path"]] = binding["sha256"]
+        edits_sha = hashlib.sha256(
+            json.dumps(action.model_dump()["edits"], sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        self._ev( "patch_intent",
+                                {"edits_sha": edits_sha, "base_tree": tree, "interface": "replace"})
+        observation, record, reverse, rendered = patch_skill.run_patch_replace(
+            state, self.workspace, self.store.artifacts_dir(self.episode_id),
+            resolved, file_hashes, self.config.editable_paths,
+            self.episode_id, self.store.write_artifact_text)
+        self.store.write_artifact_text(
+            self.episode_id, f"patch-{state.generations_used:04d}.diff", rendered)
+        if record is None or reverse is None:
+            self.last_observation = observation
+            self._ev( "patch_rejected", observation)
+            return self._still_running()
+        if state.last_patch is not None:
+            state.patch_history.append(state.last_patch)
+        state.last_patch = record
+        self.reverse_cache[record.sha] = reverse
+        for new in record.files:
+            if new not in state.modified_files:
+                state.modified_files.append(new)
+        for foc in state.focus:
+            if foc.path in record.files:
+                from .paths import sha256_file
+
+                foc.sha256 = sha256_file(self.workspace.root / foc.path)
+        state.candidate_tree_hash = self.workspace.tree_hash()
+        state.phase = TRANSITIONS.get((state.phase, "patch"), state.phase)
+        self.last_observation = observation
+        self._ev( "patch_applied", {
+            "patch": record.sha, "files": record.files,
+            "result_tree": record.result_tree, "interface": "replace"})
+        return self._still_running()
+
+    def _turn_bindings(self) -> dict[int, dict[str, str]] | None:
+        """Focus file-ID bindings snapshotted for the open turn, if any."""
+        if self._open_turn is None:
+            return None
+        try:
+            raw = self.store.read_turn_file(self.episode_id, self._open_turn, "focus.json")
+        except OSError:
+            return None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        bindings: dict[int, dict[str, str]] = {}
+        for key, value in data.items():
+            try:
+                bindings[int(key)] = {"path": str(value["path"]), "sha256": str(value["sha256"])}
+            except (ValueError, KeyError, TypeError):
+                return None
+        return bindings
 
     def _do_revert(self, action: PatchRevertAction) -> bool:
         assert self.state is not None and self.workspace is not None

@@ -102,6 +102,11 @@ def _build_llama_adapter(args, environ) -> LlamaCppAdapter:
     from .inference.llama_cpp import check_configured
 
     url = check_configured(environ.get("LOCAL_CODER_LLAMA_URL", ""))
+    from .inference.grammar import constraint_id, constraint_id_v2
+
+    protocol = getattr(args, "protocol", "1")
+    if protocol not in ("1", "2"):
+        raise AdapterError(f"unknown protocol version {protocol!r}")
     return LlamaCppAdapter(
         url,
         model=getattr(args, "model", None) or environ.get("LOCAL_CODER_MODEL", "unknown"),
@@ -111,6 +116,9 @@ def _build_llama_adapter(args, environ) -> LlamaCppAdapter:
         quantization=getattr(args, "quantization", None)
         or environ.get("LOCAL_CODER_QUANTIZATION", "unknown"),
         n_ctx=getattr(args, "n_ctx", None),
+        constraint=constraint_id_v2() if protocol == "2" else constraint_id(),
+        channel_policy=getattr(args, "channel", None) or "legacy",
+        thinking=getattr(args, "thinking", None) or "auto",
     )
 
 
@@ -157,7 +165,8 @@ def cmd_run(args) -> int:
         return 1
     ticket = ticket_file.read_text(encoding="utf-8")
     store = _store(args)
-    controller = Controller(store, config, adapter, backend, repo, ticket, episode_id=args.episode_id)
+    controller = Controller(store, config, adapter, backend, repo, ticket, episode_id=args.episode_id,
+                            protocol_version=getattr(args, "protocol", "1") or "1")
     try:
         state = controller.run()
     except RuntimeError as exc:
@@ -171,7 +180,8 @@ def cmd_run(args) -> int:
     print(f"goal: {ticket.strip().splitlines()[0][:120]}")
     print(f"outcome: {state.outcome} ({state.stop_reason})")
     print(f"files: {files}  tests: {test_status}  decisions: {state.generations_used}")
-    print(f"profile: {adapter.name}/{getattr(adapter, 'profile', '')}  "
+    print(f"protocol: v{state.provenance.get('protocol_version', '?')}  "
+          f"profile: {adapter.name}/{getattr(adapter, 'profile', '')}  "
           f"backend: {backend.name} ({backend.isolation_label})")
     print(f"tokens exact in/out: {state.prompt_tokens_exact}/{state.completion_tokens_exact}  "
           f"est in/out: {state.prompt_tokens_est}/{state.completion_tokens_est}")
@@ -223,7 +233,8 @@ def cmd_resume(args) -> int:
     except (AdapterError, IsolationUnavailable, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    controller = Controller(store, config, adapter, backend, Path(state.repo_path), state.ticket)
+    controller = Controller(store, config, adapter, backend, Path(state.repo_path), state.ticket,
+                            protocol_version=state.provenance.get("protocol_version", "1"))
     try:
         final = controller.resume(args.episode)
     except (RuntimeError, FileNotFoundError) as exc:
@@ -408,6 +419,12 @@ def _add_llama_args(parser) -> None:
     parser.add_argument("--n-ctx", default=None, type=int, help="verified server context size")
     parser.add_argument("--max-tokens", default=None, type=int, help="per-generation output budget")
     parser.add_argument("--gen-timeout", default=None, type=int, help="per-generation deadline in seconds")
+    parser.add_argument("--protocol", default="1", choices=["1", "2"],
+                        help="action protocol version (v2 = exact-replacement PATCH)")
+    parser.add_argument("--thinking", default="auto", choices=["auto", "off"],
+                        help="declared thinking expectation (verified by probe, never assumed)")
+    parser.add_argument("--channel", default="legacy", choices=["legacy", "final-only"],
+                        help="output channel policy (final-only rejects reasoning-only output)")
 
 
 def build_parser() -> argparse.ArgumentParser:

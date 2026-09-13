@@ -16,7 +16,7 @@ from .skills.check import compare_to_baseline
 from .state import CheckEvidence, EpisodeState
 from .workspace import CandidateWorkspace
 
-ACTION_SCHEMA = """\
+ACTION_SCHEMA_V1 = """\
 Choose exactly ONE action as a single JSON object (no fences, no list):
 {"action":"find","query":"...","symbols":["Name"]} |
 {"action":"patch","operation":"apply","diff":"<unified diff>","expected_effect":"..."} |
@@ -25,6 +25,40 @@ Choose exactly ONE action as a single JSON object (no fences, no list):
 {"action":"done","status":"solved","summary":"..."} |
 {"action":"done","status":"blocked","reason_code":"...","summary":"..."}
 PATCH may touch only current focus files. CHECK runs a registered scope."""
+
+# Backwards-compatible alias: v1 is the default protocol.
+ACTION_SCHEMA = ACTION_SCHEMA_V1
+
+ACTION_SCHEMA_V2 = (
+    "Choose exactly ONE action as a single JSON object (no fences, no list).\n"
+    "Protocol v2: PATCH uses exact text replacement. Never author unified diffs,\n"
+    "hashes, line numbers, hunk counts, or Git headers. Copy `old` text exactly\n"
+    "from the excerpts below, including whitespace.\n"
+    '{"action":"find","query":"...","symbols":["Name"]} |\n'
+    '{"action":"patch","operation":"replace",'
+    '"edits":[{"file_id":1,"old":"<exact existing text>",'
+    '"new":"<replacement text>"}],"expected_effect":"..."} |\n'
+    '{"action":"patch","operation":"revert_last","reason_code":"..."} |\n'
+    '{"action":"check","scope":"focused|regression"} |\n'
+    '{"action":"done","status":"solved","summary":"..."} |\n'
+    '{"action":"done","status":"blocked","reason_code":"...","summary":"..."}\n'
+    "PATCH replace may touch only current focus files, addressed by file_id.\n"
+    "CHECK runs a registered scope."
+)
+
+# Task-independent example (a toy greeting function; never a ticket answer).
+V2_EXAMPLE = (
+    "Example replace (toy file only, not this ticket):\n"
+    "excerpt shows:\n"
+    "--- 1:src/toy.py:1-3 sha=abc123 ---\n"
+    "1:def hello(name):\n"
+    '2:    return "hi " + name\n'
+    "action:\n"
+    '{"action":"patch","operation":"replace",'
+    '"edits":[{"file_id":1,"old":"    return \\"hi \\" + name",'
+    '"new":"    return \\"hello, \\" + name"}],'
+    '"expected_effect":"Friendlier greeting"}'
+)
 
 
 class ContextBudgetExceeded(Exception):
@@ -38,6 +72,7 @@ def render(
     omitted_note: list[str] | None = None,
     counter: TokenCounter | None = None,
     context_limit: int | None = None,
+    protocol_version: str = "1",
 ) -> str:
     """Render the full briefing for the next generation.
 
@@ -45,6 +80,8 @@ def render(
     ranges only) until the prompt fits the cap; every omission is recorded.
     Token counts come from the loaded model's tokenizer when live
     (MEASURED) and from the chars//4 heuristic otherwise (ESTIMATE).
+    Protocol v2 numbers each focus file (file_id) for PATCH replace actions
+    and appends a task-independent replace example.
     """
     counter = counter or EstimateCounter()
     budgets = state.budgets
@@ -62,11 +99,11 @@ def render(
             f"minus {budgets.max_action_tokens} generation tokens leaves {cap}"
         )
     excerpts, omitted = _collect_excerpts(state, workspace)
-    text = _assemble(state, excerpts, omitted, last_observation)
+    text = _assemble(state, excerpts, omitted, last_observation, protocol_version)
     while counter.count(text) > cap and excerpts:
         dropped = excerpts.pop()
         omitted.append(f"{dropped[0]} (trimmed to fit {cap} {label} prompt tokens)")
-        text = _assemble(state, excerpts, omitted, last_observation)
+        text = _assemble(state, excerpts, omitted, last_observation, protocol_version)
     tokens = counter.count(text)
     if tokens > cap:
         raise ContextBudgetExceeded(
@@ -83,18 +120,22 @@ def _assemble(
     excerpts: list[tuple[str, str]],
     omitted: list[str],
     last_observation: dict | None,
+    protocol_version: str = "1",
 ) -> str:
+    schema = ACTION_SCHEMA_V2 if protocol_version == "2" else ACTION_SCHEMA_V1
     sections = [
         f"TASK\n{state.ticket.strip()}",
         _budget_section(state),
         "CURRENT HYPOTHESIS (model proposal, not a fact)\n" + (state.hypothesis or "(none)"),
-        _focus_section(state, excerpts, omitted),
+        _focus_section(state, excerpts, omitted, protocol_version),
         _last_change_section(state),
         _check_section(state),
         _progress_section(state),
         _observation_section(last_observation),
-        "RULES\n" + ACTION_SCHEMA,
+        "RULES\n" + schema,
     ]
+    if protocol_version == "2":
+        sections.append(V2_EXAMPLE)
     return "\n\n".join(sections) + "\n"
 
 
@@ -133,18 +174,36 @@ def _collect_excerpts(
     return excerpts, omitted
 
 
-def _focus_section(state: EpisodeState, excerpts: list[tuple[str, str]], omitted: list[str]) -> str:
+def _focus_section(
+    state: EpisodeState, excerpts: list[tuple[str, str]], omitted: list[str], protocol_version: str = "1"
+) -> str:
     if not state.focus:
         return "FILES\n(no focus files yet; use FIND first)"
     lines = ["FILES"]
     by_path = dict(excerpts)
-    for foc in state.focus:
-        lines.append(f"{foc.path}:{foc.start}-{foc.end} sha={foc.sha256[:12]} — {foc.reason}")
+    for file_id, foc in enumerate(state.focus, start=1):
+        if protocol_version == "2":
+            lines.append(
+                f"[id={file_id}] {foc.path}:{foc.start}-{foc.end} sha={foc.sha256[:12]} — {foc.reason}"
+            )
+        else:
+            lines.append(f"{foc.path}:{foc.start}-{foc.end} sha={foc.sha256[:12]} — {foc.reason}")
         if foc.path in by_path:
             lines.append(by_path[foc.path])
     for note in omitted:
         lines.append(f"[omitted excerpt: {note}]")
     return "\n".join(lines)
+
+
+def focus_bindings(state: EpisodeState) -> dict[int, dict[str, str]]:
+    """Runtime file-ID bindings for the current focus order.
+
+    IDs are positional (1-based) over state.focus. The controller snapshots
+    this mapping into the turn bundle before dispatch and resolves replace
+    edits against the snapshot, so IDs always mean the exact paths and full
+    source hashes the model saw in that request's briefing.
+    """
+    return {file_id: {"path": foc.path, "sha256": foc.sha256} for file_id, foc in enumerate(state.focus, start=1)}
 
 
 def _last_change_section(state: EpisodeState) -> str:
@@ -283,4 +342,7 @@ def action_preview(action: Action) -> str:
     if name == "patch" and getattr(action, "operation", "") == "apply":
         diff = getattr(action, "diff", "")
         return f"patch apply ({len(diff)} chars)"
+    if name == "patch" and getattr(action, "operation", "") == "replace":
+        edits = getattr(action, "edits", [])
+        return f"patch replace ({len(edits)} edits)"
     return f"{name}"

@@ -31,7 +31,7 @@ import httpx
 
 from ..telemetry import llama_server_version, model_file_sha
 from .base import AdapterError, AdapterUnavailable, ModelAdapter
-from .grammar import action_grammar, constraint_id
+from .grammar import GRAMMARS, constraint_id
 from .tokenizer import LlamaCppCounter, TokenCounter
 
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -53,9 +53,15 @@ class LlamaCppAdapter(ModelAdapter):
         n_ctx: int | None = None,
         temperature: float = 0.2,
         constraint: str = constraint_id(),
+        channel_policy: str = "legacy",
+        thinking: str = "auto",
         response_max_bytes: int = 131072,
         read_timeout_s: int = 120,
     ) -> None:
+        if channel_policy not in ("legacy", "final-only"):
+            raise AdapterError(f"unknown channel policy {channel_policy!r}")
+        if thinking not in ("auto", "off"):
+            raise AdapterError(f"unknown thinking mode {thinking!r}")
         parsed = urlparse(endpoint)
         if parsed.scheme != "http" or (parsed.hostname or "") not in ALLOWED_HOSTS:
             raise AdapterError(f"refusing non-loopback endpoint {endpoint!r}")
@@ -68,6 +74,8 @@ class LlamaCppAdapter(ModelAdapter):
         self.n_ctx = n_ctx
         self.temperature = temperature
         self.constraint = constraint
+        self.channel_policy = channel_policy
+        self.thinking = thinking
         self.response_max_bytes = response_max_bytes
         self.read_timeout_s = read_timeout_s
         self.last_usage: dict | None = None
@@ -150,8 +158,9 @@ class LlamaCppAdapter(ModelAdapter):
             "stream_options": {"include_usage": True},
             "response_format": {"type": "json_object"},
         }
-        if self.constraint == constraint_id():
-            payload["grammar"] = action_grammar()
+        grammar_fn = GRAMMARS.get(self.constraint)
+        if grammar_fn is not None:
+            payload["grammar"] = grammar_fn()
         return payload
 
     def generate(self, briefing: str, step: int) -> str:
@@ -239,7 +248,15 @@ class LlamaCppAdapter(ModelAdapter):
             raise AdapterError(f"local model transport failed: {exc}") from exc
         content = "".join(content_parts)
         reasoning = "".join(reasoning_parts)
-        if content.strip():
+        reasoning_present = bool(reasoning.strip())
+        if self.channel_policy == "final-only":
+            if not content.strip():
+                raise AdapterError(
+                    "empty final content under final-only channel policy "
+                    "(reasoning-only output is a compatibility failure, not an action)")
+            channel = "content"
+            text = content
+        elif content.strip():
             channel = "content"
             text = content
         elif reasoning.strip():
@@ -252,6 +269,8 @@ class LlamaCppAdapter(ModelAdapter):
             "prompt_tokens": _as_int(usage.get("prompt_tokens")),
             "completion_tokens": _as_int(usage.get("completion_tokens")),
             "channel": channel,
+            "channel_policy": self.channel_policy,
+            "reasoning_present": reasoning_present,
             "streamed_bytes": received,
             "timings": timings,
         }
@@ -264,13 +283,19 @@ class LlamaCppAdapter(ModelAdapter):
 
         Checks grammar-constrained generation (response parses as JSON and
         as a valid action), /tokenize measurement, and records server props.
-        Probe records live outside episodes and are never counted as
-        generation attempts. Raises AdapterError with specifics.
+        When thinking is declared off, the probe additionally requires the
+        action in the final-answer channel with no reasoning output: a
+        reasoning-only response is a compatibility failure. Probe records
+        live outside episodes and are never counted as generation attempts.
+        Raises AdapterError with specifics.
         """
         from ..protocol import parse_raw
 
         record: dict = {"endpoint": self.endpoint, "model": self.model,
-                        "constraint": self.constraint, "checks": {}}
+                        "constraint": self.constraint,
+                        "channel_policy": self.channel_policy,
+                        "thinking": getattr(self, "thinking", "auto"),
+                        "checks": {}}
         try:
             with self._client() as client:
                 health = client.get(f"{self.endpoint}/health")
@@ -289,6 +314,11 @@ class LlamaCppAdapter(ModelAdapter):
             '"status":"blocked","reason_code":"probe","summary":"probe"}', 0)
         if self.last_usage and self.last_usage.get("channel"):
             record["channel"] = self.last_usage["channel"]
+        if getattr(self, "thinking", "auto") == "off":
+            if (self.last_usage or {}).get("reasoning_present"):
+                raise AdapterError("probe: thinking=off but the server emitted reasoning output")
+            if (self.last_usage or {}).get("channel") != "content":
+                raise AdapterError("probe: thinking=off but no final-answer content arrived")
         try:
             parsed = json.loads(raw)
             record["checks"]["constraint"] = "json_parsed" if isinstance(parsed, dict) else "violated"
@@ -333,6 +363,8 @@ class LlamaCppAdapter(ModelAdapter):
             "n_ctx_source": "configured" if self.n_ctx else "unknown",
             "chat_template": template,
             "constraint": self.constraint,
+            "channel_policy": self.channel_policy,
+            "thinking": self.thinking,
             "server_build": str(build),
             "server_slots": str(self.server_props.get("total_slots", "unknown")),
             "local_binary_version": self.local_binary_version,

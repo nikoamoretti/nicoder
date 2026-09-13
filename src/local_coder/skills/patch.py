@@ -84,6 +84,82 @@ def run_patch_apply(
     return observation, record, result.reverse
 
 
+def run_patch_replace(
+    state: EpisodeState,
+    workspace: CandidateWorkspace,
+    store_artifacts: Path,
+    edits: list[tuple[str, str, str]],
+    file_hashes: dict[str, str],
+    editable: list[str],
+    episode_id: str,
+    write_artifact,
+) -> tuple[dict, PatchRecord | None, dict[str, bytes] | None, str]:
+    """Apply protocol-v2 exact replacements atomically.
+
+    Returns (observation, record, reverse, rendered_diff). The rendered
+    unified diff is generated deterministically in software from the
+    validated before/after texts; the model never authors diff syntax.
+    """
+    _ = store_artifacts
+    stale = check_stale(state, workspace)
+    if stale:
+        return (
+            {"status": "rejected", "code": "stale_evidence",
+             "detail": f"focus changed under us: {sorted(stale)}; re-FIND before patching"},
+            None,
+            None,
+            "",
+        )
+    base_tree = workspace.tree_hash()
+    try:
+        result = workspace.apply_replacements(
+            edits, file_hashes, {f.path for f in state.focus}, editable, state.budgets.max_patch_bytes
+        )
+    except PatchValidationError as exc:
+        return ({"status": "rejected", "code": exc.code, "detail": str(exc)}, None, None, "")
+    new_files = [f for f in result.files if f not in state.modified_files]
+    if len(state.modified_files) + len(new_files) > state.budgets.max_modified_files:
+        workspace.revert_files(result.reverse, result.after)
+        return (
+            {"status": "rejected", "code": "modified_file_budget",
+             "detail": f"patch would exceed {state.budgets.max_modified_files} modified files"},
+            None,
+            None,
+            "",
+        )
+    canonical = json.dumps(
+        [{"path": rel, "old": old, "new": new} for rel, old, new in edits], sort_keys=True)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    reverse_ref = write_artifact(episode_id, f"patch-reverse-{digest}.json",
+                                 json.dumps({k: v.hex() for k, v in result.reverse.items()}))
+    record = PatchRecord(
+        sha=digest,
+        summary="v2 replace",
+        files=result.files,
+        base_tree=base_tree,
+        result_tree=workspace.tree_hash(),
+        reverse_artifact=reverse_ref,
+        after=dict(result.after),
+    )
+    from ..workspace import render_unified_diff
+
+    before_texts = {rel: data.decode("utf-8") for rel, data in result.reverse.items()}
+    after_texts = {
+        rel: (workspace.root / rel).read_text(encoding="utf-8") for rel in result.files
+    }
+    rendered = render_unified_diff(before_texts, after_texts)
+    observation = {
+        "status": "applied",
+        "interface": "replace",
+        "patch": digest,
+        "files": result.files,
+        "before": {k: v[:12] for k, v in result.before.items()},
+        "after": {k: v[:12] for k, v in result.after.items()},
+        "diff_rendered_by": "runtime",
+    }
+    return observation, record, result.reverse, rendered
+
+
 def run_patch_revert(
     state: EpisodeState,
     workspace: CandidateWorkspace,

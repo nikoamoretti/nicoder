@@ -36,7 +36,7 @@ def state_dir(tmp_path):
 
 
 def make_controller(repo, state_dir, script, profile="test", episode_id=None,
-                    backend=None, ticket_file=None):
+                    backend=None, ticket_file=None, protocol_version="1"):
     """Build a controller with test-owned argv (current interpreter's pytest)."""
     from local_coder.execution.base import ExecutionBackend as _Backend
 
@@ -49,7 +49,8 @@ def make_controller(repo, state_dir, script, profile="test", episode_id=None,
     assert isinstance(backend, _Backend)
     ticket = Path(ticket_file).read_text(encoding="utf-8") if ticket_file else (
         FIXTURE_DIR / "ticket.md").read_text(encoding="utf-8")
-    controller = Controller(store, config, adapter, backend, repo, ticket, episode_id=episode_id)
+    controller = Controller(store, config, adapter, backend, repo, ticket, episode_id=episode_id,
+                            protocol_version=protocol_version)
     return controller, adapter
 
 

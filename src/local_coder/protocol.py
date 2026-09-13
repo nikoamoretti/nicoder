@@ -5,6 +5,11 @@ return exactly one JSON object. Unknown fields are rejected. Markdown fences,
 action lists, and multi-action plans are rejected. No inference-based repair
 happens here: invalid output consumes a model decision and yields a compact
 protocol error for the next turn.
+
+Versions: "1" is the legacy unified-diff interface (control profile only).
+"2" replaces PATCH unified diffs with exact old/new text replacements bound
+to runtime-assigned focus file IDs. The controller never reinterprets an
+episode's recorded version.
 """
 from __future__ import annotations
 
@@ -15,9 +20,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 PROTOCOL_VERSION = "1"
+PROTOCOL_VERSION_V2 = "2"
 
 MAX_DIFF_CHARS = 32 * 1024
 MAX_RAW_CHARS = MAX_DIFF_CHARS + 2048
+MAX_EDITS_PER_ACTION = 8
+MAX_EDIT_TEXT_CHARS = 8 * 1024
 
 
 class ProtocolError(Exception):
@@ -59,6 +67,26 @@ class PatchRevertAction(BaseModel):
     hypothesis: str | None = Field(default=None, max_length=500)
 
 
+class ReplaceEdit(BaseModel):
+    """One exact old/new text replacement inside a runtime-known file ID."""
+
+    model_config = ConfigDict(extra="forbid")
+    file_id: int = Field(ge=1, le=64)
+    old: str = Field(min_length=1, max_length=MAX_EDIT_TEXT_CHARS)
+    new: str = Field(min_length=0, max_length=MAX_EDIT_TEXT_CHARS)
+
+
+class PatchReplaceAction(BaseModel):
+    """Protocol v2: exact replacements. No hashes, lines, hunks, or headers."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["patch"]
+    operation: Literal["replace"]
+    edits: list[ReplaceEdit] = Field(min_length=1, max_length=MAX_EDITS_PER_ACTION)
+    expected_effect: str = Field(min_length=1, max_length=500)
+    hypothesis: str | None = Field(default=None, max_length=500)
+
+
 class CheckAction(BaseModel):
     """Run one registered test scope. The model never picks a command."""
 
@@ -87,7 +115,15 @@ class DoneBlockedAction(BaseModel):
     summary: str = Field(min_length=1, max_length=1000)
 
 
-Action = FindAction | PatchApplyAction | PatchRevertAction | CheckAction | DoneSolvedAction | DoneBlockedAction
+Action = (
+    FindAction | PatchApplyAction | PatchRevertAction | PatchReplaceAction | CheckAction | DoneSolvedAction
+    | DoneBlockedAction
+)
+
+# Operations permitted per protocol version. v1 accepts unified diffs only
+# (replace is rejected); v2 accepts replacements only (apply is rejected).
+V1_PATCH_OPERATIONS = ("apply", "revert_last")
+V2_PATCH_OPERATIONS = ("replace", "revert_last")
 
 
 def _schema_error(action: str, exc: ValidationError) -> ProtocolError:
@@ -97,8 +133,12 @@ def _schema_error(action: str, exc: ValidationError) -> ProtocolError:
     return ProtocolError(f"invalid {action} action ({loc}: {msg})", "invalid_schema")
 
 
-def parse_raw(raw: str | None) -> Action:
-    """Parse exactly one action object from raw model output."""
+def parse_raw(raw: str | None, protocol_version: str = PROTOCOL_VERSION) -> Action:
+    """Parse exactly one action object from raw model output.
+
+    The protocol version selects which PATCH operations exist. Anything
+    else is identical across versions, and old episodes keep their parsing.
+    """
     if raw is None or not raw.strip():
         raise ProtocolError("empty model output", "empty")
     text = raw.strip()
@@ -119,8 +159,18 @@ def parse_raw(raw: str | None) -> Action:
         if name == "find":
             return FindAction.model_validate(data)
         if name == "patch":
-            if data.get("operation") == "revert_last":
+            operation = data.get("operation")
+            allowed = V2_PATCH_OPERATIONS if protocol_version == PROTOCOL_VERSION_V2 else V1_PATCH_OPERATIONS
+            if operation not in allowed:
+                raise ProtocolError(
+                    f"patch operation {operation!r} not in protocol {protocol_version} "
+                    f"(allowed: {', '.join(allowed)})",
+                    "unsupported_operation",
+                )
+            if operation == "revert_last":
                 return PatchRevertAction.model_validate(data)
+            if protocol_version == PROTOCOL_VERSION_V2:
+                return PatchReplaceAction.model_validate(data)
             return PatchApplyAction.model_validate(data)
         if name == "check":
             return CheckAction.model_validate(data)
@@ -147,6 +197,10 @@ def fingerprint(action: Action, context_hash: str) -> str:
     if isinstance(action, PatchApplyAction):
         data["diff_sha"] = hashlib.sha256(action.diff.encode("utf-8")).hexdigest()
         data.pop("diff", None)
+    if isinstance(action, PatchReplaceAction):
+        canonical_edits = json.dumps(action.model_dump()["edits"], sort_keys=True, separators=(",", ":"))
+        data["edits_sha"] = hashlib.sha256(canonical_edits.encode("utf-8")).hexdigest()
+        data.pop("edits", None)
     payload = {"action": data, "context": context_hash}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]

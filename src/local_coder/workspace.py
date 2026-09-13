@@ -1,4 +1,11 @@
-"""Disposable candidate workspace with transactional unified-diff patching.
+"""Disposable candidate workspace with transactional patching.
+
+Protocol v1 applies unified diffs (control profile only). Protocol v2
+applies exact old/new text replacements bound to runtime file IDs: the
+model never computes hashes, line coordinates, hunk lengths, or headers.
+Both interfaces validate everything up front, publish atomically (never
+partly), and keep reverse data. Applied v2 edits are rendered back into a
+deterministic unified diff in software.
 
 A Git worktree prevents source-tree accidents; it is NOT an operating-system
 sandbox. Candidate code still executes during CHECK, which is why execution
@@ -7,6 +14,7 @@ backends are a separate, explicit concern.
 from __future__ import annotations
 
 import ast
+import difflib
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -267,13 +275,7 @@ class CandidateWorkspace:
             planned[fp.path] = (data, new_data)
             before[fp.path] = sha256_bytes(data)
             after[fp.path] = sha256_bytes(new_data)
-        reverse: dict[str, bytes] = {}
-        for rel, (old_data, new_data) in planned.items():
-            dest = self.root / rel
-            tmp = dest.with_suffix(dest.suffix + ".patchtmp")
-            tmp.write_bytes(new_data)
-            os.replace(tmp, dest)
-            reverse[rel] = old_data
+        reverse = _publish_planned(self.root, planned)
         return ApplyResult(files=sorted(planned), before=before, after=after, reverse=reverse)
 
     def revert_files(self, reverse: dict[str, bytes], expected_after: dict[str, str]) -> None:
@@ -287,3 +289,142 @@ class CandidateWorkspace:
             tmp = dest.with_suffix(dest.suffix + ".reverttmp")
             tmp.write_bytes(old_data)
             os.replace(tmp, dest)
+
+    def apply_replacements(
+        self,
+        edits: list[tuple[str, str, str]],
+        file_hashes: dict[str, str],
+        focus_paths: set[str],
+        editable: list[str],
+        max_bytes: int,
+    ) -> ApplyResult:
+        """Apply exact (path, old, new) replacements atomically.
+
+        Every edit validates against the same pre-action file bytes: stale
+        source identities, zero/ambiguous matches, no-ops, and overlapping
+        replacements all reject before anything is written. On success the
+        complete set publishes transactionally; a crash mid-write can leave
+        at most one temp file behind, never a partial edit accepted (files
+        are renamed into place only after their full contents are staged).
+        """
+        from .paths import matches_any  # local import to avoid cycle
+
+        payload_bytes = sum(len(old.encode("utf-8")) + len(new.encode("utf-8")) for _, old, new in edits)
+        if payload_bytes > max_bytes:
+            raise PatchValidationError(f"replacement payload exceeds {max_bytes} byte budget", "patch_too_large")
+        if not edits:
+            raise PatchValidationError("replacement set is empty", "empty_diff")
+        # Group edits by resolved path, preserving action order within a file.
+        by_path: dict[str, list[tuple[str, str]]] = {}
+        for rel, old, new in edits:
+            _check_path(rel)
+            if rel not in focus_paths:
+                raise PatchValidationError(f"{rel} is not in the current focus set", "not_in_focus")
+            if not matches_any(rel, editable):
+                raise PatchValidationError(f"{rel} is not editable (tests/config are read-only)", "forbidden_path")
+            if not old:
+                raise PatchValidationError(f"empty old text rejected for {rel}", "empty_old_text")
+            by_path.setdefault(rel, []).append((old, new))
+        planned: dict[str, tuple[bytes, bytes]] = {}
+        before: dict[str, str] = {}
+        after: dict[str, str] = {}
+        for rel, file_edits in by_path.items():
+            data, _, _ = _read_candidate(self.root, rel)
+            if sha256_bytes(data) != file_hashes.get(rel, ""):
+                raise PatchValidationError(f"stale source identity for {rel}", "stale_evidence")
+            text = data.decode("utf-8")
+            spans: list[tuple[int, int]] = []
+            for old, new in file_edits:
+                if old == new:
+                    raise PatchValidationError(f"no-op replacement rejected for {rel}", "noop_edit")
+                first = text.find(old)
+                if first < 0:
+                    raise PatchValidationError(f"old text not found in {rel}", "old_text_missing")
+                if text.find(old, first + 1) >= 0:
+                    raise PatchValidationError(f"old text ambiguous in {rel}", "old_text_ambiguous")
+                spans.append((first, first + len(old)))
+            ordered = sorted(spans)
+            for (_start_a, end_a), (start_b, _end_b) in zip(ordered, ordered[1:], strict=False):
+                if start_b < end_a:
+                    raise PatchValidationError(f"overlapping replacements in {rel}", "overlapping_edits")
+            new_text = text
+            for index in _span_order(spans, reverse=True):
+                old, new = file_edits[index]
+                start, _end = spans[index]
+                new_text = new_text[:start] + new + new_text[start + len(old):]
+            new_data = new_text.encode("utf-8")
+            if rel.endswith(".py"):
+                try:
+                    ast.parse(new_text, filename=rel)
+                except SyntaxError as exc:
+                    raise PatchValidationError(f"result has invalid Python: {exc}", "syntax_error") from exc
+            planned[rel] = (data, new_data)
+            before[rel] = sha256_bytes(data)
+            after[rel] = sha256_bytes(new_data)
+        reverse = _publish_planned(self.root, planned)
+        return ApplyResult(files=sorted(planned), before=before, after=after, reverse=reverse)
+
+
+def _publish_planned(root: Path, planned: dict[str, tuple[bytes, bytes]]) -> dict[str, bytes]:
+    """Stage all new contents, then rename every file into place.
+
+    A crash during staging leaves the tree untouched (only temp files
+    remain). A crash during the rename loop triggers a best-effort
+    rollback of already-published files before the failure surfaces, so
+    no partial edit is ever accepted as applied.
+    """
+    reverse: dict[str, bytes] = {}
+    staged: dict[str, Path] = {}
+    try:
+        for rel, (old_data, new_data) in planned.items():
+            dest = root / rel
+            tmp = dest.with_suffix(dest.suffix + ".patchtmp")
+            tmp.write_bytes(new_data)
+            staged[rel] = tmp
+            reverse[rel] = old_data
+    except OSError as exc:
+        for tmp in staged.values():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        raise PatchValidationError(f"could not stage replacement: {exc}", "write_failed") from exc
+    published: list[str] = []
+    try:
+        for rel in planned:
+            os.replace(staged[rel], root / rel)
+            published.append(rel)
+    except OSError as exc:
+        for rel in published:
+            try:
+                dest = root / rel
+                tmp = dest.with_suffix(dest.suffix + ".patchtmp")
+                tmp.write_bytes(reverse[rel])
+                os.replace(tmp, dest)
+            except OSError:
+                pass
+        raise PatchValidationError(
+            f"publish interrupted; rolled back {len(published)} file(s): {exc}", "write_failed") from exc
+    return reverse
+
+
+def _span_order(spans: list[tuple[int, int]], reverse: bool = False) -> list[int]:
+    """Indices of spans sorted by start offset (stable, deterministic)."""
+    return sorted(range(len(spans)), key=lambda i: spans[i][0], reverse=reverse)
+
+
+def render_unified_diff(before: dict[str, str], after: dict[str, str]) -> str:
+    """Render a deterministic unified diff from before/after file texts."""
+    chunks: list[str] = []
+    for rel in sorted(set(before) | set(after)):
+        old_text = before.get(rel, "")
+        new_text = after.get(rel, "")
+        if old_text == new_text:
+            continue
+        chunks.extend(
+            difflib.unified_diff(
+                old_text.splitlines(), new_text.splitlines(),
+                fromfile=f"a/{rel}", tofile=f"b/{rel}", lineterm="",
+            )
+        )
+    return "\n".join(chunks) + ("\n" if chunks else "")
