@@ -1,0 +1,29 @@
+{
+  "catalogue_version": "span-catalogue-v2",
+  "code_sha": "49183e9e4b911fda54e54181042cd66cc4a24f94",
+  "profiles": {
+    "D1": {
+      "channel": "final-only",
+      "constraint": "gbnf-action-v2b",
+      "interface": "replace",
+      "protocol": "2",
+      "server_thinking": "off",
+      "thinking": "off",
+      "verification": "mandatory"
+    },
+    "D2": {
+      "channel": "final-only",
+      "constraint": "gbnf-action-v3b",
+      "interface": "replace_span",
+      "protocol": "3",
+      "server_thinking": "off",
+      "thinking": "off",
+      "verification": "mandatory"
+    }
+  },
+  "server_log": [
+    "server mode=off argv=/opt/homebrew/bin/llama-server -m ~/.cache/local-coder/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf --port 8080 -c 8192 --n-gpu-layers 99 --alias Qwen3.5-4B-Q4_K_M --reasoning off",
+    "probe D1/check-final-channel: ok",
+    "probe D2/span-shape: ok"
+  ]
+}

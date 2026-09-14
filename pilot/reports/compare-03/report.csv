@@ -1,0 +1,9 @@
+id,profile,interface,split,status,category,generations,patch_attempts,applied_edits,applied_edit_check_results,checked_changed_code,target_improvement,model_checks,auto_checks,test_invocations,offered_spans,read_only_omitted,span_file_offered,useful_unit_offered,prompt_tokens_exact,completion_tokens_exact,elapsed_s,transport_errors,regression,recovery,handoff_ok,recall_at_1
+fam-demo-calc,D1,replace,dev,solved,solved,5,3,3,pass;fail;pass,True,tests.test_calc::test_add_negative;tests.test_calc::test_add_positive,0,3,5,0,0,False,,5564,247,37.5,0,False,False,,0.0
+fam-demo-calc,D2,replace_span,dev,solved,solved,3,1,1,pass,True,tests.test_calc::test_add_negative;tests.test_calc::test_add_positive,0,1,3,3,0,True,True,3754,102,21.7,0,False,False,,0.0
+fam-localization,D2,replace_span,dev,solved,solved,3,1,1,pass,True,tests.test_session::test_refresh_preserves_redirect,0,1,3,21,0,True,True,6402,174,61.0,0,False,False,,1.0
+fam-localization,D1,replace,dev,blocked,blocked-validation-failed,6,2,2,pass;pass,True,tests.test_session::test_refresh_preserves_redirect,2,2,5,0,0,False,,6983,538,81.2,0,False,False,True,1.0
+fam-multi-hunk,D1,replace,dev,blocked,blocked-no-progress,5,2,0,,False,,1,0,2,0,0,False,,4724,360,34.9,0,False,False,True,1.0
+fam-multi-hunk,D2,replace_span,dev,blocked,blocked-validation-failed,6,2,2,fail;fail,True,tests.test_pricing::test_line_total,1,2,4,3,0,True,True,5787,259,54.0,1,False,False,True,1.0
+fam-recovery,D2,replace_span,dev,solved,solved,3,1,1,pass,True,tests.test_counter::test_increment;tests.test_counter::test_increment_twice,0,1,3,12,0,True,False,4727,168,25.4,0,False,False,,1.0
+fam-recovery,D1,replace,dev,solved,solved,4,1,1,pass,True,tests.test_counter::test_increment;tests.test_counter::test_increment_twice,1,1,4,0,0,False,,4122,157,26.7,0,False,False,,1.0
