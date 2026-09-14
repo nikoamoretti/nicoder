@@ -105,3 +105,73 @@ First GitHub run is pending the push; treat CI as **added, not yet observed**.
    only; `d1` fallback remains weaker on multi-hunk tasks.
 5. `local-coder` was verified on Python 3.13.11 from the wheel and 3.12 in
    the frozen venv; other interpreters are untested locally (CI covers 3.12).
+
+---
+
+## Closeout addendum (2026-09-14)
+
+### CI status
+
+Remote CI (GitHub Actions) is **blocked by account billing**, not by code or
+workflow defects.
+
+- Run 34804733892 (commit fa34248): all three jobs failed to start with
+  "The job was not started because recent account payments have failed or your
+  spending limit needs to be increased."
+- Run 34812164277 (commit 8307353, README updates): same billing block.
+- Local verification (offline suite, lint, typecheck, package build, installed
+  CLI smoke) all pass on the current commit.
+
+**Required user action**: resolve the GitHub account payment issue in Settings →
+Billing & plans. No code changes are needed; the workflow configuration is
+correct and the test suite passes locally.
+
+### Updated artifacts (commit 8307353)
+
+Rebuilt after README documentation updates:
+
+```
+6762d39bc5227a1a0252bc33e89bd80a42835f3f6e255a74dade24e57fc1edd6  local_coder-0.2.0-py3-none-any.whl  (105,388 bytes)
+28e289786d8570ef77ed2c0254a3f82cf36de4915dcd405e2feedfd839891843  local_coder-0.2.0.tar.gz           (192,590 bytes)
+```
+
+Original v0.2.0 artifacts (commit fa34248) preserved in the verification record
+above.
+
+### Durable installed executable
+
+Verified installation path: `~/.local/bin/local-coder`
+(symlink to `~/.local/share/local-coder-venv/bin/local-coder`,
+venv created with `/usr/local/bin/python3` 3.12.3)
+
+### Verified everyday commands (from outside source checkout)
+
+```bash
+# One-time setup
+local-coder setup --write          # detects model, writes ~/.config/local-coder/config.toml
+local-coder server start           # starts owned llama-server on 127.0.0.1:8080
+
+# Per-repo setup (run on a CLEAN git tree)
+local-coder init --repo /path/to/your/repo
+# → commit the generated local-coder.toml
+local-coder doctor --repo /path/to/your/repo
+
+# Run a ticket (profile d2, isolated backend)
+local-coder run --repo /path/to/your/repo --ticket-file ticket.md --execution isolated
+# → prints episode ID, outcome, next commands
+
+# Inspect and accept
+local-coder inspect EPISODE_ID
+local-coder diff EPISODE_ID
+local-coder accept EPISODE_ID --repo /path/to/your/repo
+
+# Stop the owned server
+local-coder server stop            # exits 1 if no owned server (known quirk)
+```
+
+### Evidence preservation
+
+- v0.2.0 verification record and raw episodes (`var/episodes-prompt5/`) unchanged.
+- README updates are documentation-only; no functional code changes.
+- Package version remains 0.2.0 (patch increment not warranted for docs-only).
+- No force-push, history rewrite, or visibility change.
