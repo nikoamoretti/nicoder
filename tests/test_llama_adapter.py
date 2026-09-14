@@ -34,6 +34,13 @@ class MockState:
         # When set, these reasoning deltas stream alongside empty content,
         # emulating a thinking model whose final channel stays empty.
         self.reasoning_stream: str | None = None
+        # Transport scenarios: raw stream bytes override the canned chunks;
+        # hold_after_done keeps the connection open after [DONE]; send_done
+        # controls the terminal marker; extra_metadata pads every event.
+        self.raw_stream: bytes | None = None
+        self.hold_after_done_s = 0.0
+        self.send_done = True
+        self.extra_metadata: dict | None = None
 
 
 def _sse_chunks(content, finish, usage, channel):
@@ -86,12 +93,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
+            if state.raw_stream is not None:
+                try:
+                    self.wfile.write(state.raw_stream)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                if state.hold_after_done_s:
+                    time.sleep(state.hold_after_done_s)
+                return
             chunks = list(_sse_chunks(state.chat_body["content"],
                                       state.chat_body["finish_reason"],
                                       state.chat_body["usage"], state.channel))
             if state.reasoning_stream is not None:
                 extra = list(_sse_chunks(state.reasoning_stream, None, {}, "reasoning_content"))
                 chunks[1:1] = [c for c in extra if c["choices"][0]["delta"]]
+            if state.extra_metadata:
+                for chunk in chunks:
+                    chunk.update(state.extra_metadata)
             for index, chunk in enumerate(chunks):
                 if state.drip_delay:
                     time.sleep(state.drip_delay)
@@ -103,11 +122,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     return
-            try:
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+            if state.send_done:
+                try:
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            if state.hold_after_done_s:
+                time.sleep(state.hold_after_done_s)
         elif self.path == "/tokenize":
             text = data.get("content", "")
             self._send(200, {"tokens": list(range(len(text.split())))})
@@ -338,18 +360,143 @@ def test_oversized_body_aborted_while_receiving(mock_server):
     state.chat_body = {"content": "x" * 200000, "finish_reason": "stop",
                        "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
     adapter = _adapter(mock_server, response_max_bytes=1024)
-    with pytest.raises(AdapterError, match="byte cap"):
+    with pytest.raises(AdapterError, match="transport cap"):
         adapter.generate("briefing", 0)
     assert adapter.last_usage is None
+    diagnostics = adapter.last_failure
+    assert diagnostics["limit"] == "transport_max_bytes"
+    assert diagnostics["limit_value"] == 1024
+    assert diagnostics["transport_policy"] == "sse-transport-v2"
+    assert diagnostics["total_received_bytes"] > 1024
+    # The cap can fire before a complete event line is buffered; the event
+    # counter reports exactly what was processed (0 or more).
+    assert diagnostics["event_count"] >= 0
+    assert diagnostics["finish_reason"] in ("unknown", "stop")
 
 
 def test_interrupted_stream_is_an_error(mock_server):
     _, state = mock_server
     state.close_early = True
     adapter = _adapter(mock_server)
-    with pytest.raises(AdapterError):
+    with pytest.raises(AdapterError, match="completion evidence"):
         adapter.generate("briefing", 0)
     assert adapter.last_usage is None
+    assert adapter.last_failure["limit"] == "missing_completion"
+    assert adapter.last_failure["terminal_marker"] is False
+
+
+def test_legit_multievent_completion_with_substantial_metadata(mock_server):
+    _, state = mock_server
+    state.extra_metadata = {
+        "id": "chatcmpl-" + "a" * 64,
+        "object": "chat.completion.chunk",
+        "created": 1789275237,
+        "model": "mock-model",
+        "system_fingerprint": "b" * 32,
+        "timings": {"prompt_n": 4, "prompt_ms": 134.9},
+    }
+    adapter = _adapter(mock_server)
+    raw = adapter.generate("briefing", 0)
+    assert raw == ACTION
+    usage = adapter.last_usage
+    assert usage["transport_policy"] == "sse-transport-v2"
+    assert usage["streamed_bytes"] > 0
+    assert usage["decoded_bytes"] == len(ACTION.encode("utf-8"))
+    assert usage["finish_reason"] == "stop"
+    assert adapter.last_failure is None
+
+
+def test_excessive_structural_whitespace_is_bounded(mock_server):
+    _, state = mock_server
+    # A runaway structural run inside the final event, like the observed
+    # degenerate generation: spaces only, no closing action.
+    state.raw_stream = b"data: " + b" " * 70000 + b"\n\n"
+    adapter = _adapter(mock_server, event_max_bytes=8192, response_max_bytes=131072)
+    with pytest.raises(AdapterError, match="event cap"):
+        adapter.generate("briefing", 0)
+    assert adapter.last_failure["limit"] == "max_event_bytes"
+    assert adapter.last_failure["limit_value"] == 8192
+    # The whitespace run is structural: nothing was decoded into content, so
+    # the honest sample is empty and the decoded counter stays at zero.
+    assert adapter.last_failure["decoded_content_bytes"] == 0
+    assert adapter.last_failure["output_prefix"] == ""
+
+
+def test_long_unterminated_event_is_bounded_while_receiving(mock_server):
+    _, state = mock_server
+    state.raw_stream = b"data: {\"choices\":[{\"delta\":{\"content\":\"" + b"x" * 50000
+    adapter = _adapter(mock_server, event_max_bytes=4096, response_max_bytes=131072)
+    with pytest.raises(AdapterError, match="event cap"):
+        adapter.generate("briefing", 0)
+    assert adapter.last_failure["limit"] == "max_event_bytes"
+    assert adapter.last_failure["total_received_bytes"] >= 4096
+
+
+def test_truncation_after_content_without_finish_is_incomplete(mock_server):
+    _, state = mock_server
+    part1 = {"choices": [{"delta": {"content": '{"action":"done",'}, "finish_reason": None, "index": 0}]}
+    part2 = {"choices": [{"delta": {"content": '"status":"blocked"}'}, "finish_reason": None, "index": 0}]}
+    state.raw_stream = (
+        b"data: " + json.dumps(part1).encode() + b"\n\n"
+        + b"data: " + json.dumps(part2).encode() + b"\n\n"
+    )
+    adapter = _adapter(mock_server)
+    with pytest.raises(AdapterError, match="completion evidence"):
+        adapter.generate("briefing", 0)
+    diagnostics = adapter.last_failure
+    assert diagnostics["finish_reason"] == "unknown"
+    assert diagnostics["terminal_marker"] is False
+    assert diagnostics["decoded_content_bytes"] > 0
+    assert diagnostics["event_count"] == 2
+    assert "action" in diagnostics["output_tail"] or "action" in diagnostics["output_prefix"]
+
+
+def test_terminal_marker_with_open_connection_returns_promptly(mock_server):
+    _, state = mock_server
+    final = {"choices": [{"delta": {"content": ACTION}, "finish_reason": "stop", "index": 0}],
+             "usage": {"prompt_tokens": 5, "completion_tokens": 3}}
+    state.raw_stream = (
+        b"data: " + json.dumps(final).encode() + b"\n\n"
+        + b"data: [DONE]\n\n"
+    )
+    state.hold_after_done_s = 30.0  # connection stays open after completion
+    adapter = _adapter(mock_server, timeout_s=60)
+    started = time.monotonic()
+    assert adapter.generate("briefing", 0) == ACTION
+    assert time.monotonic() - started < 10.0, "terminal marker must not wait for close"
+    assert adapter.last_usage["finish_reason"] == "stop"
+
+
+def test_decoded_action_size_is_separate_from_transport_size(mock_server):
+    _, state = mock_server
+    state.chat_body = {"content": "y" * 9000, "finish_reason": "stop",
+                       "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
+    adapter = _adapter(mock_server, decoded_max_bytes=4096, response_max_bytes=131072)
+    with pytest.raises(AdapterError, match="decoded action"):
+        adapter.generate("briefing", 0)
+    diagnostics = adapter.last_failure
+    assert diagnostics["limit"] == "decoded_max_bytes"
+    assert diagnostics["limit_value"] == 4096
+    assert diagnostics["decoded_content_bytes"] > 4096
+    assert diagnostics["total_received_bytes"] < 131072, \
+        "decoded cap must fire earlier than the transport cap for this stream"
+
+
+def test_brace_inside_string_does_not_end_action(mock_server):
+    _, state = mock_server
+    content = '{"action":"done","status":"blocked","reason_code":"probe","summary":"braces { } inside"}'
+    first = {"choices": [{"delta": {"content": content[:40]}, "finish_reason": None, "index": 0}]}
+    second = {"choices": [{"delta": {"content": content[40:]}, "finish_reason": "stop", "index": 0}],
+              "usage": {"prompt_tokens": 3, "completion_tokens": 4}}
+    state.raw_stream = (
+        b"data: " + json.dumps(first).encode() + b"\n\n"
+        + b"data: " + json.dumps(second).encode() + b"\n\n"
+        + b"data: [DONE]\n\n"
+    )
+    adapter = _adapter(mock_server)
+    raw = adapter.generate("briefing", 0)
+    assert raw == content
+    assert adapter.last_usage["finish_reason"] == "stop"
 
 
 def test_cancel_closes_request_and_discards_late_bytes(mock_server):

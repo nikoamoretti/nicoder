@@ -1,4 +1,4 @@
-"""Protocol v3 spans: catalogue safety and transactional application."""
+"""Protocol v3 spans: catalogue granularity, editability, transactional apply."""
 import hashlib
 
 import pytest
@@ -11,6 +11,8 @@ from local_coder.state import FocusRange
 from local_coder.workspace import CandidateWorkspace, PatchValidationError
 
 from .conftest import make_controller
+
+EDITABLE = ["src/**/*.py"]
 
 
 def make_workspace(repo_copy, tmp_path):
@@ -26,9 +28,8 @@ def write_repo(root, files):
     return root
 
 
-def catalogue_for(root, focus, budget_chars=20000):
-    spans, omitted, bindings = spans_mod.build_catalogue(root, focus, budget_chars)
-    return spans, omitted, bindings
+def catalogue_for(root, focus, budget_chars=20000, editable=EDITABLE):
+    return spans_mod.build_catalogue(root, focus, budget_chars, editable=editable)
 
 
 def _span_of(root, rel, needle):
@@ -42,7 +43,318 @@ def _hashes(root, *rels):
 
 
 def _apply(ws, span_edits, file_hashes, focus_paths):
-    return ws.apply_span_edits(span_edits, file_hashes, focus_paths, ["src/**/*.py"], 32 * 1024)
+    return ws.apply_span_edits(span_edits, file_hashes, focus_paths, EDITABLE, 32 * 1024)
+
+
+def _text_by_id(root, spans, span_id):
+    span = next(s for s in spans if s.span_id == span_id)
+    return span, (root / span.path).read_bytes()[span.start_byte:span.end_byte].decode("utf-8")
+
+
+# -- catalogue granularity ---------------------------------------------------
+
+
+def test_small_class_offers_each_method_and_children_before_parent(tmp_path):
+    root = write_repo(tmp_path / "repo", {
+        "src/svc.py": (
+            'class Service:\n'
+            '    """Docstring."""\n'
+            "\n"
+            "    def start(self):\n"
+            "        self.running = True\n"
+            "\n"
+            "    def stop(self):\n"
+            "        self.running = False\n"
+        ),
+    })
+    spans, omitted, _ = catalogue_for(root, [("src/svc.py", 1, 12)])
+    assert omitted == []
+    labels = [(s.kind, s.enclosing, s.span_id) for s in spans]
+    kinds = [s.kind for s in spans]
+    assert "class" in kinds and kinds.count("method") == 2
+    # Each method's body statement is offered, and methods precede the class.
+    assert labels.index(("class", "module", labels[[k for k, _, _ in labels].index("class")][2]))
+    class_pos = next(i for i, (k, _, _) in enumerate(labels) if k == "class")
+    method_positions = [i for i, (k, _, _) in enumerate(labels) if k == "method"]
+    assert method_positions and max(method_positions) < class_pos, labels
+    # Children (assignments) precede their enclosing method.
+    assign_positions = [i for i, (k, _, _) in enumerate(labels) if k == "assign"]
+    assert assign_positions and min(assign_positions) < max(method_positions), labels
+    for span in spans:
+        if span.kind == "method":
+            assert span.enclosing == "Service"
+        if span.kind == "assign":
+            assert span.enclosing in ("Service.start", "Service.stop")
+
+
+def test_method_with_assignments_returns_branches_offers_statement_children(tmp_path):
+    root = write_repo(tmp_path / "repo", {
+        "src/flow.py": (
+            "def compute(x):\n"
+            "    total = x + 1\n"
+            "    if x > 10:\n"
+            "        total = x * 2\n"
+            "    return total\n"
+        ),
+    })
+    spans, omitted, _ = catalogue_for(root, [("src/flow.py", 1, 5)])
+    assert omitted == []
+    kinds = sorted(s.kind for s in spans)
+    assert "function" in kinds
+    assert "assign" in kinds
+    assert "if" in kinds
+    assert "return" in kinds
+    # The nested branch body is a child of the `if`, itself a child of the function.
+    inner = [s for s in spans if s.kind == "assign" and "x * 2" in _text_by_id(root, spans, s.span_id)[1]]
+    assert inner and inner[0].enclosing == "compute"
+
+
+def test_nested_control_flow_and_exception_bodies(tmp_path):
+    root = write_repo(tmp_path / "repo", {
+        "src/guard.py": (
+            "def guard(items):\n"
+            "    for item in items:\n"
+            "        while item > 0:\n"
+            "            item -= 1\n"
+            "    try:\n"
+            "        risky = items[0]\n"
+            "    except IndexError:\n"
+            "        risky = None\n"
+            "    finally:\n"
+            "        del risky\n"
+        ),
+    })
+    spans, _, _ = catalogue_for(root, [("src/guard.py", 1, 10)])
+    kinds = [s.kind for s in spans]
+    for expected in ("function", "for", "while", "try", "assign"):
+        assert expected in kinds, (expected, kinds)
+    texts = {s.span_id: _text_by_id(root, spans, s.span_id)[1] for s in spans}
+    assert any("item -= 1" in t for t in texts.values())
+    assert any("risky = None" in t for t in texts.values())
+    assert any("del risky" in t for t in texts.values())
+
+
+def test_multiline_statement_and_unicode_span(tmp_path):
+    root = write_repo(tmp_path / "repo", {
+        "src/u.py": (
+            "# héllo wörld 🎉\n"
+            "def target():\n"
+            "    return (\n"
+            '        "naïve" +\n'
+            '        "🎉"\n'
+            "    )\n"
+        ),
+    })
+    spans, _, _ = catalogue_for(root, [("src/u.py", 1, 6)])
+    returns = [s for s in spans if s.kind == "return"]
+    assert returns, "multiline return must be an addressable span"
+    text = _text_by_id(root, spans, returns[0].span_id)[1]
+    assert text.startswith("    return (")
+    assert '"🎉"' in text
+    assert text.encode("utf-8") == (root / "src/u.py").read_bytes()[
+        returns[0].start_byte:returns[0].end_byte]
+
+
+def test_comments_and_decorators_stay_outside_spans(tmp_path):
+    root = write_repo(tmp_path / "repo", {
+        "src/deco.py": (
+            "# module comment\n"
+            "import functools\n"
+            "\n"
+            "\n"
+            "@functools.cache\n"
+            "def cached(x):\n"
+            "    # inner comment\n"
+            "    return x + 1\n"
+        ),
+    })
+    spans, _, _ = catalogue_for(root, [("src/deco.py", 1, 8)])
+    fn = next(s for s in spans if s.kind == "function")
+    text = _text_by_id(root, spans, fn.span_id)[1]
+    assert text.startswith("def cached(x):")
+    assert "@functools.cache" not in text
+    assert "# module comment" not in text
+    # A child edit must not touch sibling methods or unrelated bytes.
+    root2 = write_repo(tmp_path / "repo2", {
+        "src/multi.py": (
+            "# keep me\n"
+            "@decorate\n"
+            "def first():\n"
+            "    return 1\n"
+            "\n"
+            "def second():\n"
+            "    return 2\n"
+        ),
+    })
+    spans2, _, _ = catalogue_for(root2, [("src/multi.py", 1, 7)])
+    child = next(s for s in spans2 if s.kind == "return" and s.enclosing == "first")
+    before = (root2 / "src/multi.py").read_bytes()
+    ws = CandidateWorkspace(root2)
+    start, end = child.start_byte, child.end_byte
+    replacement = "    return 10"
+    result = _apply(ws, [("src/multi.py", start, end, replacement,
+                          hashlib.sha256(before[start:end]).hexdigest())],
+                    _hashes(root2, "src/multi.py"), {"src/multi.py"})
+    assert result.files == ["src/multi.py"]
+    after = (ws.root / "src/multi.py").read_bytes()
+    assert after == before[:start] + replacement.encode() + before[end:]
+    assert after.startswith(b"# keep me\n@decorate\ndef first():\n")
+    assert after.endswith(b"def second():\n    return 2\n")
+
+
+def test_catalogue_is_deterministic_and_children_survive_trimming(tmp_path):
+    root = write_repo(tmp_path / "repo", {
+        "src/big.py": (
+            "class Widget:\n"
+            + "".join(
+                f"    def method_{i}(self):\n        return {i}\n" for i in range(12)
+            )
+        ),
+    })
+    focus = [("src/big.py", 1, 30)]
+    first, omitted_first, _ = catalogue_for(root, focus)
+    second, omitted_second, _ = catalogue_for(root, focus)
+    assert [s.span_id for s in first] == [s.span_id for s in second]
+    assert omitted_first == omitted_second
+    # Budget below the full catalogue drops from the end; the first entries
+    # are the small statement children, so the edit-sized units survive.
+    trimmed, omitted, _ = spans_mod.build_catalogue(root, focus, 300, editable=EDITABLE)
+    assert trimmed, "budget must still allow the smallest units"
+    assert omitted, "trimming must record omissions"
+    assert [s.span_id for s in trimmed] == [f"S{i}" for i in range(1, len(trimmed) + 1)]
+    assert all(s.kind in ("assign", "return", "method") for s in trimmed)
+    big_class = [s for s in first if s.kind == "class"]
+    assert big_class and big_class[0].span_id not in {s.span_id for s in trimmed}
+
+
+def test_parent_and_child_spans_are_alternatives_not_overlap_targets(tmp_path):
+    root = write_repo(tmp_path / "repo", {
+        "src/alt.py": "def f():\n    return 1\n",
+    })
+    spans, _, _ = catalogue_for(root, [("src/alt.py", 1, 2)])
+    fn = next(s for s in spans if s.kind == "function")
+    ret = next(s for s in spans if s.kind == "return")
+    assert fn.start_byte <= ret.start_byte and ret.end_byte <= fn.end_byte
+    ws = CandidateWorkspace(root)
+    data = (root / "src/alt.py").read_bytes()
+    edits = [
+        ("src/alt.py", fn.start_byte, fn.end_byte, "def f():\n    return 2",
+         hashlib.sha256(data[fn.start_byte:fn.end_byte]).hexdigest()),
+        ("src/alt.py", ret.start_byte, ret.end_byte, "    return 3",
+         hashlib.sha256(data[ret.start_byte:ret.end_byte]).hexdigest()),
+    ]
+    with pytest.raises(PatchValidationError) as exc:
+        _apply(ws, edits, _hashes(root, "src/alt.py"), {"src/alt.py"})
+    assert exc.value.code == "overlapping_edits"
+    assert (ws.root / "src/alt.py").read_bytes() == data
+
+
+# -- editability filtering ---------------------------------------------------
+
+
+def test_read_only_paths_get_no_span_bindings(tmp_path):
+    root = write_repo(tmp_path, {
+        "src/app.py": "def run():\n    return 1\n",
+        "tests/test_app.py": "from src.app import run\n\n\ndef test_run():\n    assert run() == 1\n",
+        "conftest.py": "import sys\n",
+        "local-coder.toml": "version = 1\n",
+    })
+    focus = [("tests/test_app.py", 1, 5), ("conftest.py", 1, 1),
+             ("local-coder.toml", 1, 1), ("src/app.py", 1, 2)]
+    spans, omitted, bindings = catalogue_for(root, focus)
+    paths = {s.path for s in spans}
+    assert paths == {"src/app.py"}
+    assert set(bindings) == {s.span_id for s in spans}
+    assert all(b["path"] == "src/app.py" for b in bindings.values())
+    read_only_notes = [note for note in omitted if "read-only" in note]
+    assert len(read_only_notes) == 3
+    assert any("local-coder.toml" in note for note in read_only_notes)
+
+
+def test_read_only_test_remains_visible_as_excerpt_but_not_editable(tmp_path, state_dir):
+    from local_coder.briefing import render_full
+
+    from .conftest import make_controller as factory
+
+    spans, omitted, _ = catalogue_for(
+        tmp_path, [("tests/test_calc.py", 1, 20)], editable=EDITABLE)
+    assert spans == []
+    assert any("read-only" in note for note in omitted)
+    # Briefing still shows the test file as an excerpt when it is focused.
+    repo = tmp_path / "repo"
+    import shutil
+
+    from .conftest import FIXTURE_REPO
+
+    shutil.copytree(FIXTURE_REPO, repo)
+    controller, _ = factory(repo, state_dir, [], protocol_version="3")
+    controller.start()
+    controller.state.focus = [FocusRange(path="tests/test_calc.py", start=1, end=13,
+                                         sha256=sha256_file(repo / "tests/test_calc.py"),
+                                         reason="evidence")]
+    controller.workspace.root = repo
+    text, spans, _ = render_full(controller.state, controller.workspace, None,
+                                 protocol_version="3", editable=EDITABLE)
+    assert "tests/test_calc.py:1-13" in text
+    assert spans == []
+    assert "SPANS" in text and "(no editable spans" in text
+
+
+def test_symlinks_and_escaping_paths_excluded(tmp_path):
+    root = write_repo(tmp_path, {"src/real.py": "value = 1\n"})
+    (root / "src" / "link.py").symlink_to("/etc/hostname")
+    spans, omitted, _ = catalogue_for(root, [("src/link.py", 1, 1), ("src/real.py", 1, 1)])
+    assert [s.path for s in spans] == ["src/real.py"]
+    assert any("symlink" in note for note in omitted)
+    escaped, escaped_notes, _ = catalogue_for(root, [("../outside.py", 1, 1)],
+                                              editable=["**/*.py"])
+    assert escaped == []
+    assert any("read-only" in note or "escapes" in note for note in escaped_notes)
+
+
+def test_trimmed_span_cannot_be_addressed(tmp_path):
+    from local_coder.briefing import render_full
+
+    repo = tmp_path / "repo"
+    import shutil
+
+    from .conftest import FIXTURE_REPO
+
+    shutil.copytree(FIXTURE_REPO, repo)
+    state_dir = tmp_path / "episodes"
+    controller, _ = make_controller(repo, state_dir, [], protocol_version="3")
+    controller.start()
+    controller.workspace = CandidateWorkspace(repo)
+    from local_coder.state import FocusRange
+
+    controller.state.focus = [FocusRange(path="src/calc.py", start=1, end=12,
+                                         sha256=sha256_file(repo / "src/calc.py"),
+                                         reason="test")]
+    full_spans, _, _ = catalogue_for(repo, [("src/calc.py", 1, 12)])
+    assert len(full_spans) >= 2
+    dropped_id = full_spans[-1].span_id
+    kept_ids = {s.span_id for s in full_spans[:-1]}
+    assert dropped_id not in kept_ids
+    # Reserve a trimmed catalogue: only kept IDs are persisted and resolvable.
+    from local_coder.briefing import Span
+
+    trimmed = [Span(**{k: v for k, v in s.__dict__.items()}) for s in full_spans[:-1]]
+    controller._open_turn = 1
+    controller.store.create("trimmed")
+    controller.episode_id = "trimmed"
+    controller.store.write_turn_file("trimmed", 1, "spans.json", __import__("json").dumps([
+        {"span_id": s.span_id, "path": s.path, "start_byte": s.start_byte,
+         "end_byte": s.end_byte, "file_sha256": s.file_sha256,
+         "bytes_sha256": s.bytes_sha256, "kind": s.kind, "enclosing": s.enclosing}
+        for s in trimmed]))
+    bindings = controller._turn_spans()
+    assert bindings is not None
+    assert dropped_id not in bindings
+    assert set(bindings) == kept_ids
+    _ = render_full
+
+
+# -- transactional application ----------------------------------------------
 
 
 def test_catalogue_prefers_statements(repo_copy, tmp_path):
@@ -59,6 +371,8 @@ def test_catalogue_prefers_statements(repo_copy, tmp_path):
     assert spans[0].file_sha256 == sha256_file(ws.root / "src/calc.py")
     assert set(bindings) == {s.span_id for s in spans}
     assert bindings["S1"]["start_byte"] == str(spans[0].start_byte)
+    assert all(b["kind"] for b in bindings.values())
+    assert all(b["enclosing"] for b in bindings.values())
 
 
 def test_catalogue_only_covers_excerpt_range(repo_copy, tmp_path):
@@ -83,6 +397,7 @@ def test_catalogue_omits_unparseable_and_oversized(tmp_path):
     # The oversized function descends into child statements, each addressable.
     big = [s for s in spans if s.path == "src/big.py"]
     assert big
+    assert any(s.kind == "assign" for s in big)
     assert all(s.end_byte - s.start_byte <= spans_mod.MAX_SPAN_BYTES for s in big)
 
 
@@ -91,8 +406,8 @@ def test_catalogue_budget_and_cap_are_deterministic(tmp_path):
         f"src/m{i}.py": f"def f{i}():\n    return {i}\n" for i in range(1, 11)
     })
     focus = [(f"src/m{i}.py", 1, 3) for i in range(1, 11)]
-    first, omitted_first, _ = spans_mod.build_catalogue(root, focus, 200)
-    second, omitted_second, _ = spans_mod.build_catalogue(root, focus, 200)
+    first, omitted_first, _ = spans_mod.build_catalogue(root, focus, 200, editable=EDITABLE)
+    second, omitted_second, _ = spans_mod.build_catalogue(root, focus, 200, editable=EDITABLE)
     assert [(s.span_id, s.path) for s in first] == [(s.span_id, s.path) for s in second]
     assert omitted_first == omitted_second
     assert omitted_first, "tiny budget must omit trailing spans"
@@ -221,7 +536,7 @@ def test_span_forbidden_paths_rejected(repo_copy, tmp_path):
     (ws.root / "src" / "evil-link.py").symlink_to("/etc/hostname")
     for rel in ("../evil.py", "src/evil-link.py", "tests/test_calc.py"):
         with pytest.raises(PatchValidationError) as exc:
-            ws.apply_span_edits([(rel, 0, 1, "y", "0" * 64)], h, {rel}, ["src/**/*.py"], 32 * 1024)
+            ws.apply_span_edits([(rel, 0, 1, "y", "0" * 64)], h, {rel}, EDITABLE, 32 * 1024)
         assert getattr(exc.value, "code", "") in ("forbidden_path", "not_in_focus", "missing_file"), rel
 
 
@@ -251,7 +566,7 @@ def test_span_interrupted_publish_rolls_back(tmp_path):
                  ("src/two.py", 0, len(before_two), "VALUE = 20\n",
                   hashlib.sha256(before_two).hexdigest())],
                 _hashes(ws.root, "src/one.py", "src/two.py"),
-                {"src/one.py", "src/two.py"}, ["src/**/*.py"], 32 * 1024)
+                {"src/one.py", "src/two.py"}, EDITABLE, 32 * 1024)
     finally:
         workspace_mod.os.replace = real_replace
     assert calls, "publish path must have been attempted"
@@ -277,7 +592,7 @@ def test_span_revert_and_rendered_diff(repo_copy, state_dir, tmp_path):
         controller.state, ws, store.artifacts_dir("test-ep"),
         [("src/calc.py", start, end, "    return a + b",
           hashlib.sha256(original[start:end]).hexdigest())],
-        _hashes(ws.root, "src/calc.py"), ["src/**/*.py"], "test-ep", store.write_artifact_text)
+        _hashes(ws.root, "src/calc.py"), EDITABLE, "test-ep", store.write_artifact_text)
     assert observation["status"] == "applied"
     assert observation["interface"] == "replace_span"
     assert record is not None and reverse is not None

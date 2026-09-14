@@ -68,6 +68,7 @@ def export_turn(store: EpisodeStore, episode_id: str, turn: int, split: str = "u
         "complete": True,
         "protocol_version": (profile or {}).get("protocol_version", "unknown"),
         "constraint": (profile or {}).get("constraint", "unknown"),
+        "catalogue": (profile or {}).get("catalogue", "none"),
         "counter": (profile or {}).get("counter", "unknown"),
         "briefing_sha": _sha(briefing_text),
         "briefing": briefing_text,

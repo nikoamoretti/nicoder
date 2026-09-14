@@ -36,6 +36,12 @@ from .tokenizer import LlamaCppCounter, TokenCounter
 
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
+# Versioned transport behavior: incremental SSE reads, separate limits for
+# total transport bytes, individual event size, decoded action size, and the
+# generation token/elapsed-time budgets. Bounded diagnostics are recorded for
+# every unsuccessful request; partial output is never returned or executed.
+TRANSPORT_POLICY = "sse-transport-v2"
+
 
 class LlamaCppAdapter(ModelAdapter):
     """Talks to a user-started llama.cpp server on loopback."""
@@ -56,12 +62,17 @@ class LlamaCppAdapter(ModelAdapter):
         channel_policy: str = "legacy",
         thinking: str = "auto",
         response_max_bytes: int = 131072,
+        event_max_bytes: int = 65536,
+        decoded_max_bytes: int = 65536,
         read_timeout_s: int = 120,
     ) -> None:
         if channel_policy not in ("legacy", "final-only"):
             raise AdapterError(f"unknown channel policy {channel_policy!r}")
         if thinking not in ("auto", "off"):
             raise AdapterError(f"unknown thinking mode {thinking!r}")
+        if constraint not in GRAMMARS and constraint != "json_object":
+            raise AdapterError(
+                f"unknown constraint {constraint!r}; refusing to send no grammar silently")
         parsed = urlparse(endpoint)
         if parsed.scheme != "http" or (parsed.hostname or "") not in ALLOWED_HOSTS:
             raise AdapterError(f"refusing non-loopback endpoint {endpoint!r}")
@@ -77,14 +88,18 @@ class LlamaCppAdapter(ModelAdapter):
         self.channel_policy = channel_policy
         self.thinking = thinking
         self.response_max_bytes = response_max_bytes
+        self.event_max_bytes = event_max_bytes
+        self.decoded_max_bytes = decoded_max_bytes
         self.read_timeout_s = read_timeout_s
         self.last_usage: dict | None = None
         self.last_request: dict | None = None
+        self.last_failure: dict | None = None
         self.server_props: dict = {}
         self.local_binary_version = llama_server_version()
         self._cancel = threading.Event()
         self._active_lock = threading.Lock()
         self._active_response: httpx.Response | None = None
+        self._stream_progress: dict = {}
 
     def _client(self) -> httpx.Client:
         timeout = httpx.Timeout(connect=10.0, read=float(self.read_timeout_s),
@@ -166,21 +181,21 @@ class LlamaCppAdapter(ModelAdapter):
     def generate(self, briefing: str, step: int) -> str:
         """One bounded grammar-constrained streamed completion.
 
-        Raises AdapterError on timeout, byte-cap breach, cancellation,
-        interruption, or empty output. Either returns the full content or
-        raises: partial bytes are never surfaced as a response.
+        Reads the SSE stream incrementally and enforces, while receiving:
+        total transport bytes, individual event size, and decoded action
+        size. Raises AdapterError on any breach, deadline, cancellation,
+        malformed event, or missing completion evidence. Partial or failed
+        output is never returned. Every failure carries bounded diagnostics
+        (byte/event counts, finish reason, terminal marker, prefix/tail
+        sample, and the exact limit that ended the request).
         """
         payload = self._payload(briefing)
         self.last_usage = None
+        self.last_failure = None
         self.last_request = {"url": f"{self.endpoint}/v1/chat/completions", "payload": payload}
+        self._stream_progress = {}
         self._cancel.clear()
         deadline = time.monotonic() + self.timeout_s
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        received = 0
-        finish = "unknown"
-        usage: dict = {}
-        timings: dict = {}
         try:
             with self._client() as client:
                 with client.stream("POST", self.last_request["url"], json=payload) as response:
@@ -191,46 +206,13 @@ class LlamaCppAdapter(ModelAdapter):
                             raise AdapterError("redirect refused: local endpoint must not redirect")
                         if response.status_code != 200:
                             raise AdapterError(f"local model HTTP {response.status_code}")
-                        for line in response.iter_lines():
-                            if self._cancel.is_set():
-                                raise AdapterError("cancelled by supervisor")
-                            if time.monotonic() > deadline:
-                                raise AdapterError(f"overall deadline exceeded ({self.timeout_s}s)")
-                            if not line.startswith("data:"):
-                                continue
-                            data = line[5:].strip()
-                            if not data or data == "[DONE]":
-                                continue
-                            received += len(line.encode("utf-8"))
-                            if received > self.response_max_bytes:
-                                raise AdapterError(
-                                    f"response exceeded {self.response_max_bytes} byte cap while receiving")
-                            try:
-                                chunk = json.loads(data)
-                            except ValueError as exc:
-                                raise AdapterError(f"malformed stream chunk: {exc}") from exc
-                            choices = chunk.get("choices", [])
-                            if not choices:
-                                if isinstance(chunk.get("usage"), dict):
-                                    usage = chunk["usage"]
-                                continue
-                            delta = choices[0].get("delta", {})
-                            for key, bucket in (("content", content_parts),
-                                                ("reasoning_content", reasoning_parts)):
-                                piece = delta.get(key)
-                                if isinstance(piece, str) and piece:
-                                    bucket.append(piece)
-                            if choices[0].get("finish_reason"):
-                                finish = str(choices[0]["finish_reason"])
-                            if isinstance(chunk.get("usage"), dict):
-                                usage = chunk["usage"]
-                            if isinstance(chunk.get("timings"), dict):
-                                timings = chunk["timings"]
+                        content, reasoning, meta = self._read_stream(response, deadline)
                     finally:
                         with self._active_lock:
                             self._active_response = None
-        except AdapterError:
+        except AdapterError as exc:
             self.last_usage = None
+            self.last_failure = exc.diagnostics
             raise
         except httpx.TimeoutException:
             # A stalled stream surfaces here: arbitrate cancel, then the
@@ -239,21 +221,28 @@ class LlamaCppAdapter(ModelAdapter):
             # promptly, so cancellation latency is bounded by read_timeout_s.)
             self.last_usage = None
             if self._cancel.is_set():
-                raise AdapterError("cancelled by supervisor") from None
+                self.last_failure = self._diagnostics(limit="cancelled")
+                raise AdapterError("cancelled by supervisor", self.last_failure) from None
             if time.monotonic() > deadline:
-                raise AdapterError(f"overall deadline exceeded ({self.timeout_s}s)") from None
-            raise AdapterError(f"stream stalled over {self.read_timeout_s}s without bytes") from None
+                self.last_failure = self._diagnostics(limit="deadline", limit_value=self.timeout_s)
+                raise AdapterError(f"overall deadline exceeded ({self.timeout_s}s)",
+                                   self.last_failure) from None
+            self.last_failure = self._diagnostics(limit="read_timeout",
+                                                  limit_value=self.read_timeout_s)
+            raise AdapterError(f"stream stalled over {self.read_timeout_s}s without bytes",
+                               self.last_failure) from None
         except (httpx.HTTPError, OSError) as exc:
             self.last_usage = None
-            raise AdapterError(f"local model transport failed: {exc}") from exc
-        content = "".join(content_parts)
-        reasoning = "".join(reasoning_parts)
+            self.last_failure = self._diagnostics(limit="transport_error")
+            raise AdapterError(f"local model transport failed: {exc}", self.last_failure) from exc
         reasoning_present = bool(reasoning.strip())
         if self.channel_policy == "final-only":
             if not content.strip():
+                self.last_failure = self._diagnostics(limit="empty_final_channel")
                 raise AdapterError(
                     "empty final content under final-only channel policy "
-                    "(reasoning-only output is a compatibility failure, not an action)")
+                    "(reasoning-only output is a compatibility failure, not an action)",
+                    self.last_failure)
             channel = "content"
             text = content
         elif content.strip():
@@ -263,18 +252,161 @@ class LlamaCppAdapter(ModelAdapter):
             channel = "reasoning_content"
             text = reasoning
         else:
-            raise AdapterError("empty completion from local model")
+            self.last_failure = self._diagnostics(limit="empty_output")
+            raise AdapterError("empty completion from local model", self.last_failure)
         self.last_usage = {
-            "finish_reason": finish,
-            "prompt_tokens": _as_int(usage.get("prompt_tokens")),
-            "completion_tokens": _as_int(usage.get("completion_tokens")),
+            "finish_reason": meta["finish_reason"],
+            "prompt_tokens": _as_int(meta["usage"].get("prompt_tokens")),
+            "completion_tokens": _as_int(meta["usage"].get("completion_tokens")),
             "channel": channel,
             "channel_policy": self.channel_policy,
             "reasoning_present": reasoning_present,
-            "streamed_bytes": received,
-            "timings": timings,
+            "streamed_bytes": meta["transport_bytes"],
+            "decoded_bytes": len(content.encode("utf-8")) + len(reasoning.encode("utf-8")),
+            "transport_policy": TRANSPORT_POLICY,
+            "timings": meta["timings"],
         }
         return text
+
+    # -- stream reading ---------------------------------------------------
+
+    def _read_stream(self, response: httpx.Response,
+                     deadline: float) -> tuple[str, str, dict]:
+        """Incrementally consume the SSE stream under distinct limits."""
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        buffer = b""
+        transport_bytes = 0
+        event_count = 0
+        content_bytes = 0
+        reasoning_bytes = 0
+        finish = "unknown"
+        terminal = False
+        usage: dict = {}
+        timings: dict = {}
+        terminal_seen = False
+
+        def snapshot() -> None:
+            self._stream_progress = {
+                "transport_bytes": transport_bytes,
+                "event_count": event_count,
+                "content_bytes": content_bytes,
+                "reasoning_bytes": reasoning_bytes,
+                "finish": finish,
+                "terminal": terminal,
+                "content": "".join(content_parts),
+                "reasoning": "".join(reasoning_parts),
+            }
+
+        def fail(message: str, limit: str, limit_value: object = None) -> None:
+            snapshot()
+            raise AdapterError(message, self._diagnostics(
+                limit=limit, limit_value=limit_value))
+
+        def handle_line(line: bytes) -> bool:
+            """Process one SSE line; True when the terminal marker arrives."""
+            nonlocal event_count, content_bytes, reasoning_bytes, finish, usage, timings
+            if not line.startswith(b"data:"):
+                return False
+            data = line[5:].strip()
+            if not data:
+                return False
+            event_count += 1
+            if data == b"[DONE]":
+                return True
+            try:
+                chunk = json.loads(data)
+            except ValueError as exc:
+                fail(f"malformed stream chunk: {exc}", "malformed_event")
+            choices = chunk.get("choices", [])
+            if not choices:
+                if isinstance(chunk.get("usage"), dict):
+                    usage = chunk["usage"]
+                return False
+            delta = choices[0].get("delta", {})
+            for key, bucket in (("content", content_parts),
+                                ("reasoning_content", reasoning_parts)):
+                piece = delta.get(key)
+                if isinstance(piece, str) and piece:
+                    encoded = len(piece.encode("utf-8"))
+                    if key == "content":
+                        content_bytes += encoded
+                    else:
+                        reasoning_bytes += encoded
+                    if content_bytes + reasoning_bytes > self.decoded_max_bytes:
+                        fail(f"decoded action exceeded {self.decoded_max_bytes} byte cap",
+                             "decoded_max_bytes", self.decoded_max_bytes)
+                    bucket.append(piece)
+            if choices[0].get("finish_reason"):
+                finish = str(choices[0]["finish_reason"])
+            if isinstance(chunk.get("usage"), dict):
+                usage = chunk["usage"]
+            if isinstance(chunk.get("timings"), dict):
+                timings = chunk["timings"]
+            return False
+
+        for chunk in response.iter_bytes():
+            if self._cancel.is_set():
+                fail("cancelled by supervisor", "cancelled")
+            if time.monotonic() > deadline:
+                fail(f"overall deadline exceeded ({self.timeout_s}s)", "deadline", self.timeout_s)
+            transport_bytes += len(chunk)
+            if transport_bytes > self.response_max_bytes:
+                fail(f"response exceeded {self.response_max_bytes} byte transport cap",
+                     "transport_max_bytes", self.response_max_bytes)
+            buffer += chunk
+            if len(buffer) > self.event_max_bytes:
+                fail(f"stream event exceeded {self.event_max_bytes} byte event cap",
+                     "max_event_bytes", self.event_max_bytes)
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                if len(line) > self.event_max_bytes:
+                    fail(f"stream event exceeded {self.event_max_bytes} byte event cap",
+                         "max_event_bytes", self.event_max_bytes)
+                if handle_line(line.rstrip(b"\r")):
+                    terminal = True
+                    terminal_seen = True
+                    break
+            if terminal_seen:
+                # The terminal marker is complete evidence: stop reading even
+                # if the server keeps the connection open.
+                break
+        if not terminal_seen and buffer:
+            if len(buffer) > self.event_max_bytes:
+                fail(f"stream event exceeded {self.event_max_bytes} byte event cap",
+                     "max_event_bytes", self.event_max_bytes)
+            if handle_line(buffer.rstrip(b"\r")):
+                terminal = True
+                terminal_seen = True
+        if not terminal_seen and finish == "unknown":
+            fail("stream ended without completion evidence (no finish_reason, no terminal marker)",
+                 "missing_completion")
+        return "".join(content_parts), "".join(reasoning_parts), {
+            "finish_reason": finish,
+            "usage": usage,
+            "timings": timings,
+            "transport_bytes": transport_bytes,
+            "event_count": event_count,
+            "terminal_marker": terminal,
+        }
+
+    def _diagnostics(self, *, limit: str, limit_value: object = None) -> dict:
+        """Bounded diagnostics for one unsuccessful request."""
+        progress = dict(getattr(self, "_stream_progress", None) or {})
+        text = progress.get("content") or progress.get("reasoning") or ""
+        return {
+            "transport_policy": TRANSPORT_POLICY,
+            "limit": limit,
+            "limit_value": limit_value,
+            "total_received_bytes": progress.get("transport_bytes", 0),
+            "event_count": progress.get("event_count", 0),
+            "decoded_content_bytes": progress.get("content_bytes", 0),
+            "decoded_reasoning_bytes": progress.get("reasoning_bytes", 0),
+            "finish_reason": progress.get("finish", "unknown"),
+            "terminal_marker": bool(progress.get("terminal", False)),
+            "output_prefix": text[:200],
+            "output_tail": text[-200:],
+        }
 
     # -- capability probe -------------------------------------------------
 
@@ -352,11 +484,15 @@ class LlamaCppAdapter(ModelAdapter):
 
     def provenance(self) -> dict[str, str]:
         """Recorded runtime/model identity; unknown metadata stays unknown."""
+        import hashlib as _hashlib
+
         ftype = self.server_props.get("model_ftype", "unknown")
         quantization = self.quantization if self.quantization != "unknown" else str(ftype)
         build = self.server_props.get("build_info", "unknown")
         template = "present" if self.server_props.get("chat_template") else (
             "unknown" if "chat_template" not in self.server_props else "absent")
+        grammar_fn = GRAMMARS.get(self.constraint)
+        grammar_text = grammar_fn() if grammar_fn is not None else ""
         return {
             "adapter": "llama.cpp",
             "endpoint": self.endpoint,
@@ -368,8 +504,14 @@ class LlamaCppAdapter(ModelAdapter):
             "n_ctx_source": "configured" if self.n_ctx else "unknown",
             "chat_template": template,
             "constraint": self.constraint,
+            "constraint_sha256": _hashlib.sha256(grammar_text.encode()).hexdigest()[:16]
+            if grammar_text else "none",
             "channel_policy": self.channel_policy,
             "thinking": self.thinking,
+            "transport_policy": TRANSPORT_POLICY,
+            "transport_max_bytes": str(self.response_max_bytes),
+            "event_max_bytes": str(self.event_max_bytes),
+            "decoded_max_bytes": str(self.decoded_max_bytes),
             "server_build": str(build),
             "server_slots": str(self.server_props.get("total_slots", "unknown")),
             "local_binary_version": self.local_binary_version,

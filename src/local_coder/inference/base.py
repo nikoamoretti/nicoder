@@ -9,6 +9,10 @@ from .tokenizer import EstimateCounter, TokenCounter
 class AdapterError(Exception):
     """Transport, timeout, or configuration failure. Consumes one slot."""
 
+    def __init__(self, message: str, diagnostics: dict | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
 
 class AdapterUnavailable(AdapterError):
     """No model is configured or reachable. Never silently retried."""

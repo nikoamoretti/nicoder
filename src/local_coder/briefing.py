@@ -132,11 +132,13 @@ def render(
     counter: TokenCounter | None = None,
     context_limit: int | None = None,
     protocol_version: str = "1",
+    editable: list[str] | None = None,
 ) -> str:
     """Render the full briefing for the next generation (text only)."""
     text, _, omitted = render_full(
         state, workspace, last_observation,
         counter=counter, context_limit=context_limit, protocol_version=protocol_version,
+        editable=editable,
     )
     if omitted_note is not None:
         omitted_note.extend(omitted)
@@ -150,13 +152,16 @@ def render_full(
     counter: TokenCounter | None = None,
     context_limit: int | None = None,
     protocol_version: str = "1",
+    editable: list[str] | None = None,
 ) -> tuple[str, list[Span], list[str]]:
     """Render the briefing plus the exact span list it displays.
 
     Returns (text, spans, omitted). The controller persists this exact span
     list as the request's bindings, so IDs always mean what the model saw.
     Span IDs are positional and stable: trimming drops trailing spans only
-    and never renumbers survivors.
+    and never renumbers survivors. `editable` is the trusted path policy;
+    only matching paths receive span IDs (read-only context stays visible
+    as excerpts but is never addressable).
     """
     counter = counter or EstimateCounter()
     budgets = state.budgets
@@ -176,7 +181,7 @@ def render_full(
     excerpts, omitted = _collect_excerpts(state, workspace)
     spans: list[Span] = []
     if protocol_version == "3":
-        spans, span_omitted = _collect_spans(state, workspace, excerpts)
+        spans, span_omitted = _collect_spans(state, workspace, excerpts, editable)
         omitted.extend(span_omitted)
     text = _assemble(state, excerpts, omitted, last_observation, protocol_version, spans, workspace)
     if protocol_version == "3":
@@ -206,14 +211,21 @@ def _collect_spans(
     state: EpisodeState,
     workspace: CandidateWorkspace,
     excerpts: list[tuple[str, str]],
+    editable: list[str] | None,
 ) -> tuple[list[Span], list[str]]:
-    """Build the request span catalogue from surviving excerpt ranges."""
+    """Build the request span catalogue from surviving excerpt ranges.
+
+    Only editable paths get span IDs; the trusted policy is the same list
+    PATCH authorization uses, so the catalogue cannot advertise a target
+    that apply-time validation would always reject.
+    """
     ranges = [(foc.path, foc.start, foc.end) for foc in state.focus
               if any(path == foc.path for path, _ in excerpts)]
     if not ranges:
         return [], []
     budget_chars = state.budgets.briefing_target_tokens * 2
-    spans, omitted, _bindings = build_catalogue(workspace.root, ranges, budget_chars)
+    spans, omitted, _bindings = build_catalogue(workspace.root, ranges, budget_chars,
+                                                editable=editable)
     return spans, omitted
 
 

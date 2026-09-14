@@ -21,18 +21,21 @@ class SpanSelectingFake(ModelAdapter):
     name = "fake-span"
 
     def __init__(self, marker="a - b", replacement="a + b", script_tail=None,
-                 bad_span=False, empty_new=False):
+                 bad_span=False, empty_new=False, find=None):
         self.marker = marker
         self.replacement = replacement
         self.calls = 0
         self.bad_span = bad_span
         self.empty_new = empty_new
+        self.find = find or FIND
+        self.chosen_span_id: str | None = None
         self.script_tail = list(script_tail or [CHECK, DONE])
         self.tail_index = 0
 
     def _pick_span(self, briefing):
-        blocks = re.findall(r"\[(S\d+)\] (\S+) bytes \d+-\d+ sha=\S+\n(.*?)(?=\n\[S|\Z)",
-                            briefing, flags=re.S)
+        blocks = re.findall(
+            r"\[(S\d+)\] (\S+) bytes \d+-\d+ sha=\S+ kind=\S+ enclosing=\S+\n(.*?)(?=\n\[S|\Z)",
+            briefing, flags=re.S)
         for span_id, path, text in blocks:
             if self.marker in text and path.endswith(".py"):
                 return span_id, text
@@ -43,9 +46,10 @@ class SpanSelectingFake(ModelAdapter):
         self.last_request = {"adapter": "fake", "profile": "span"}
         self.last_usage = None
         if step == 0:
-            return FIND
+            return self.find
         if step == 1:
             span_id, text = self._pick_span(briefing)
+            self.chosen_span_id = span_id
             if self.empty_new:
                 new = ""
             else:
@@ -92,6 +96,60 @@ def test_v3_span_episode_solves_with_mandatory_verification(repo_copy, state_dir
     records = export_episode(store, "ep-v3-ok", split="dev")
     assert all(r["protocol_version"] == "3" for r in records if r["complete"])
     assert any(r.get("verified_transition") for r in records)
+
+
+def test_v3_child_statement_offered_selected_and_checked(repo_copy, state_dir):
+    """A nested assignment is offered as a child span, edited in isolation,
+    passes mandatory verification, and reaches final validation."""
+    import sys
+
+    from local_coder.config import load_config
+    from local_coder.controller import Controller
+    from local_coder.execution.trusted_local import TrustedLocalBackend
+    from local_coder.persistence import EpisodeStore
+
+    from .conftest import fixture_paths
+
+    paths = fixture_paths("localization")
+    import shutil
+
+    repo = repo_copy.parent / "localization_repo"
+    shutil.copytree(paths["repo"], repo)
+    config = load_config(repo)
+    config.commands = {s: [sys.executable, *a[1:]] for s, a in config.commands.items()}
+    store = EpisodeStore(state_dir)
+    adapter = SpanSelectingFake(
+        marker='refreshed = {"user": user, "expiry": EXPIRY_SECONDS}',
+        replacement='refreshed = {"user": user, "expiry": EXPIRY_SECONDS, '
+                    '"redirect_uri": old.get("redirect_uri", "/home")}',
+        find='{"action":"find","query":"refresh expired session redirect_uri",'
+             '"symbols":["refresh_session"]}',
+        script_tail=[CHECK, DONE])
+    controller = Controller(store, config, adapter, TrustedLocalBackend(), repo,
+                            paths["ticket"].read_text(),
+                            episode_id="ep-v3-child", protocol_version="3",
+                            verification_policy="mandatory")
+    before = (repo / "src/session.py").read_text()
+    state = controller.run()
+    assert state.outcome == "solved", state.stop_reason
+    assert state.auto_checks == 1
+    after = (controller.workspace.root / "src/session.py").read_text()
+    # Only the selected assignment bytes changed; the method, docstring, and
+    # sibling class members are byte-preserved.
+    expected = ('refreshed = {"user": user, "expiry": EXPIRY_SECONDS, '
+                '"redirect_uri": old.get("redirect_uri", "/home")}')
+    assert expected in after
+    assert 'def refresh_session(self, user):' in after
+    assert 'def create_session(self, user, redirect_uri="/home"):' in after
+    assert '"""Refresh an expired session, preserving its redirect target."""' in after
+    assert after.count("def ") == before.count("def ")
+    # The span the fake targeted was a child statement, not the whole method.
+    spans = json.loads(store.read_turn_file("ep-v3-child", 2, "spans.json"))
+    chosen_id = adapter.chosen_span_id
+    chosen = next(s for s in spans if s["span_id"] == chosen_id)
+    assert chosen["kind"] == "assign"
+    assert chosen["enclosing"] == "SessionManager.refresh_session"
+    assert chosen["end_byte"] - chosen["start_byte"] < len(before)
 
 
 def test_v3_unknown_span_id_rejected_before_apply(repo_copy, state_dir):

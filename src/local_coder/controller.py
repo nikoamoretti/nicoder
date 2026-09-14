@@ -297,7 +297,8 @@ class Controller:
             text, spans, _omitted = briefing_mod.render_full(
                 state, self.workspace, self.last_observation,
                 counter=counter, context_limit=self.adapter.context_limit(),
-                protocol_version=self.protocol_version)
+                protocol_version=self.protocol_version,
+                editable=self.config.editable_paths)
         except briefing_mod.ContextBudgetExceeded as exc:
             self._finish("blocked", f"context_budget_exceeded: {exc}")
             return False
@@ -341,12 +342,16 @@ class Controller:
                 json.dumps([
                     {"span_id": span.span_id, "path": span.path,
                      "start_byte": span.start_byte, "end_byte": span.end_byte,
-                     "file_sha256": span.file_sha256, "bytes_sha256": span.bytes_sha256}
+                     "file_sha256": span.file_sha256, "bytes_sha256": span.bytes_sha256,
+                     "kind": span.kind, "enclosing": span.enclosing}
                     for span in spans
                 ], indent=2, sort_keys=True))
+        from .spans import SPAN_CATALOGUE_VERSION
+
         profile = {
             "protocol_version": self.protocol_version,
             "constraint": getattr(self.adapter, "constraint", "json_object"),
+            "catalogue": SPAN_CATALOGUE_VERSION if self.protocol_version == "3" else "none",
             "counter": counter.name,
             "counter_exact": counter.exact,
             "adapter": self.adapter.provenance(),
@@ -372,14 +377,18 @@ class Controller:
         try:
             raw = self.adapter.generate(text, step_index)
         except AdapterError as exc:
+            diagnostics = getattr(exc, "diagnostics", None)
             self._turn_write(turn, "response.json", json.dumps(
-                {"ok": False, "stage": "dispatch", "detail": clip_text(str(exc), 300)}, indent=2))
+                {"ok": False, "stage": "dispatch", "detail": clip_text(str(exc), 300),
+                 "diagnostics": diagnostics}, indent=2, default=str))
             self._turn_write(turn, "action.json", json.dumps(
                 {"ok": False, "stage": "dispatch",
                  "detail": "no response to parse; slot stays consumed"}, indent=2))
             self._set_turn_status(turn, "dispatch_error")
-            self.last_observation = {"status": "adapter_error", "detail": clip_text(str(exc), 300)}
-            self._ev("adapter_error", {"detail": clip_text(str(exc), 300)})
+            self.last_observation = {"status": "adapter_error", "detail": clip_text(str(exc), 300),
+                                     "diagnostics": diagnostics}
+            self._ev("adapter_error", {"detail": clip_text(str(exc), 300),
+                                       "diagnostics": diagnostics})
             self.store.save_state(state)
             return self._still_running()
         state.completion_tokens_est += estimate_tokens(raw)
