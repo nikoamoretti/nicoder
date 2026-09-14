@@ -4,9 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "local-coder"
-version = "0.1.0"
-description = "Bounded autonomous patcher for small testable repository tickets (Milestone 1: offline core)."
-readme = false
+version = "0.2.0"
+description = "Bounded autonomous patcher for small testable repository tickets (experimental v1 CLI)."
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 dependencies = [
@@ -14,6 +14,9 @@ dependencies = [
   "pydantic==2.10.6",
   "pytest==8.3.4",
 ]
+
+[project.scripts]
+local-coder = "local_coder.cli:main"
 
 [project.optional-dependencies]
 dev = []

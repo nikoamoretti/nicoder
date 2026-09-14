@@ -33,6 +33,14 @@
 - `src/local_coder/inference/` — `fake.py` for offline tests, `llama_cpp.py` for
   loopback live inference. No hidden model calls behind repair/summarization.
 - `src/local_coder/persistence.py` + `briefing.py` + `handoff.py` — evidence layer.
+- `src/local_coder/profiles.py` — frozen named profiles (`d2` default, `d1`
+  fallback). Never auto-switch a profile; resume refuses a mismatch.
+- `src/local_coder/machine.py` — machine-local config (`~/.config/local-coder`),
+  never committed, never contains secrets.
+- `src/local_coder/server.py` — server lifecycle with explicit ownership; never
+  kill a process this tool did not start, never take over an occupied port.
+- `src/local_coder/cli.py` — installed `local-coder` entry point; `accept` is
+  transactional, `discard` preserves evidence unless `--with-evidence`.
 
 ## Coding conventions
 
@@ -49,6 +57,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.lock
 .venv/bin/python -m pytest tests/ -q
 .venv/bin/python -m ruff check .
 PYTHONPATH=src .venv/bin/python -m mypy src/local_coder
+.venv/bin/pip install .   # local-coder CLI; entry point local_coder.cli:main
 ```
 
 ## Testing expectations

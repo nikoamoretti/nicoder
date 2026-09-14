@@ -1,4 +1,14 @@
-"""Local Coder command line: init/doctor/run/inspect/resume/diff/accept/discard."""
+"""Local Coder command line.
+
+Installed entry point: ``local-coder``. Commands:
+init, setup, doctor, server start|status|stop, run, inspect, resume, diff,
+accept, discard, benchmark, export-traces.
+
+The default run path uses profile ``d2`` (protocol v3 span editing,
+mandatory post-edit verification, verified non-thinking server mode).
+Profile ``d1`` is the explicitly selected exact-text fallback. Profiles are
+never switched automatically, and a resume refuses a mismatched profile.
+"""
 from __future__ import annotations
 
 import argparse
@@ -14,19 +24,129 @@ from .execution.trusted_local import TrustedLocalBackend
 from .inference.base import AdapterError
 from .inference.fake import ScriptedFakeAdapter, demo_script
 from .inference.llama_cpp import LlamaCppAdapter
+from .machine import (
+    config_path,
+    load_machine_config,
+    machine_status,
+    write_machine_config,
+)
 from .persistence import EpisodeStore
+from .profiles import DEFAULT_PROFILE, Profile, profile_identity, resolve_profile
+from .server import ServerError, server_start, server_status, server_stop
 
 DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "local-coder" / "episodes"
 
 
 def _store(args) -> EpisodeStore:
-    raw = Path(args.state_dir) if args.state_dir else DEFAULT_STATE_DIR
+    raw = Path(args.state_dir) if getattr(args, "state_dir", None) else DEFAULT_STATE_DIR
     return EpisodeStore(raw.expanduser().resolve())
+
+
+# -- profile and adapter construction ---------------------------------------
+
+
+def _selected_profile(args) -> Profile | None:
+    """Resolve the named profile for this run; fake profiles bypass names."""
+    name = getattr(args, "profile", None)
+    if not name or name.startswith("fake:"):
+        return None
+    if name == "llama":
+        print("note: profile 'llama' is a legacy alias; using default profile 'd2'")
+        name = DEFAULT_PROFILE
+    return resolve_profile(name)
+
+
+def _build_llama_adapter(args, profile: Profile | None) -> LlamaCppAdapter:
+    """Build the live adapter from machine config, profile, and overrides."""
+    import os
+
+    cfg = load_machine_config()
+    endpoint = (os.environ.get("LOCAL_CODER_LLAMA_URL")
+                or getattr(args, "endpoint", None) or cfg.endpoint)
+    from .inference.grammar import constraint_id, constraint_id_v2, constraint_id_v3
+
+    protocol = _effective_protocol(args, profile)
+    constraint_map = {"1": constraint_id(), "2": constraint_id_v2(), "3": constraint_id_v3()}
+    return LlamaCppAdapter(
+        endpoint,
+        model=getattr(args, "model", None) or cfg.model_alias,
+        max_tokens=getattr(args, "max_tokens", None) or cfg.max_tokens,
+        timeout_s=getattr(args, "gen_timeout", None) or cfg.gen_timeout,
+        model_file=getattr(args, "model_file", None) or cfg.model_file or None,
+        quantization=getattr(args, "quantization", None) or cfg.quantization,
+        n_ctx=getattr(args, "n_ctx", None) or cfg.n_ctx,
+        constraint=profile.constraint if profile else constraint_map[protocol],
+        channel_policy=_effective_channel(args, profile),
+        thinking=_effective_thinking(args, profile),
+    )
+
+
+def _effective_protocol(args, profile: Profile | None) -> str:
+    explicit = getattr(args, "protocol", None)
+    if explicit:
+        return explicit
+    if profile is not None:
+        return profile.protocol
+    return "1"
+
+
+def _effective_verification(args, profile: Profile | None) -> str:
+    explicit = getattr(args, "verification_policy", None)
+    if explicit:
+        return explicit
+    if profile is not None:
+        return profile.verification_policy
+    return "off"
+
+
+def _effective_channel(args, profile: Profile | None) -> str:
+    explicit = getattr(args, "channel", None)
+    if explicit:
+        return explicit
+    if profile is not None:
+        return profile.channel_policy
+    return "legacy"
+
+
+def _effective_thinking(args, profile: Profile | None) -> str:
+    explicit = getattr(args, "thinking", None)
+    if explicit:
+        return explicit
+    if profile is not None:
+        return profile.thinking
+    return "auto"
+
+
+def _build_adapter(args, config):
+    profile = _selected_profile(args)
+    name = getattr(args, "profile", None) or ""
+    if name.startswith("fake:"):
+        return ScriptedFakeAdapter(demo_script(name), name)
+    return _build_llama_adapter(args, profile)
+
+
+def _build_backend(args, config):
+    mode = getattr(args, "execution", None) or config.execution
+    if mode == "trusted-local":
+        print("execution: trusted-local — NON-SANDBOXED host execution (explicit opt-in)")
+        return TrustedLocalBackend()
+    backend = IsolatedBackend()
+    try:
+        backend.check_available()
+    except IsolationUnavailable as exc:
+        print(f"error: isolated execution requested but {exc}", file=sys.stderr)
+        print("Refusing to fall back to host execution. "
+              "Re-run with --execution trusted-local for trusted fixtures.", file=sys.stderr)
+        raise
+    return backend
+
+
+# -- init / setup / doctor ---------------------------------------------------
 
 
 def cmd_init(args) -> int:
     """Write an editable example config; never silently authorize scripts."""
-    repo = Path(args.repo)
+    repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir():
         print(f"error: repo not found: {repo}", file=sys.stderr)
         return 1
@@ -35,14 +155,48 @@ def cmd_init(args) -> int:
     except FileExistsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    state_dir = _store(args).state_dir
     print(f"wrote editable example config: {path}")
-    print("Review commands and editable_paths before running. Nothing was authorized.")
+    print("Next steps:")
+    print(f"  1. Review {CONFIG_FILENAME}: editable_paths, commands, acceptance.")
+    print("     Commands are exact argv lists; tickets cannot authorize shell commands.")
+    print("  2. Configure the machine once: local-coder setup --write")
+    print("  3. Start the model:            local-coder server start")
+    print(f"  4. Check readiness:            local-coder doctor --repo {repo}")
+    print(f"Episode evidence will be stored outside the repo at: {state_dir}")
+    return 0
+
+
+def cmd_setup(args) -> int:
+    """Detect and optionally persist machine-local configuration."""
+    import os
+
+    cfg = load_machine_config()
+    updates = {
+        "model_file": getattr(args, "model_file", None),
+        "model_alias": getattr(args, "model_alias", None),
+        "endpoint": getattr(args, "endpoint", None),
+        "server_binary": getattr(args, "server_binary", None),
+        "n_ctx": getattr(args, "n_ctx", None),
+    }
+    cfg = cfg.model_copy(update={k: v for k, v in updates.items() if v})
+    if os.environ.get("LOCAL_CODER_LLAMA_URL"):
+        cfg = cfg.model_copy(update={"endpoint": os.environ["LOCAL_CODER_LLAMA_URL"]})
+    if args.write:
+        path = write_machine_config(cfg)
+        print(f"wrote machine configuration: {path}")
+    else:
+        print(f"machine configuration would be written to: {config_path()}")
+        print("re-run with --write to persist it")
+    print("Effective configuration:")
+    for key, value in cfg.model_dump().items():
+        print(f"  {key} = {value}")
     return 0
 
 
 def cmd_doctor(args) -> int:
-    """Report prerequisites without changing the repo or generating."""
-    repo = Path(args.repo)
+    """Report prerequisites without changing the repo or generating tokens."""
+    repo = Path(args.repo).expanduser().resolve()
     ok = True
     print(f"repo: {repo}")
     if not repo.is_dir():
@@ -57,6 +211,11 @@ def cmd_doctor(args) -> int:
     except ImportError as exc:
         print(f"  MISSING: {exc}")
         ok = False
+    cfg = load_machine_config()
+    for name, row_ok, detail in machine_status(cfg):
+        print(f"  {name}: {'ok' if row_ok else 'MISSING'} — {detail}")
+        if not row_ok and name != "endpoint":
+            ok = False
     try:
         config = load_config(repo)
         print(f"  config: {CONFIG_FILENAME} ok "
@@ -73,81 +232,71 @@ def cmd_doctor(args) -> int:
         print("  isolated backend: AVAILABLE")
     except IsolationUnavailable as exc:
         print(f"  isolated backend: BLOCKED ({exc})")
+    status = server_status(cfg)
+    if status["healthy"]:
+        print(f"  model server: healthy at {cfg.endpoint} "
+              f"(alias={status['model_alias'] or 'unknown'}, owned={status['owned']})")
+    elif status["running"]:
+        print(f"  model server: process present but not healthy at {cfg.endpoint} "
+              f"(owned={status['owned']})")
+    else:
+        print(f"  model server: not running at {cfg.endpoint} "
+              f"(start it with: local-coder server start)")
     if args.probe_model:
-        import os
-
-        from .inference.llama_cpp import check_configured
-        from .telemetry import llama_server_version, snapshot
-
         try:
-            url = check_configured(os.environ.get("LOCAL_CODER_LLAMA_URL"))
-            adapter = _build_llama_adapter(args, os.environ)
-            record = adapter.probe(save_dir=_store(args).state_dir)
-            print(f"  model probe: VALID action returned ({url})")
+            profile = _selected_profile(args)
+            adapter = _build_llama_adapter(args, profile)
+            record = adapter.probe(save_dir=_store(args).state_dir,
+                                   protocol_version=_effective_protocol(args, profile),
+                                   profile=profile.name if profile else None)
+            print(f"  model probe: VALID action returned ({adapter.endpoint})")
             print(f"  probe checks: {record['checks']}")
-            print(f"  provenance: {adapter.provenance()}")
-            print(f"  local llama-server binary: {llama_server_version()}")
-            print(f"  memory: {snapshot(worker_image='local-coder-worker:1')}")
-        except AdapterError as exc:
+            print(f"  probe record saved under: {_store(args).state_dir}/_probes")
+        except (AdapterError, ValueError) as exc:
             print(f"  model probe: FAILED ({exc})")
             ok = False
     else:
-        print("  model probe: NOT RUN (use --probe-model with LOCAL_CODER_LLAMA_URL)")
+        print("  model probe: NOT RUN (explicit: --probe-model; generates one recorded probe)")
     print("doctor: " + ("OK" if ok else "BLOCKED"))
     return 0 if ok else 1
 
 
-def _build_llama_adapter(args, environ) -> LlamaCppAdapter:
-    """Build the live adapter from explicit loopback config (no downloads)."""
-    from .inference.llama_cpp import check_configured
-
-    url = check_configured(environ.get("LOCAL_CODER_LLAMA_URL", ""))
-    from .inference.grammar import constraint_id, constraint_id_v2, constraint_id_v3
-
-    protocol = getattr(args, "protocol", "1")
-    if protocol not in ("1", "2", "3"):
-        raise AdapterError(f"unknown protocol version {protocol!r}")
-    constraints = {"1": constraint_id(), "2": constraint_id_v2(), "3": constraint_id_v3()}
-    return LlamaCppAdapter(
-        url,
-        model=getattr(args, "model", None) or environ.get("LOCAL_CODER_MODEL", "unknown"),
-        max_tokens=getattr(args, "max_tokens", None) or 2048,
-        timeout_s=getattr(args, "gen_timeout", None) or 300,
-        model_file=getattr(args, "model_file", None) or environ.get("LOCAL_CODER_MODEL_FILE"),
-        quantization=getattr(args, "quantization", None)
-        or environ.get("LOCAL_CODER_QUANTIZATION", "unknown"),
-        n_ctx=getattr(args, "n_ctx", None),
-        constraint=constraints[protocol],
-        channel_policy=getattr(args, "channel", None) or "legacy",
-        thinking=getattr(args, "thinking", None) or "auto",
-    )
+# -- server lifecycle ---------------------------------------------------------
 
 
-def _build_adapter(args, config):
-    profile = args.profile
-    if profile.startswith("fake:"):
-        return ScriptedFakeAdapter(demo_script(profile), profile)
-    if profile == "llama":
-        import os
-
-        return _build_llama_adapter(args, os.environ)
-    raise AdapterError(f"unknown profile {profile!r} (expected fake:* or llama)")
-
-
-def _build_backend(args, config):
-    mode = args.execution or config.execution
-    if mode == "trusted-local":
-        print("execution: trusted-local — NON-SANDBOXED host execution (explicit opt-in)")
-        return TrustedLocalBackend()
-    backend = IsolatedBackend()
+def cmd_server(args) -> int:
+    """start | status | stop the local model server owned by this tool."""
+    cfg = load_machine_config()
     try:
-        backend.check_available()
-    except IsolationUnavailable as exc:
-        print(f"error: isolated execution requested but {exc}", file=sys.stderr)
-        print("Refusing to fall back to host execution. "
-              "Re-run with --execution trusted-local for trusted fixtures.", file=sys.stderr)
-        raise
-    return backend
+        if args.server_command == "start":
+            result = server_start(cfg, wait_s=args.wait)
+            print(f"server started (pid {result['pid']}) at {result['endpoint']}")
+            print(f"  model alias: {result['model_alias'] or 'unknown'}")
+            print(f"  log: {result['log']}")
+            print("  stop it with: local-coder server stop")
+        elif args.server_command == "status":
+            status = server_status(cfg)
+            owned = "yes" if status["owned"] else "no"
+            print(f"server: running={status['running']} healthy={status['healthy']} owned={owned}")
+            if status["pid"]:
+                print(f"  pid: {status['pid']}")
+            if status["model_alias"]:
+                print(f"  model alias: {status['model_alias']}")
+            if status["note"]:
+                print(f"  note: {status['note']}")
+        else:
+            result = server_stop()
+            if result["stopped"]:
+                print(f"server stopped (pid {result['pid']})")
+            else:
+                print(f"server not running: {result['detail']}")
+        return 0
+    except ServerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+# -- run ----------------------------------------------------------------------
 
 
 def cmd_run(args) -> int:
@@ -159,6 +308,7 @@ def cmd_run(args) -> int:
         return 1
     try:
         config = load_config(repo)
+        profile = _selected_profile(args)
         adapter = _build_adapter(args, config)
         backend = _build_backend(args, config)
     except (AdapterError, IsolationUnavailable, ValueError) as exc:
@@ -166,33 +316,68 @@ def cmd_run(args) -> int:
         return 1
     ticket = ticket_file.read_text(encoding="utf-8")
     store = _store(args)
-    controller = Controller(store, config, adapter, backend, repo, ticket, episode_id=args.episode_id,
-                            protocol_version=getattr(args, "protocol", "1") or "1",
-                            verification_policy=getattr(args, "verification_policy", "off") or "off")
+    controller = Controller(
+        store, config, adapter, backend, repo, ticket, episode_id=args.episode_id,
+        protocol_version=_effective_protocol(args, profile),
+        verification_policy=_effective_verification(args, profile),
+        profile_identity=profile_identity(profile) if profile else None)
+    print(f"episode: {controller.episode_id}  (store: {store.episode_dir(controller.episode_id)})")
+    print(f"profile: {profile.name if profile else getattr(args, 'profile', '?')}"
+          f" ({profile.label if profile else 'test/legacy'})  "
+          f"backend: {backend.name} — {backend.isolation_label}")
     try:
         state = controller.run()
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    epdir = store.episode_dir(state.episode_id)
-    files = ",".join(state.last_patch.files) if state.last_patch else "(none)"
-    test_status = state.final.status if state.final else (state.current.status if state.current else "none")
-    fake = "FAKE " if state.provenance.get("adapter") == "fake" else ""
-    print(f"{fake}episode: {state.episode_id}")
-    print(f"goal: {ticket.strip().splitlines()[0][:120]}")
-    print(f"outcome: {state.outcome} ({state.stop_reason})")
-    print(f"files: {files}  tests: {test_status}  decisions: {state.generations_used}")
-    print(f"protocol: v{state.provenance.get('protocol_version', '?')}  "
-          f"profile: {adapter.name}/{getattr(adapter, 'profile', '')}  "
-          f"backend: {backend.name} ({backend.isolation_label})")
-    print(f"tokens exact in/out: {state.prompt_tokens_exact}/{state.completion_tokens_exact}  "
-          f"est in/out: {state.prompt_tokens_est}/{state.completion_tokens_est}")
-    print(f"diff: {epdir}/artifacts/final.diff  handoff: {epdir}/handoff.md")
+    _print_run_summary(store, state, adapter, backend, profile)
     return 0 if state.outcome == "solved" else 1
 
 
+def _print_run_summary(store: EpisodeStore, state, adapter, backend, profile: Profile | None) -> None:
+    """Honest run summary: stages, budgets, edits, checks, next command."""
+    events = store.read_events(state.episode_id)
+    applied = [e for e in events if e["type"] == "patch_applied"]
+    reverted = [e for e in events if e["type"] == "patch_reverted"]
+    rejected = [e["data"].get("code", "?") for e in events
+                if e["type"] in ("patch_rejected", "protocol_error")]
+    auto_checks = [e for e in events if e["type"] == "auto_check_completed"]
+    model_checks = [e for e in events if e["type"] == "check_completed"]
+    fake = "FAKE " if state.provenance.get("adapter") == "fake" else ""
+    remaining_gens = state.budgets.max_generations - state.generations_used
+    files = ",".join(state.last_patch.files) if state.last_patch else "(none)"
+    print(f"{fake}episode: {state.episode_id}")
+    print(f"goal: {state.ticket.strip().splitlines()[0][:120]}")
+    print(f"profile: {profile.name if profile else 'fake/legacy'}"
+          f"  protocol: v{state.provenance.get('protocol_version', '?')}"
+          f"  verification: {state.provenance.get('verification_policy', '?')}")
+    print(f"stage: {state.phase}  decisions left: {remaining_gens}  files: {files}")
+    print(f"edits: applied={len(applied)} reverted={len(reverted)} rejected={rejected or 'none'}")
+    for check in auto_checks:
+        print(f"automatic check ({check['data'].get('scope')}): {check['data'].get('status')} "
+              f"failed={check['data'].get('failed') or []}")
+    for check in model_checks[-2:]:
+        print(f"model check ({check['data'].get('scope')}): {check['data'].get('status')} "
+              f"failed={check['data'].get('failed') or []}")
+    if state.final is not None:
+        print(f"final validation: {state.final.status}")
+    elif state.current is not None:
+        print(f"latest check: {state.current.scope} {state.current.status} "
+              f"(focused evidence is not final validation)")
+    print(f"outcome: {state.outcome} ({state.stop_reason})")
+    print(f"inspect: local-coder inspect {state.episode_id}")
+    print(f"diff:    local-coder diff {state.episode_id}")
+    if state.outcome == "solved":
+        print(f"accept:  local-coder accept {state.episode_id} --repo {state.repo_path}")
+    print(f"handoff: {store.episode_dir(state.episode_id)}/handoff.md")
+    print(f"tokens exact in/out: {state.prompt_tokens_exact}/{state.completion_tokens_exact}")
+
+
+# -- inspect / resume / diff / accept / discard -------------------------------
+
+
 def cmd_inspect(args) -> int:
-    """Show stored state, evidence, and recent events after a restart."""
+    """Show stored episode evidence after a restart."""
     store = _store(args)
     try:
         state = store.load_state(args.episode)
@@ -200,21 +385,41 @@ def cmd_inspect(args) -> int:
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    epdir = store.episode_dir(args.episode)
     print(json.dumps({
         "episode": state.episode_id, "outcome": state.outcome, "phase": state.phase,
         "stop_reason": state.stop_reason, "generations_used": state.generations_used,
         "patch_attempts": state.patch_attempts, "model_checks": state.model_checks,
-        "test_invocations": state.test_invocations,
+        "auto_checks": state.auto_checks, "test_invocations": state.test_invocations,
         "baseline": state.baseline.status if state.baseline else None,
         "current": state.current.status if state.current else None,
         "final": state.final.status if state.final else None,
         "focus": [f.path for f in state.focus],
         "events": count,
         "provenance": state.provenance,
+        "candidate_dir": str(store.candidate_dir(args.episode)),
+        "handoff": str(epdir / "handoff.md"),
+        "final_diff": str(epdir / "artifacts" / "final.diff"),
+        "next": f"local-coder diff {state.episode_id}",
     }, indent=2))
     for event in store.read_events(args.episode)[-8:]:
         print(f"  #{event['seq']} {event['type']} {json.dumps(event['data'], sort_keys=True)[:160]}")
     return 0
+
+
+def _check_profile_match(state, args) -> tuple[bool, str]:
+    """Resume must not silently run under a different profile."""
+    profile = _selected_profile(args)
+    recorded = state.provenance.get("profile_name")
+    if profile is None:
+        return True, ""
+    if recorded is None:
+        return False, (f"episode {state.episode_id} predates named profiles; "
+                       f"resume refused under profile '{profile.name}'")
+    if recorded != profile.name:
+        return False, (f"episode {state.episode_id} ran under profile '{recorded}'; "
+                       f"refusing to resume under '{profile.name}'")
+    return True, ""
 
 
 def cmd_resume(args) -> int:
@@ -228,6 +433,14 @@ def cmd_resume(args) -> int:
     if state.outcome != "running":
         print(f"episode {args.episode} is {state.outcome} ({state.stop_reason}); nothing to continue")
         return 0 if state.outcome == "solved" else 1
+    try:
+        matched, detail = _check_profile_match(state, args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not matched:
+        print(f"error: {detail}", file=sys.stderr)
+        return 1
     config = load_config(Path(state.repo_path))
     try:
         adapter = _build_adapter(args, config)
@@ -243,27 +456,25 @@ def cmd_resume(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"resumed {args.episode}: {final.outcome} ({final.stop_reason})")
+    print(f"inspect: local-coder inspect {args.episode}")
     return 0 if final.outcome == "solved" else 1
 
 
 def cmd_diff(args) -> int:
-    """Print the stored final diff for an episode."""
+    """Print the stored final diff for an episode (solved or blocked)."""
     store = _store(args)
     ref = "artifacts/final.diff"
     try:
-        print(store.read_artifact_text(args.episode, ref), end="")
+        text = store.read_artifact_text(args.episode, ref)
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    print(text, end="")
     return 0
 
 
 def cmd_accept(args) -> int:
-    """Human-invoked acceptance: dry-run, then apply the solved candidate."""
-    import os
-
-    from .paths import candidate_manifest, original_manifest, tree_hash
-
+    """Transactional acceptance of a solved candidate onto the original tree."""
     store = _store(args)
     try:
         state = store.load_state(args.episode)
@@ -271,55 +482,135 @@ def cmd_accept(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     repo = Path(args.repo).expanduser().resolve()
-    if state.outcome != "solved" or state.last_patch is None:
-        print(f"error: episode is {state.outcome}; only solved episodes can be accepted", file=sys.stderr)
-        return 1
-    if (repo / ".git").exists() and git_is_dirty(repo):
-        print("error: refusing accept onto a dirty checkout", file=sys.stderr)
-        return 1
-    current_orig = tree_hash(original_manifest(repo))
-    if current_orig != state.source_tree_hash:
-        print("error: original tree drifted since the episode; refusing accept", file=sys.stderr)
+    ok, detail = _accept_gate(store, state, repo)
+    if not ok:
+        print(f"error: {detail}", file=sys.stderr)
         return 1
     candidate = store.candidate_dir(args.episode)
-    if tree_hash(candidate_manifest(candidate)) != state.candidate_tree_hash:
-        print("error: candidate changed after final validation; re-verify first", file=sys.stderr)
-        return 1
+    files = list(state.last_patch.files) if state.last_patch else []
+    plan = {rel: {
+        "candidate_sha256": state.last_patch.after.get(rel, "") if state.last_patch else "",
+        "original_exists": (repo / rel).exists(),
+    } for rel in files}
+    if getattr(args, "dry_run", False):
+        print(f"dry run for {args.episode}: would apply {len(files)} file(s) to {repo}")
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return 0
+    store.append_event(args.episode, "accept_intent", {"files": files, "repo": str(repo)})
+    before: dict[str, bytes | None] = {}
     applied: list[str] = []
-    for rel in state.last_patch.files:
-        src = candidate / rel
-        dst = repo / rel
-        tmp = dst.with_suffix(dst.suffix + ".accepttmp")
-        tmp.write_bytes(src.read_bytes())
-        os.replace(tmp, dst)
-        applied.append(rel)
+    try:
+        for rel in files:
+            dst = repo / rel
+            before[rel] = dst.read_bytes() if dst.exists() else None
+            src = candidate / rel
+            if not src.exists():
+                raise OSError(f"candidate file missing: {src}")
+            tmp = dst.with_suffix(dst.suffix + ".accepttmp")
+            try:
+                tmp.write_bytes(src.read_bytes())
+                os_replace(tmp, dst)
+            finally:
+                tmp.unlink(missing_ok=True)
+            applied.append(rel)
+    except OSError as exc:
+        restored = _rollback_accept(repo, before, applied)
+        store.append_event(args.episode, "accept_failed",
+                           {"detail": str(exc), "rolled_back": restored})
+        print(f"error: acceptance failed ({exc}); restored {restored} file(s)", file=sys.stderr)
+        return 1
     store.append_event(args.episode, "accepted", {"files": applied, "repo": str(repo)})
     print(f"accepted {args.episode}: {', '.join(applied)}")
     return 0
 
 
+def os_replace(tmp: Path, dst: Path) -> None:
+    """Atomic rename helper (single import point for tests)."""
+    import os
+
+    os.replace(tmp, dst)
+
+
+def _rollback_accept(repo: Path, before: dict[str, bytes | None], applied: list[str]) -> int:
+    """Restore originals for files replaced before an accept failure."""
+    restored = 0
+    for rel in applied:
+        dst = repo / rel
+        original = before.get(rel)
+        try:
+            if original is None:
+                dst.unlink(missing_ok=True)
+            else:
+                tmp = dst.with_suffix(dst.suffix + ".acceptrollback")
+                tmp.write_bytes(original)
+                os_replace(tmp, dst)
+            restored += 1
+        except OSError:
+            pass
+    return restored
+
+
+def _accept_gate(store: EpisodeStore, state, repo: Path) -> tuple[bool, str]:
+    """All acceptance preconditions; any failure refuses without changes."""
+    from .paths import candidate_manifest, original_manifest, tree_hash
+
+    if state.outcome != "solved" or state.last_patch is None:
+        return False, (f"episode is {state.outcome}; only solved episodes can be accepted "
+                       "(blocked episodes can still be inspected and diffed)")
+    if state.final is None or state.final.status != "pass":
+        return False, "final validation evidence is missing or not passing"
+    if not repo.is_dir():
+        return False, f"repo not found: {repo}"
+    if (repo / ".git").exists() and git_is_dirty(repo):
+        return False, "refusing accept onto a dirty checkout"
+    current_orig = tree_hash(original_manifest(repo))
+    if current_orig != state.source_tree_hash:
+        return False, "original tree drifted since the episode; refusing accept"
+    candidate = store.candidate_dir(state.episode_id)
+    if not candidate.is_dir():
+        return False, "candidate workspace is missing (was it discarded?)"
+    if tree_hash(candidate_manifest(candidate)) != state.candidate_tree_hash:
+        return False, "candidate changed after final validation; re-verify first"
+    for rel, want in (state.last_patch.after or {}).items():
+        full = candidate / rel
+        if not full.exists():
+            return False, f"candidate file missing: {rel}"
+        from .paths import sha256_file
+
+        if sha256_file(full) != want:
+            return False, f"candidate file changed: {rel}"
+    return True, ""
+
+
 def cmd_discard(args) -> int:
-    """Delete the candidate workspace; keep audit unless --with-evidence."""
+    """Remove the candidate workspace; preserve evidence unless asked."""
     store = _store(args)
     try:
         state = store.load_state(args.episode)
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    repo = Path(state.repo_path)
     candidate = store.candidate_dir(args.episode)
-    if candidate.exists():
+    removed_candidate = candidate.exists()
+    if removed_candidate:
         shutil.rmtree(candidate)
     state.outcome = "discarded"
     state.stop_reason = "human discard; candidate removed"
     state.phase = "TERMINAL"
     store.save_state(state)
-    store.append_event(args.episode, "discarded", {})
-    if args.with_evidence:
+    store.append_event(args.episode, "discarded", {"candidate_removed": removed_candidate})
+    print(f"discarded {args.episode}: candidate {'removed' if removed_candidate else 'already absent'}")
+    print(f"original repository untouched: {repo}")
+    if getattr(args, "with_evidence", False):
         shutil.rmtree(store.episode_dir(args.episode))
-        print(f"discarded {args.episode} including evidence (explicitly requested)")
+        print("evidence explicitly deleted (--with-evidence)")
     else:
-        print(f"discarded {args.episode}; audit/handoff preserved")
+        print("evidence preserved: state, events, handoff, artifacts (default)")
     return 0
+
+
+# -- benchmark / export -------------------------------------------------------
 
 
 def cmd_benchmark(args) -> int:
@@ -347,9 +638,6 @@ def cmd_benchmark(args) -> int:
         return _build_adapter(args, None)
 
     def backend_factory():
-        from .execution.isolated import IsolatedBackend
-        from .execution.trusted_local import TrustedLocalBackend
-
         if (args.execution or "isolated") == "trusted-local":
             print("execution: trusted-local — NON-SANDBOXED host execution (explicit opt-in)")
             return TrustedLocalBackend()
@@ -374,10 +662,8 @@ def cmd_export_traces(args) -> int:
     """Export versioned JSONL trace records (held-out excluded by default)."""
     from .benchmark import load_manifest
     from .export import export_episode, write_jsonl
-    from .persistence import EpisodeStore
 
-    store = EpisodeStore(Path(args.state_dir).expanduser().resolve()
-                         if args.state_dir else DEFAULT_STATE_DIR)
+    store = _store(args)
     splits: dict[str, str] = {}
     if args.suite:
         try:
@@ -406,53 +692,71 @@ def cmd_export_traces(args) -> int:
     return 0
 
 
-def cmd_future(args) -> int:
-    """Benchmark and trace export arrive in later milestones (honest stub)."""
-    print(f"error: {args.command} is not implemented in Milestone 1 (see Prompt 4 scope)",
-          file=sys.stderr)
-    return 3
+# -- parser -------------------------------------------------------------------
 
 
 def _add_llama_args(parser) -> None:
-    """Live-profile options. All explicit; nothing is downloaded or guessed."""
+    """Live-profile options. Explicit overrides; nothing is downloaded."""
     parser.add_argument("--model", default=None, help="model alias for the local server")
     parser.add_argument("--model-file", default=None, help="local model file path (hashed for provenance)")
     parser.add_argument("--quantization", default=None, help="e.g. Q4_K_M (recorded, never inferred)")
     parser.add_argument("--n-ctx", default=None, type=int, help="verified server context size")
     parser.add_argument("--max-tokens", default=None, type=int, help="per-generation output budget")
     parser.add_argument("--gen-timeout", default=None, type=int, help="per-generation deadline in seconds")
-    parser.add_argument("--protocol", default="1", choices=["1", "2", "3"],
-                        help="action protocol version (v2 = exact-replacement PATCH, "
-                             "v3 = span-ID selection PATCH)")
-    parser.add_argument("--verification-policy", default="off", choices=["off", "mandatory"],
-                        help="mandatory runs a controller-owned check after every edit; "
-                             "resume always adopts the episode's recorded policy")
-    parser.add_argument("--thinking", default="auto", choices=["auto", "off"],
-                        help="declared thinking expectation (verified by probe, never assumed)")
-    parser.add_argument("--channel", default="legacy", choices=["legacy", "final-only"],
-                        help="output channel policy (final-only rejects reasoning-only output)")
+    parser.add_argument("--endpoint", default=None, help="loopback llama.cpp endpoint override")
+    parser.add_argument("--protocol", default=None, choices=["1", "2", "3"],
+                        help="override the profile protocol (advanced)")
+    parser.add_argument("--verification-policy", default=None, choices=["off", "mandatory"],
+                        help="override the profile verification policy (advanced)")
+    parser.add_argument("--thinking", default=None, choices=["auto", "off"],
+                        help="override the profile thinking expectation (advanced)")
+    parser.add_argument("--channel", default=None, choices=["legacy", "final-only"],
+                        help="override the profile channel policy (advanced)")
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI parser."""
-    parser = argparse.ArgumentParser(prog="local-coder", description="Bounded autonomous patcher (M1 offline core)")
+    parser = argparse.ArgumentParser(
+        prog="local-coder",
+        description="Bounded autonomous patcher for small, testable Python repository tickets (experimental).")
     parser.add_argument("--state-dir", default=None, help="episode store (default: per-user app state)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="write editable example config")
+    p = sub.add_parser("init", help="write editable repo config + next steps")
     p.add_argument("--repo", required=True)
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("doctor", help="report prerequisites, change nothing")
+    p = sub.add_parser("setup", help="detect machine config; --write persists it")
+    p.add_argument("--model-file", default=None)
+    p.add_argument("--model-alias", default=None)
+    p.add_argument("--endpoint", default=None)
+    p.add_argument("--server-binary", default=None)
+    p.add_argument("--n-ctx", default=None, type=int)
+    p.add_argument("--write", action="store_true")
+    p.set_defaults(func=cmd_setup)
+
+    p = sub.add_parser("doctor", help="report prerequisites; generates nothing by default")
     p.add_argument("--repo", required=True)
-    p.add_argument("--probe-model", action="store_true")
+    p.add_argument("--probe-model", action="store_true",
+                   help="run one explicit, recorded generative capability probe")
+    p.add_argument("--profile", default=DEFAULT_PROFILE, help="named profile for the probe (default d2)")
+    _add_llama_args(p)
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("run", help="run one bounded episode")
+    p = sub.add_parser("server", help="start|status|stop the local model server")
+    server_sub = p.add_subparsers(dest="server_command", required=True)
+    s = server_sub.add_parser("start", help="start the configured server (records ownership)")
+    s.add_argument("--wait", default=90, type=int)
+    server_sub.add_parser("status", help="report ownership and health; no generations")
+    server_sub.add_parser("stop", help="stop only the server this tool started")
+    p.set_defaults(func=cmd_server)
+
+    p = sub.add_parser("run", help="run one bounded episode (default profile d2)")
     p.add_argument("--repo", required=True)
     p.add_argument("--ticket-file", required=True)
-    p.add_argument("--profile", required=True, help="fake:success|fake:wrong|fake:blocked|llama")
+    p.add_argument("--profile", default=DEFAULT_PROFILE,
+                   help="d2 (default), d1 (fallback), or fake:<name> for tests")
     p.add_argument("--execution", default=None, help="isolated|trusted-local (default: repo config)")
     p.add_argument("--episode-id", default=None)
     _add_llama_args(p)
@@ -464,7 +768,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("resume", help="verify, reconcile, continue an episode")
     p.add_argument("episode")
-    p.add_argument("--profile", required=True)
+    p.add_argument("--profile", default=None, help="must match the recorded profile")
     p.add_argument("--execution", default=None)
     _add_llama_args(p)
     p.set_defaults(func=cmd_resume)
@@ -476,9 +780,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("accept", help="apply a solved candidate to the original tree")
     p.add_argument("episode")
     p.add_argument("--repo", required=True)
+    p.add_argument("--dry-run", action="store_true", help="show the plan; change nothing")
     p.set_defaults(func=cmd_accept)
 
-    p = sub.add_parser("discard", help="remove candidate, keep audit")
+    p = sub.add_parser("discard", help="remove candidate; evidence preserved by default")
     p.add_argument("episode")
     p.add_argument("--with-evidence", action="store_true")
     p.set_defaults(func=cmd_discard)
@@ -495,7 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--include-held-out", action="store_true")
         if name == "benchmark":
             p.add_argument("--suite", required=True)
-            p.add_argument("--profile", required=True)
+            p.add_argument("--profile", default=DEFAULT_PROFILE)
             p.add_argument("--execution", default=None)
             p.add_argument("--run-id", default=None)
             p.add_argument("--split", default="dev,held-out")
@@ -508,7 +813,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point."""
+    """CLI entry point (installed console script)."""
     args = build_parser().parse_args(argv)
     return args.func(args)
 

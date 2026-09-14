@@ -1,4 +1,6 @@
 """Transitions, briefing, config/CLI surface, live-adapter honesty."""
+import sys
+
 import pytest
 
 from local_coder import briefing as briefing_mod
@@ -40,10 +42,20 @@ def test_briefing_context_budget_exceeded(repo_copy, state_dir):
         briefing_mod.render(controller.state, controller.workspace, None)
 
 
-def test_init_and_doctor_do_not_generate(tmp_path):
+def test_init_and_doctor_do_not_generate(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "x.py").write_text("x = 1\n")
+    from local_coder import machine
+    from local_coder import server as server_mod
+
+    config_home = tmp_path / "machine"
+    monkeypatch.setenv(machine.CONFIG_DIR_ENV, str(config_home))
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+    machine.write_machine_config(machine.MachineConfig(
+        model_file=str(model), server_binary=sys.executable, endpoint="http://127.0.0.1:18097"))
+    monkeypatch.setattr(server_mod, "_health", lambda endpoint, timeout=2.0: False)
 
     class Args:
         pass

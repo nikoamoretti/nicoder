@@ -411,7 +411,8 @@ class LlamaCppAdapter(ModelAdapter):
     # -- capability probe -------------------------------------------------
 
     def probe(self, save_dir: str | Path | None = None,
-              prompt: str | None = None, protocol_version: str = "1") -> dict:
+              prompt: str | None = None, protocol_version: str = "1",
+              profile: str | None = None) -> dict:
         """Verify real capabilities, not merely HTTP 200.
 
         Checks grammar-constrained generation (response parses as JSON and
@@ -420,13 +421,15 @@ class LlamaCppAdapter(ModelAdapter):
         action in the final-answer channel with no reasoning output: a
         reasoning-only response is a compatibility failure. Probe records
         live outside episodes and are never counted as generation attempts.
-        A caller may supply a task-independent prompt and the protocol
-        version whose schema should validate the response.
+        A caller may supply a task-independent prompt, the protocol
+        version whose schema should validate the response, and the named
+        profile the probe ran under.
         Raises AdapterError with specifics.
         """
         from ..protocol import parse_raw
 
         record: dict = {"endpoint": self.endpoint, "model": self.model,
+                        "profile": profile,
                         "constraint": self.constraint,
                         "channel_policy": self.channel_policy,
                         "thinking": getattr(self, "thinking", "auto"),

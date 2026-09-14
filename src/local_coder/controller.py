@@ -131,6 +131,7 @@ class Controller:
         task_id: str | None = None,
         protocol_version: str = PROTOCOL_VERSION,
         verification_policy: str = "off",
+        profile_identity: dict[str, str] | None = None,
     ) -> None:
         if protocol_version not in (PROTOCOL_VERSION, PROTOCOL_VERSION_V2, PROTOCOL_VERSION_V3):
             raise ValueError(f"unknown protocol version {protocol_version!r}")
@@ -146,6 +147,7 @@ class Controller:
         self.task_id = task_id
         self.protocol_version = protocol_version
         self.verification_policy = verification_policy
+        self.profile_identity = dict(profile_identity or {})
         self.state: EpisodeState | None = None
         self.workspace: CandidateWorkspace | None = None
         self.original_manifest: dict[str, str] = {}
@@ -193,6 +195,7 @@ class Controller:
             acceptance=self.config.acceptance,
             provenance={
                 **self.adapter.provenance(),
+                **self.profile_identity,
                 "protocol_version": self.protocol_version,
                 "verification_policy": self.verification_policy,
                 "execution_backend": self.backend.name,
