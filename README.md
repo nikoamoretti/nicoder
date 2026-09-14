@@ -16,6 +16,8 @@ owns budgets, paths, test results, patch identity, progress, and completion.
 Requirements: Python 3.11+, a local GGUF model, [llama.cpp](https://github.com/ggml-org/llama.cpp)
 `llama-server` on `PATH`, and Docker for the isolated execution backend.
 
+### Development (venv)
+
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install .                      # installs the `local-coder` command
@@ -29,6 +31,43 @@ python3 -m venv .venv
 .venv/bin/local-coder accept EPISODE_ID --repo /path/to/your/repo
 .venv/bin/local-coder server stop
 ```
+
+### Durable everyday installation (recommended)
+
+Install the wheel into a dedicated venv and symlink the binary into your `PATH`:
+
+```bash
+# Build the wheel
+python -m build
+
+# Create a dedicated venv and install
+/usr/local/bin/python3 -m venv ~/.local/share/local-coder-venv
+~/.local/share/local-coder-venv/bin/pip install dist/local_coder-0.2.0-py3-none-any.whl
+
+# Symlink into a directory on your PATH
+mkdir -p ~/.local/bin
+ln -sf ~/.local/share/local-coder-venv/bin/local-coder ~/.local/bin/local-coder
+
+# Now `local-coder` works from anywhere without activating a venv
+local-coder --help
+```
+
+Then the everyday workflow from any directory:
+
+```bash
+local-coder setup --write          # detect model + server, write machine config
+local-coder server start           # start the local model (owned by this tool)
+local-coder init --repo /path/to/your/repo
+local-coder doctor --repo /path/to/your/repo
+local-coder run --repo /path/to/your/repo --ticket-file ticket.md --execution isolated
+local-coder inspect EPISODE_ID
+local-coder diff EPISODE_ID
+local-coder accept EPISODE_ID --repo /path/to/your/repo
+local-coder server stop
+```
+
+The durable install uses Python 3.12 (from `/usr/local/bin/python3` on macOS) and keeps
+the package isolated from your shell's Python environment.
 
 `run` prints the episode id, stage, applied/reverted/rejected edits, check
 status, outcome, and the exact next commands. Omit `--execution` to use the
@@ -108,10 +147,9 @@ generative capability probe (never run implicitly).
 - Fleets are small: compare-03 (frozen dev fixtures, D2): solved 3/4 curated
   dev fixtures; D1 fallback 2/4; capability probes 2/2. This is an
   experimental check on four small tasks, not a general solve rate.
-- One preserved live episode (`live-demo-calc-01`, gitignored working-tree
-  evidence): demo_calc solved in 5 generations / 65s on Apple M2 Pro / 16GB
-  with `Qwen3.5-4B-Q4_K_M` (llama.cpp 0.4.0 build 10809, 8192 ctx, Metal
-  offload); server RSS ~1.18GB, controller ~61MB.
+- Two installed-package live smoke tasks (v0.2.0, profile `d2`, isolated backend):
+  `demo_calc` solved in 4 generations, `localization` solved in 3 generations.
+  Server started/stopped by the tool; port released.
 - 16GB hardware qualification remains **NOT RUN** until the documented
   procedure is executed on the target machine.
 
@@ -122,19 +160,50 @@ generative capability probe (never run implicitly).
 - `isolated backend: BLOCKED` — build the worker image:
   `docker build -t local-coder-worker:1 -f docker/worker.Dockerfile docker/`.
 - Run fails with `refusing dirty git checkout` — commit or stash the target
-  repo; v1 requires a clean source tree.
+  repo; v1 requires a clean source tree. The repo must be clean *before*
+  `init` (or at the time of `run`); `init` writes `local-coder.toml` into the
+  repo, which counts as a change. Run `init` on a clean tree, commit the
+  generated config, then run tickets.
 - `resume` refuses a profile mismatch — resume with the profile recorded in
   `inspect` (or leave `--profile` unset for fake episodes).
 - Stale `server.json` — `local-coder server status` reports it; `server start`
   replaces a stale record only when the recorded process is gone.
+- `local-coder server stop` exits with code 1 when no owned server is running
+  (explicit error, not a silent no-op). This is a known usability quirk; the
+  error message explains the condition.
 
 ## Upgrade / uninstall
 
+### Upgrade (durable install)
+
+Rebuild the wheel and reinstall into the dedicated venv:
+
 ```bash
-.venv/bin/pip install --upgrade ./dist/local_coder-0.2.0-py3-none-any.whl
-.venv/bin/pip uninstall local-coder
-rm -rf ~/.config/local-coder ~/.local/share/local-coder   # machine state, evidence
+python -m build
+~/.local/share/local-coder-venv/bin/pip install --upgrade dist/local_coder-0.2.0-py3-none-any.whl
 ```
+
+### Uninstall (package only)
+
+```bash
+~/.local/share/local-coder-venv/bin/pip uninstall local-coder
+rm -f ~/.local/bin/local-coder
+```
+
+This removes the package but **preserves** all machine state, configuration, and episode evidence.
+
+### Optional: permanent data deletion
+
+Only run this if you want to erase all local-coder data from your machine:
+
+```bash
+rm -rf ~/.config/local-coder        # machine config, server ownership, logs
+rm -rf ~/.local/share/local-coder   # episodes, evidence, handoffs
+rm -rf ~/.local/share/local-coder-venv  # the dedicated venv
+```
+
+These directories are never touched by normal operation or uninstall; they are
+explicitly yours to keep or remove.
 
 ## Layout
 
@@ -152,5 +221,9 @@ var/               gitignored runtime state (episodes, evidence)
 
 - Fake-adapter runs are labeled `FAKE`; they never supply test results.
 - Missing runtimes, models, sandboxes, and hardware are `BLOCKED`/`NOT RUN`, never passed.
+- The model's `DONE` prose can misstate episode history (e.g. "already returning
+  the correct sum" after its own patch). The controller's recorded edits,
+  validation evidence, and structured handoff are authoritative; model-authored
+  commentary is labeled as such in traces and handoffs.
 - No training, LoRA, learned verifier, cloud fallback, weight downloads, or
   editor extension in v1 scope.
