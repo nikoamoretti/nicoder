@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -132,6 +133,7 @@ class Controller:
         protocol_version: str = PROTOCOL_VERSION,
         verification_policy: str = "off",
         profile_identity: dict[str, str] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         if protocol_version not in (PROTOCOL_VERSION, PROTOCOL_VERSION_V2, PROTOCOL_VERSION_V3):
             raise ValueError(f"unknown protocol version {protocol_version!r}")
@@ -157,6 +159,7 @@ class Controller:
         self._tick = self.started_mono
         self._open_turn: int | None = None
         self._turn_obs_id: int | None = None
+        self.cancel_event = cancel_event
 
     # -- lifecycle ------------------------------------------------------
 
@@ -278,11 +281,29 @@ class Controller:
                 f"{self.state.budgets.max_generations}); ninth generation refused")
         self.state.generations_used += 1
 
+    def _cancel_requested(self) -> bool:
+        """Whether the application asked this episode to stop."""
+        return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def _finish_cancelled(self) -> None:
+        """Stop after a user cancel. Evidence is preserved."""
+        if hasattr(self.adapter, "cancel"):
+            try:
+                self.adapter.cancel()
+            except (OSError, RuntimeError, ValueError):
+                pass
+        if self.state is not None and self.state.outcome == "running":
+            self._ev("cancelled", {"detail": "cancelled by user"})
+            self._finish("blocked", "cancelled by user")
+
     def step(self) -> bool:
         """Run one generation slot. Returns True when the episode continues."""
         assert self.state is not None and self.workspace is not None
         state = self.state
         if state.outcome != "running" or state.phase == TERMINAL:
+            return False
+        if self._cancel_requested():
+            self._finish_cancelled()
             return False
         self._charge_elapsed()
         if state.elapsed_s > state.budgets.max_elapsed_s:
@@ -393,6 +414,9 @@ class Controller:
             self._ev("adapter_error", {"detail": clip_text(str(exc), 300),
                                        "diagnostics": diagnostics})
             self.store.save_state(state)
+            if self._cancel_requested():
+                self._finish_cancelled()
+                return False
             return self._still_running()
         state.completion_tokens_est += estimate_tokens(raw)
         usage = dict(self.adapter.last_usage or {})
@@ -1214,10 +1238,16 @@ class Controller:
         assert self.state is not None
         while self.state.outcome == "running" and \
                 self.state.generations_used < self.state.budgets.max_generations:
+            if self._cancel_requested():
+                self._finish_cancelled()
+                break
             if not self.step():
                 break
         if self.state.outcome == "running":
-            self._finish_at_exhaustion()
+            if self._cancel_requested():
+                self._finish_cancelled()
+            else:
+                self._finish_at_exhaustion()
         return self.state
 
     def _finish_at_exhaustion(self) -> None:
@@ -1293,10 +1323,16 @@ class Controller:
             return state
         while state.outcome == "running" and \
                 state.generations_used < state.budgets.max_generations:
+            if self._cancel_requested():
+                self._finish_cancelled()
+                break
             if not self.step():
                 break
         if state.outcome == "running":
-            self._finish_at_exhaustion()
+            if self._cancel_requested():
+                self._finish_cancelled()
+            else:
+                self._finish_at_exhaustion()
         return state
 
     def _reconcile_intents(self) -> None:

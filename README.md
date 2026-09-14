@@ -1,17 +1,39 @@
 # Local Coder
 
-A bounded autonomous patcher for small, testable Python repository tickets,
-designed for an Apple-silicon Mac with 16GB unified memory. Experimental v1:
-one small local model, one ticket, at most eight generation attempts, explicit
-human acceptance. The original source is never modified until you accept.
+A local coding application for an Apple-silicon Mac. Open the app, choose a
+Python project with tests, describe a small change in ordinary language,
+watch real progress, then keep or discard the result. The original files are
+not changed until you keep them.
 
-Workflow: `ticket → compact briefing → one model-selected action →
-deterministic skill execution → structured observation → runtime-owned
-state update → another decision or termination`. The local model sees exactly
-four actions — **FIND, PATCH, CHECK, DONE** — and software, not the model,
-owns budgets, paths, test results, patch identity, progress, and completion.
+This is **not** a general-purpose coding assistant. The engine repairs small,
+testable Python behavior using one local model, at most eight generation
+attempts, isolated tests, and explicit acceptance. It does not build arbitrary
+apps or edit JavaScript/TypeScript front ends.
 
-## Quickstart
+## Open the Mac app
+
+After packaging (or if it is already installed):
+
+1. Open **Local Coder** from `~/Applications/Local Coder.app` or from
+   `dist/macos/Local Coder.app`.
+2. Choose a project folder.
+3. Type what you want to change.
+4. Review the proposed difference and the recorded checks.
+5. Keep the change, or discard it and leave the project as it was.
+
+Rebuild the app from this checkout:
+
+```bash
+macos/scripts/package_macos.sh
+```
+
+Details: [macos/README.md](macos/README.md). Engineering evidence:
+[docs/macos-app-verification.md](docs/macos-app-verification.md). The first
+Finder launch may require right-click → Open (ad-hoc signed, not notarized).
+
+## Command-line engine
+
+The same engine is available as `local-coder` for development and tests.
 
 Requirements: Python 3.11+, a local GGUF model, [llama.cpp](https://github.com/ggml-org/llama.cpp)
 `llama-server` on `PATH`, and Docker for the isolated execution backend.
@@ -42,7 +64,7 @@ python -m build
 
 # Create a dedicated venv and install
 /usr/local/bin/python3 -m venv ~/.local/share/local-coder-venv
-~/.local/share/local-coder-venv/bin/pip install dist/local_coder-0.2.0-py3-none-any.whl
+~/.local/share/local-coder-venv/bin/pip install dist/local_coder-0.3.0-py3-none-any.whl
 
 # Symlink into a directory on your PATH
 mkdir -p ~/.local/bin
@@ -150,6 +172,10 @@ generative capability probe (never run implicitly).
 - Two installed-package live smoke tasks (v0.2.0, profile `d2`, isolated backend):
   `demo_calc` solved in 4 generations, `localization` solved in 3 generations.
   Server started/stopped by the tool; port released.
+- v0.3.0 Mac app API, same profile and isolated worker, disposable copies:
+  a bug-fix request and a small empty-input feature request both solved in 4
+  generations. Keep applied the bug fix; discard left the feature original
+  unchanged. This is still two small tasks, not a general solve rate.
 - 16GB hardware qualification remains **NOT RUN** until the documented
   procedure is executed on the target machine.
 
@@ -180,7 +206,7 @@ Rebuild the wheel and reinstall into the dedicated venv:
 
 ```bash
 python -m build
-~/.local/share/local-coder-venv/bin/pip install --upgrade dist/local_coder-0.2.0-py3-none-any.whl
+~/.local/share/local-coder-venv/bin/pip install --upgrade dist/local_coder-0.3.0-py3-none-any.whl
 ```
 
 ### Uninstall (package only)
@@ -208,10 +234,11 @@ explicitly yours to keep or remove.
 ## Layout
 
 ```text
-src/local_coder/   application package (controller, skills, adapters, CLI)
+src/local_coder/   application package (controller, skills, adapters, CLI, app API)
+macos/             SwiftUI Local Coder.app sources and package script
 tests/             offline test suite (no live calls by default)
 fixtures/          real broken Python fixtures + tickets + gold diffs
-                     demo_calc, localization, multi_hunk, recovery
+                     demo_calc, localization, multi_hunk, recovery, greet_empty
 docker/            isolated worker image definition
 pilot/             frozen comparison drivers + committed sanitized reports
 var/               gitignored runtime state (episodes, evidence)

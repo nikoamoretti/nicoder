@@ -26,3 +26,6 @@ var/
 .DS_Store
 .idea/
 .vscode/
+
+# Swift package build
+macos/LocalCoder/.build/

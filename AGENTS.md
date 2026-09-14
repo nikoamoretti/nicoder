@@ -41,6 +41,10 @@
   kill a process this tool did not start, never take over an occupied port.
 - `src/local_coder/cli.py` — installed `local-coder` entry point; `accept` is
   transactional, `discard` preserves evidence unless `--with-evidence`.
+- `src/local_coder/accept.py` — single accept/discard implementation for CLI and app.
+- `src/local_coder/app_service.py` + `app_rpc.py` — structured Mac-app API
+  (JSON-lines helper, no network server).
+- `macos/` — SwiftUI Local Coder.app. Do not add a web backend.
 
 ## Coding conventions
 
@@ -48,7 +52,7 @@
 - A docstring per module and public function; no comments that restate code.
 - Ruff (line length 120), mypy clean on `src/local_coder/`.
 - Boring architecture: stdlib + pydantic + httpx + pytest. No vector DB, no agents
-  framework, no web backend in v1.
+  framework, no web backend. The Mac UI is a local SwiftUI app over stdin/stdout.
 
 ## Commands
 

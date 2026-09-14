@@ -2,7 +2,7 @@
 
 Installed entry point: ``local-coder``. Commands:
 init, setup, doctor, server start|status|stop, run, inspect, resume, diff,
-accept, discard, benchmark, export-traces.
+accept, discard, benchmark, export-traces, app-rpc.
 
 The default run path uses profile ``d2`` (protocol v3 span editing,
 mandatory post-edit verification, verified non-thinking server mode).
@@ -13,17 +13,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
+from .accept import accept_episode, discard_episode
 from .config import CONFIG_FILENAME, load_config, write_example_config
 from .controller import Controller, git_is_dirty, git_revision
 from .execution.isolated import IsolatedBackend, IsolationUnavailable
 from .execution.trusted_local import TrustedLocalBackend
 from .inference.base import AdapterError
-from .inference.fake import ScriptedFakeAdapter, demo_script
-from .inference.llama_cpp import LlamaCppAdapter
 from .machine import (
     config_path,
     load_machine_config,
@@ -31,10 +29,19 @@ from .machine import (
     write_machine_config,
 )
 from .persistence import EpisodeStore
-from .profiles import DEFAULT_PROFILE, Profile, profile_identity, resolve_profile
+from .profiles import DEFAULT_PROFILE, Profile, profile_identity
+from .runtime import (
+    DEFAULT_STATE_DIR,
+    build_adapter,
+    build_backend,
+    build_llama_adapter,
+    effective_channel,
+    effective_protocol,
+    effective_thinking,
+    effective_verification,
+    selected_profile,
+)
 from .server import ServerError, server_start, server_status, server_stop
-
-DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "local-coder" / "episodes"
 
 
 def _store(args) -> EpisodeStore:
@@ -48,97 +55,72 @@ def _store(args) -> EpisodeStore:
 def _selected_profile(args) -> Profile | None:
     """Resolve the named profile for this run; fake profiles bypass names."""
     name = getattr(args, "profile", None)
-    if not name or name.startswith("fake:"):
-        return None
     if name == "llama":
         print("note: profile 'llama' is a legacy alias; using default profile 'd2'")
         name = DEFAULT_PROFILE
-    return resolve_profile(name)
-
-
-def _build_llama_adapter(args, profile: Profile | None) -> LlamaCppAdapter:
-    """Build the live adapter from machine config, profile, and overrides."""
-    import os
-
-    cfg = load_machine_config()
-    endpoint = (os.environ.get("LOCAL_CODER_LLAMA_URL")
-                or getattr(args, "endpoint", None) or cfg.endpoint)
-    from .inference.grammar import constraint_id, constraint_id_v2, constraint_id_v3
-
-    protocol = _effective_protocol(args, profile)
-    constraint_map = {"1": constraint_id(), "2": constraint_id_v2(), "3": constraint_id_v3()}
-    return LlamaCppAdapter(
-        endpoint,
-        model=getattr(args, "model", None) or cfg.model_alias,
-        max_tokens=getattr(args, "max_tokens", None) or cfg.max_tokens,
-        timeout_s=getattr(args, "gen_timeout", None) or cfg.gen_timeout,
-        model_file=getattr(args, "model_file", None) or cfg.model_file or None,
-        quantization=getattr(args, "quantization", None) or cfg.quantization,
-        n_ctx=getattr(args, "n_ctx", None) or cfg.n_ctx,
-        constraint=profile.constraint if profile else constraint_map[protocol],
-        channel_policy=_effective_channel(args, profile),
-        thinking=_effective_thinking(args, profile),
-    )
+    return selected_profile(name)
 
 
 def _effective_protocol(args, profile: Profile | None) -> str:
-    explicit = getattr(args, "protocol", None)
-    if explicit:
-        return explicit
-    if profile is not None:
-        return profile.protocol
-    return "1"
+    return effective_protocol(profile, getattr(args, "protocol", None))
 
 
 def _effective_verification(args, profile: Profile | None) -> str:
-    explicit = getattr(args, "verification_policy", None)
-    if explicit:
-        return explicit
-    if profile is not None:
-        return profile.verification_policy
-    return "off"
+    return effective_verification(profile, getattr(args, "verification_policy", None))
 
 
 def _effective_channel(args, profile: Profile | None) -> str:
-    explicit = getattr(args, "channel", None)
-    if explicit:
-        return explicit
-    if profile is not None:
-        return profile.channel_policy
-    return "legacy"
+    return effective_channel(profile, getattr(args, "channel", None))
 
 
 def _effective_thinking(args, profile: Profile | None) -> str:
-    explicit = getattr(args, "thinking", None)
-    if explicit:
-        return explicit
-    if profile is not None:
-        return profile.thinking
-    return "auto"
+    return effective_thinking(profile, getattr(args, "thinking", None))
+
+
+def _build_llama_adapter(args, profile: Profile | None):
+    """Build the live adapter from machine config, profile, and overrides."""
+    return build_llama_adapter(
+        profile,
+        endpoint=getattr(args, "endpoint", None),
+        model=getattr(args, "model", None),
+        model_file=getattr(args, "model_file", None),
+        quantization=getattr(args, "quantization", None),
+        n_ctx=getattr(args, "n_ctx", None),
+        max_tokens=getattr(args, "max_tokens", None),
+        gen_timeout=getattr(args, "gen_timeout", None),
+        protocol=getattr(args, "protocol", None),
+        channel=getattr(args, "channel", None),
+        thinking=getattr(args, "thinking", None),
+    )
 
 
 def _build_adapter(args, config):
-    profile = _selected_profile(args)
-    name = getattr(args, "profile", None) or ""
-    if name.startswith("fake:"):
-        return ScriptedFakeAdapter(demo_script(name), name)
-    return _build_llama_adapter(args, profile)
+    return build_adapter(
+        getattr(args, "profile", None),
+        endpoint=getattr(args, "endpoint", None),
+        model=getattr(args, "model", None),
+        model_file=getattr(args, "model_file", None),
+        quantization=getattr(args, "quantization", None),
+        n_ctx=getattr(args, "n_ctx", None),
+        max_tokens=getattr(args, "max_tokens", None),
+        gen_timeout=getattr(args, "gen_timeout", None),
+        protocol=getattr(args, "protocol", None),
+        channel=getattr(args, "channel", None),
+        thinking=getattr(args, "thinking", None),
+    )
 
 
 def _build_backend(args, config):
     mode = getattr(args, "execution", None) or config.execution
     if mode == "trusted-local":
         print("execution: trusted-local — NON-SANDBOXED host execution (explicit opt-in)")
-        return TrustedLocalBackend()
-    backend = IsolatedBackend()
     try:
-        backend.check_available()
+        return build_backend(config, getattr(args, "execution", None))
     except IsolationUnavailable as exc:
         print(f"error: isolated execution requested but {exc}", file=sys.stderr)
         print("Refusing to fall back to host execution. "
               "Re-run with --execution trusted-local for trusted fixtures.", file=sys.stderr)
         raise
-    return backend
 
 
 # -- init / setup / doctor ---------------------------------------------------
@@ -477,133 +459,36 @@ def cmd_accept(args) -> int:
     """Transactional acceptance of a solved candidate onto the original tree."""
     store = _store(args)
     try:
-        state = store.load_state(args.episode)
+        result = accept_episode(
+            store, args.episode, Path(args.repo), dry_run=getattr(args, "dry_run", False))
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    repo = Path(args.repo).expanduser().resolve()
-    ok, detail = _accept_gate(store, state, repo)
-    if not ok:
-        print(f"error: {detail}", file=sys.stderr)
+    if not result["ok"]:
+        print(f"error: {result['detail']}", file=sys.stderr)
         return 1
-    candidate = store.candidate_dir(args.episode)
-    files = list(state.last_patch.files) if state.last_patch else []
-    plan = {rel: {
-        "candidate_sha256": state.last_patch.after.get(rel, "") if state.last_patch else "",
-        "original_exists": (repo / rel).exists(),
-    } for rel in files}
-    if getattr(args, "dry_run", False):
-        print(f"dry run for {args.episode}: would apply {len(files)} file(s) to {repo}")
-        print(json.dumps(plan, indent=2, sort_keys=True))
+    if result.get("dry_run"):
+        repo = Path(args.repo).expanduser().resolve()
+        print(f"dry run for {args.episode}: would apply {len(result['files'])} file(s) to {repo}")
+        print(json.dumps(result["plan"], indent=2, sort_keys=True))
         return 0
-    store.append_event(args.episode, "accept_intent", {"files": files, "repo": str(repo)})
-    before: dict[str, bytes | None] = {}
-    applied: list[str] = []
-    try:
-        for rel in files:
-            dst = repo / rel
-            before[rel] = dst.read_bytes() if dst.exists() else None
-            src = candidate / rel
-            if not src.exists():
-                raise OSError(f"candidate file missing: {src}")
-            tmp = dst.with_suffix(dst.suffix + ".accepttmp")
-            try:
-                tmp.write_bytes(src.read_bytes())
-                os_replace(tmp, dst)
-            finally:
-                tmp.unlink(missing_ok=True)
-            applied.append(rel)
-    except OSError as exc:
-        restored = _rollback_accept(repo, before, applied)
-        store.append_event(args.episode, "accept_failed",
-                           {"detail": str(exc), "rolled_back": restored})
-        print(f"error: acceptance failed ({exc}); restored {restored} file(s)", file=sys.stderr)
-        return 1
-    store.append_event(args.episode, "accepted", {"files": applied, "repo": str(repo)})
-    print(f"accepted {args.episode}: {', '.join(applied)}")
+    print(f"accepted {args.episode}: {', '.join(result['applied'])}")
     return 0
-
-
-def os_replace(tmp: Path, dst: Path) -> None:
-    """Atomic rename helper (single import point for tests)."""
-    import os
-
-    os.replace(tmp, dst)
-
-
-def _rollback_accept(repo: Path, before: dict[str, bytes | None], applied: list[str]) -> int:
-    """Restore originals for files replaced before an accept failure."""
-    restored = 0
-    for rel in applied:
-        dst = repo / rel
-        original = before.get(rel)
-        try:
-            if original is None:
-                dst.unlink(missing_ok=True)
-            else:
-                tmp = dst.with_suffix(dst.suffix + ".acceptrollback")
-                tmp.write_bytes(original)
-                os_replace(tmp, dst)
-            restored += 1
-        except OSError:
-            pass
-    return restored
-
-
-def _accept_gate(store: EpisodeStore, state, repo: Path) -> tuple[bool, str]:
-    """All acceptance preconditions; any failure refuses without changes."""
-    from .paths import candidate_manifest, original_manifest, tree_hash
-
-    if state.outcome != "solved" or state.last_patch is None:
-        return False, (f"episode is {state.outcome}; only solved episodes can be accepted "
-                       "(blocked episodes can still be inspected and diffed)")
-    if state.final is None or state.final.status != "pass":
-        return False, "final validation evidence is missing or not passing"
-    if not repo.is_dir():
-        return False, f"repo not found: {repo}"
-    if (repo / ".git").exists() and git_is_dirty(repo):
-        return False, "refusing accept onto a dirty checkout"
-    current_orig = tree_hash(original_manifest(repo))
-    if current_orig != state.source_tree_hash:
-        return False, "original tree drifted since the episode; refusing accept"
-    candidate = store.candidate_dir(state.episode_id)
-    if not candidate.is_dir():
-        return False, "candidate workspace is missing (was it discarded?)"
-    if tree_hash(candidate_manifest(candidate)) != state.candidate_tree_hash:
-        return False, "candidate changed after final validation; re-verify first"
-    for rel, want in (state.last_patch.after or {}).items():
-        full = candidate / rel
-        if not full.exists():
-            return False, f"candidate file missing: {rel}"
-        from .paths import sha256_file
-
-        if sha256_file(full) != want:
-            return False, f"candidate file changed: {rel}"
-    return True, ""
 
 
 def cmd_discard(args) -> int:
     """Remove the candidate workspace; preserve evidence unless asked."""
     store = _store(args)
     try:
-        state = store.load_state(args.episode)
+        result = discard_episode(
+            store, args.episode, with_evidence=getattr(args, "with_evidence", False))
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    repo = Path(state.repo_path)
-    candidate = store.candidate_dir(args.episode)
-    removed_candidate = candidate.exists()
-    if removed_candidate:
-        shutil.rmtree(candidate)
-    state.outcome = "discarded"
-    state.stop_reason = "human discard; candidate removed"
-    state.phase = "TERMINAL"
-    store.save_state(state)
-    store.append_event(args.episode, "discarded", {"candidate_removed": removed_candidate})
-    print(f"discarded {args.episode}: candidate {'removed' if removed_candidate else 'already absent'}")
-    print(f"original repository untouched: {repo}")
-    if getattr(args, "with_evidence", False):
-        shutil.rmtree(store.episode_dir(args.episode))
+    print(f"discarded {args.episode}: candidate "
+          f"{'removed' if result['candidate_removed'] else 'already absent'}")
+    print(f"original repository untouched: {result['repo']}")
+    if result["evidence_deleted"]:
         print("evidence explicitly deleted (--with-evidence)")
     else:
         print("evidence preserved: state, events, handoff, artifacts (default)")
@@ -809,7 +694,17 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--validate-only", action="store_true")
             _add_llama_args(p)
         p.set_defaults(func=func)
+
+    p = sub.add_parser("app-rpc", help="JSON-lines helper for Local Coder.app (not a network service)")
+    p.set_defaults(func=_cmd_app_rpc)
     return parser
+
+
+def _cmd_app_rpc(_args) -> int:
+    """Start the stdin/stdout application helper."""
+    from .app_rpc import main as rpc_main
+
+    return rpc_main()
 
 
 def main(argv: list[str] | None = None) -> int:

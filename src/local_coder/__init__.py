@@ -1,3 +1,3 @@
-"""Local Coder: bounded autonomous patcher for small testable tickets."""
+"""Local Coder: bounded local coding tool for small testable tickets."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

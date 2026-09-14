@@ -60,7 +60,7 @@ def test_accept_dry_run_changes_nothing(repo_copy, state_dir):
 
 
 def test_accept_rollback_restores_applied_file(repo_copy, state_dir, monkeypatch):
-    from local_coder import cli as cli_mod
+    from local_coder import accept as accept_mod
 
     controller, state = _solve(repo_copy, state_dir, "ep-rollback")
     extra = "local-coder.toml"
@@ -68,7 +68,7 @@ def test_accept_rollback_restores_applied_file(repo_copy, state_dir, monkeypatch
     state.last_patch.after[extra] = sha256_file(controller.store.candidate_dir("ep-rollback") / extra)
     controller.store.save_state(state)
     originals = {rel: (repo_copy / rel).read_bytes() for rel in state.last_patch.files}
-    real_replace = cli_mod.os_replace
+    real_replace = accept_mod.os_replace
     calls = {"n": 0}
 
     def flaky_replace(tmp, dst):
@@ -77,7 +77,7 @@ def test_accept_rollback_restores_applied_file(repo_copy, state_dir, monkeypatch
             raise OSError("simulated replace failure")
         return real_replace(tmp, dst)
 
-    monkeypatch.setattr(cli_mod, "os_replace", flaky_replace)
+    monkeypatch.setattr(accept_mod, "os_replace", flaky_replace)
     args = SimpleNamespace(episode="ep-rollback", repo=str(repo_copy), state_dir=str(state_dir))
     assert cmd_accept(args) == 1
     for rel, data in originals.items():
