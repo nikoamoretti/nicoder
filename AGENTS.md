@@ -2,9 +2,11 @@
 
 ## Product invariants
 
-1. **Bounded autonomy.** At most 8 model generations, 4 focus files, 4 modified
-   files per episode. Budgets live in `config.py`, are stored per episode, and
-   are enforced by the controller — never by model goodwill.
+1. **Default engine is general coding.** Ordinary app use is OpenCode plus
+   local llama.cpp, with New Project / preview / Keep / Discard. The old
+   eight-generation Python FIND/PATCH/CHECK/DONE loop is a legacy path only.
+   General-engine budgets are request wall-clock and generation ceilings in
+   `general/budgets.py`, not the old four-file span cap.
 2. **Software owns truth.** Only the controller mutates `EpisodeState`. The model
    cannot write state, pick commands, or declare tests green. A model's "solved"
    is a validation request, nothing more.

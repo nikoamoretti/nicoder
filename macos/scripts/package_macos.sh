@@ -10,7 +10,7 @@ CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
 SWIFT_PKG="$ROOT/macos/LocalCoder"
-VERSION="0.3.0"
+VERSION="0.4.0"
 PYTHON="${LOCAL_CODER_PYTHON:-/usr/local/bin/python3}"
 DURABLE_VENV="${LOCAL_CODER_VENV:-$HOME/.local/share/local-coder-venv}"
 

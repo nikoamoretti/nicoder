@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import WebKit
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
@@ -36,6 +38,14 @@ struct RootView: View {
                 Label("Open Project…", systemImage: "folder")
             }
             .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("openProjectButton")
+
+            Button {
+                model.newProject()
+            } label: {
+                Label("New Project…", systemImage: "plus.square")
+            }
+            .accessibilityIdentifier("newProjectButton")
 
             Button("Advanced settings") {
                 model.showSettings = true
@@ -99,11 +109,16 @@ struct RootView: View {
             Text("A local coding tool for this Mac")
                 .font(.largeTitle.weight(.semibold))
                 .foregroundStyle(.black)
-            Text("Open a Python project with tests, describe a small change in ordinary language, then review and keep or discard the result. The original files stay untouched until you keep them.")
+            Text("Open a project or start a new one, describe what you want, watch progress, try the running result, then keep or discard it. You can ask for the next change without using Terminal.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Open Project…") { model.openProject() }
-                .keyboardShortcut(.defaultAction)
+            HStack {
+                Button("New Project…") { model.newProject() }
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("welcomeNewProjectButton")
+                Button("Open Project…") { model.openProject() }
+                    .accessibilityIdentifier("welcomeOpenProjectButton")
+            }
             prerequisiteBox
         }
     }
@@ -156,21 +171,24 @@ struct RootView: View {
 
     private var requestBox: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("What would you like to change?")
+            Text(model.followUpReady ? "What should change next?" : "What would you like to build or change?")
                 .font(.headline)
             TextEditor(text: $model.requestText)
                 .font(.body)
                 .frame(minHeight: 92)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
-            Text("Examples: “Fix this error.”  “Make this function handle an empty input.”  “Explain this part of the project.”")
+                .accessibilityIdentifier("requestEditor")
+            Text("Examples: “Build a task board.”  “Add due dates.”  “Fix this error.”  “Explain this part of the project.”")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
                 Button(model.running ? "Working…" : "Start") { model.submitRequest() }
                     .disabled(model.running || model.requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.return, modifiers: [.command])
+                    .accessibilityIdentifier("startButton")
                 if model.running {
                     Button("Stop") { model.stop() }
+                        .accessibilityIdentifier("stopButton")
                 }
             }
         }
@@ -239,12 +257,25 @@ struct RootView: View {
                 .frame(minHeight: 180, maxHeight: 360)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
             }
+            if let url = model.previewURL, let parsed = URL(string: url) {
+                Text("Running preview")
+                    .font(.headline)
+                PreviewPane(url: parsed)
+                    .frame(minHeight: 280)
+                    .accessibilityIdentifier("previewView")
+                Button("Open in Browser") {
+                    NSWorkspace.shared.open(parsed)
+                }
+                .accessibilityIdentifier("openInBrowserButton")
+            }
             HStack {
                 Button("Keep changes") { model.keep() }
                     .disabled(!model.canKeep)
                     .keyboardShortcut("k", modifiers: [.command])
+                    .accessibilityIdentifier("keepButton")
                 Button("Discard changes") { model.discard() }
                     .disabled(!model.canDiscard)
+                    .accessibilityIdentifier("discardButton")
                 if !model.canKeep && model.snapshot != nil {
                     Text("A blocked or partial result can be inspected, but it cannot be kept as a verified change.")
                         .font(.caption)
@@ -299,6 +330,25 @@ struct RootView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+struct PreviewPane: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.setAccessibilityIdentifier("previewWebView")
+        view.load(URLRequest(url: url))
+        return view
+    }
+
+    func updateNSView(_ view: WKWebView, context: Context) {
+        if view.url != url {
+            view.load(URLRequest(url: url))
         }
     }
 }

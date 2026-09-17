@@ -1,14 +1,14 @@
 # Local Coder
 
-A local coding application for an Apple-silicon Mac. Open the app, choose a
-Python project with tests, describe a small change in ordinary language,
-watch real progress, then keep or discard the result. The original files are
-not changed until you keep them.
+A local coding application for an Apple-silicon Mac. Open the app, start or
+open a project, describe what you want, watch a running preview, then keep or
+discard the result. The original files are not changed until you keep them.
 
-This is **not** a general-purpose coding assistant. The engine repairs small,
-testable Python behavior using one local model, at most eight generation
-attempts, isolated tests, and explicit acceptance. It does not build arbitrary
-apps or edit JavaScript/TypeScript front ends.
+The default engine is OpenCode plus a local llama.cpp model. The older
+Python-only repair loop remains available as a legacy setting. The first
+verified local model (Qwen3.5-4B) can call tools and write files; it has not
+yet completed the required task-board demonstration. See
+[docs/general-coding-verification.md](docs/general-coding-verification.md).
 
 ## Open the Mac app
 

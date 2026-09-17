@@ -1,8 +1,10 @@
 # Local Coder Mac application
 
-This directory is the native SwiftUI wrapper around the existing Python
-engine. Ordinary use is: open **Local Coder.app**, choose a project,
-describe a request, review the proposed change, keep or discard it.
+This directory is the native SwiftUI wrapper around the local engine.
+Ordinary use is: open **Local Coder.app**, start or open a project, describe
+a request, watch a preview, then keep or discard the change. The default
+engine is OpenCode plus local llama.cpp. The older Python-only repair loop
+is an advanced setting.
 
 ## Build
 
@@ -14,7 +16,7 @@ macos/scripts/package_macos.sh
 
 That command:
 
-1. Builds the `0.3.0` Python wheel.
+1. Builds the `0.4.0` Python wheel.
 2. Installs it into `~/.local/share/local-coder-venv` (the durable engine).
 3. Compiles the SwiftUI app.
 4. Writes an ad-hoc-signed `Local Coder.app` to `dist/macos/` and copies it

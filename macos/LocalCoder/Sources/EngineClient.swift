@@ -72,7 +72,7 @@ final class EngineClient {
         self.process = process
     }
 
-    func call(_ method: String, _ params: [String: Any] = [:]) async throws -> [String: Any] {
+    func call(_ method: String, _ params: [String: Any] = [:], timeoutSeconds: Double = 12) async throws -> [String: Any] {
         try start()
         let id: String = lock.withLock {
             nextID += 1
@@ -98,7 +98,7 @@ final class EngineClient {
                 return
             }
             Task {
-                try await Task.sleep(nanoseconds: 12_000_000_000)
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 self.lock.lock()
                 let callback = self.pending.removeValue(forKey: id)
                 self.lock.unlock()
@@ -181,7 +181,7 @@ final class EngineClient {
     }
 
     static func bundledWheel() -> URL? {
-        Bundle.main.resourceURL?.appendingPathComponent("local_coder-0.3.0-py3-none-any.whl")
+        Bundle.main.resourceURL?.appendingPathComponent("local_coder-0.4.0-py3-none-any.whl")
     }
 
     static func bundledDockerDir() -> URL? {
@@ -225,7 +225,7 @@ final class EngineClient {
 
     private static func upgradeFromBundleIfNeeded(python: URL) throws {
         guard FileManager.default.fileExists(atPath: bundledWheel()?.path ?? "") else { return }
-        if installedVersion(python: python) == "0.3.0" {
+        if installedVersion(python: python) == "0.4.0" {
             return
         }
         try installWheel(python: python)

@@ -10,9 +10,11 @@ import pytest
 from local_coder import machine
 from local_coder.app_rpc import RpcServer
 from local_coder.app_service import (
+    classify_legacy_request,
     classify_request,
     discard_changes,
     explain_request,
+    inspect_legacy_project,
     inspect_project,
     keep_changes,
     run_request,
@@ -43,18 +45,18 @@ def test_inspect_missing_folder(tmp_path):
     assert report["verdict"] == "missing"
 
 
-def test_inspect_javascript_project_unsupported(tmp_path):
+def test_inspect_javascript_project_is_supported(tmp_path):
     root = tmp_path / "web"
     root.mkdir()
     for name in ("app.jsx", "main.tsx", "page.js", "view.js", "store.ts",
                  "hooks.ts", "widget.jsx", "index.js"):
         (root / name).write_text("export default 1\n", encoding="utf-8")
     report = inspect_project(root)
-    assert report["verdict"] == "unsupported"
-    assert "JavaScript" in report["summary"]
+    assert report["supported"] is True
+    assert report["verdict"] in {"ready", "empty"}
 
 
-def test_inspect_dirty_git_blocks_edits(repo_copy):
+def test_inspect_dirty_git_is_allowed(repo_copy):
     import subprocess
 
     subprocess.run(["git", "init"], cwd=repo_copy, check=True, capture_output=True)
@@ -63,16 +65,18 @@ def test_inspect_dirty_git_blocks_edits(repo_copy):
                     "commit", "-m", "init"], cwd=repo_copy, check=True, capture_output=True)
     (repo_copy / "src" / "calc.py").write_text("# dirty\n", encoding="utf-8")
     report = inspect_project(repo_copy)
-    assert report["verdict"] == "dirty"
-    assert report["supported"] is False
+    assert report["supported"] is True
+    assert report["git"]["dirty"] is True
 
 
-def test_classify_explain_and_unsupported_web():
+def test_classify_explain_and_web_are_allowed():
     assert classify_request("Explain how add works")["kind"] == "explain"
-    kind = classify_request("add a search box", {"supported": True, "languages": ["Python"]})
-    assert kind["kind"] == "unsupported"
+    kind = classify_request("add a search box", {"supported": True, "exists": True, "languages": ["Python"]})
+    assert kind["kind"] == "code"
     assert classify_request("Fix add so it returns a sum",
-                            {"supported": True, "languages": ["Python"]})["kind"] == "repair"
+                            {"supported": True, "exists": True, "languages": ["Python"]})["kind"] == "code"
+    assert classify_legacy_request("add a search box", {"supported": True, "languages": ["Python"]})["kind"] == "unsupported"
+    assert inspect_legacy_project.__name__ == "inspect_legacy_project"
 
 
 def test_explain_is_read_only_and_grounded(repo_copy):
@@ -158,7 +162,7 @@ def test_rpc_inspect_and_classify(repo_copy):
         "params": {"path": str(repo_copy), "text": "add a search box"},
     })
     assert classified["ok"] is True
-    assert classified["result"]["kind"] == "unsupported"
+    assert classified["result"]["kind"] == "code"
     ping = server.dispatch({"id": "3", "method": "ping", "params": {}})
     assert ping["result"]["ok"] is True
 

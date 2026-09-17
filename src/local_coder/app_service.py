@@ -98,15 +98,16 @@ def load_prefs() -> dict[str, Any]:
     """Load recent projects and UI preferences."""
     path = prefs_path()
     if not path.exists():
-        return {"recent_projects": [], "profile": DEFAULT_PROFILE}
+        return {"recent_projects": [], "profile": DEFAULT_PROFILE, "engine": "general"}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"recent_projects": [], "profile": DEFAULT_PROFILE}
+        return {"recent_projects": [], "profile": DEFAULT_PROFILE, "engine": "general"}
     if not isinstance(data, dict):
-        return {"recent_projects": [], "profile": DEFAULT_PROFILE}
+        return {"recent_projects": [], "profile": DEFAULT_PROFILE, "engine": "general"}
     data.setdefault("recent_projects", [])
     data.setdefault("profile", DEFAULT_PROFILE)
+    data.setdefault("engine", "general")
     return data
 
 
@@ -147,8 +148,8 @@ def _count_by_suffix(root: Path, suffixes: tuple[str, ...], limit: int = 400) ->
     return count
 
 
-def inspect_project(path: str | Path) -> dict[str, Any]:
-    """Describe whether this folder can be used with the current engine."""
+def inspect_legacy_project(path: str | Path) -> dict[str, Any]:
+    """Historical Python/pytest admission used only by the legacy engine."""
     repo = Path(path).expanduser().resolve()
     report: dict[str, Any] = {
         "path": str(repo),
@@ -251,8 +252,15 @@ def inspect_project(path: str | Path) -> dict[str, Any]:
     return report
 
 
-def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Decide repair, read-only explanation, or an honest unsupported refusal."""
+def inspect_project(path: str | Path) -> dict[str, Any]:
+    """Default product inspect: general application development."""
+    from local_coder.general.inspect import inspect_project as general_inspect
+
+    return general_inspect(path)
+
+
+def classify_legacy_request(text: str, inspection: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Historical Python-only classifier used only by the legacy engine."""
     request = text.strip()
     if not request:
         return {"kind": "unsupported", "summary": "Write what you would like to change.",
@@ -278,6 +286,13 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
                 "detail": inspection.get("verdict")}
     return {"kind": "repair", "summary": "This will try a bounded local coding attempt.",
             "detail": "You will review any proposed change before it is kept."}
+
+
+def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Default product classifier: new apps and web work are allowed."""
+    from local_coder.general.inspect import classify_request as general_classify
+
+    return general_classify(text, inspection)
 
 
 def explain_request(path: str | Path, text: str) -> dict[str, Any]:
@@ -459,8 +474,15 @@ def _read_diff(store: EpisodeStore, episode_id: str) -> str:
         return ""
 
 
-def snapshot(episode_id: str, store: EpisodeStore | None = None) -> dict[str, Any]:
+def snapshot(episode_id: str, store: EpisodeStore | None = None,
+             repo: str | Path | None = None) -> dict[str, Any]:
     """Controller-owned review payload for the UI."""
+    if repo is not None:
+        from local_coder.general.coordinator import project_id_for, request_dir, review_payload
+
+        meta = request_dir(project_id_for(Path(repo)), episode_id) / "meta.json"
+        if meta.exists():
+            return review_payload(project_id_for(Path(repo)), episode_id)
     store = store or episode_store()
     state = store.load_state(episode_id)
     events = store.read_events(episode_id)
@@ -509,9 +531,11 @@ def snapshot(episode_id: str, store: EpisodeStore | None = None) -> dict[str, An
 
 def list_history(repo: str | Path, store: EpisodeStore | None = None) -> list[dict[str, Any]]:
     """Completed or blocked requests for one project, newest first."""
+    from local_coder.general.coordinator import list_requests
+
+    rows = list_requests(repo)
     store = store or episode_store()
     resolved = str(Path(repo).expanduser().resolve())
-    rows: list[dict[str, Any]] = []
     if not store.state_dir.exists():
         return rows
     for entry in store.state_dir.iterdir():
@@ -593,8 +617,8 @@ def run_request(
     """Run one bounded episode. Original files are not modified."""
     apply_host_path()
     folder = Path(repo).expanduser().resolve()
-    inspection = inspect_project(folder)
-    classified = classify_request(request, inspection)
+    inspection = inspect_legacy_project(folder)
+    classified = classify_legacy_request(request, inspection)
     if classified["kind"] == "explain":
         return {"kind": "explain", **explain_request(folder, request)}
     if classified["kind"] != "repair":
@@ -646,7 +670,13 @@ def run_request(
 
 
 def keep_changes(episode_id: str, repo: str | Path, store: EpisodeStore | None = None) -> dict[str, Any]:
-    """Accept through the same gate as the CLI."""
+    """Accept a general request or a legacy episode."""
+    from local_coder.general.coordinator import keep_request, project_id_for, request_dir
+
+    folder = Path(repo)
+    meta = request_dir(project_id_for(folder), episode_id) / "meta.json"
+    if meta.exists():
+        return keep_request(project_id_for(folder), episode_id, folder)
     store = store or episode_store()
     result = accept_mod.accept_episode(store, episode_id, Path(repo))
     if not result["ok"]:
@@ -654,8 +684,15 @@ def keep_changes(episode_id: str, repo: str | Path, store: EpisodeStore | None =
     return result
 
 
-def discard_changes(episode_id: str, store: EpisodeStore | None = None) -> dict[str, Any]:
+def discard_changes(episode_id: str, store: EpisodeStore | None = None,
+                    repo: str | Path | None = None) -> dict[str, Any]:
     """Discard the candidate. Evidence stays."""
+    if repo is not None:
+        from local_coder.general.coordinator import discard_request, project_id_for, request_dir
+
+        meta = request_dir(project_id_for(Path(repo)), episode_id) / "meta.json"
+        if meta.exists():
+            return discard_request(project_id_for(Path(repo)), episode_id)
     store = store or episode_store()
     return accept_mod.discard_episode(store, episode_id)
 
@@ -685,7 +722,8 @@ class AppRuntime:
             listener(payload)
 
     def start_request(self, repo: str, request: str, profile_name: str = DEFAULT_PROFILE,
-                      execution: str | None = None) -> dict[str, Any]:
+                      execution: str | None = None, engine: str | None = None,
+                      kind: str = "create") -> dict[str, Any]:
         """Start a request on a worker thread and return immediately."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -695,6 +733,7 @@ class AppRuntime:
             self.active_episode = new_episode_id()
             self.active_repo = str(Path(repo).expanduser().resolve())
             episode = self.active_episode
+            chosen = engine or load_prefs().get("engine") or "general"
             thread = threading.Thread(
                 target=self._worker,
                 kwargs={
@@ -703,31 +742,47 @@ class AppRuntime:
                     "profile_name": profile_name,
                     "execution": execution,
                     "episode_id": episode,
+                    "engine": chosen,
+                    "kind": kind,
                 },
                 name="local-coder-episode",
                 daemon=True,
             )
             self._thread = thread
             thread.start()
-        return {"started": True, "episode_id": episode, "repo": self.active_repo}
+        return {"started": True, "episode_id": episode, "repo": self.active_repo,
+                "engine": chosen}
 
     def _worker(self, **kwargs: Any) -> None:
         started = False
         try:
-            if not str(kwargs.get("profile_name") or "").startswith("fake:"):
-                result = ensure_server()
-                started = bool(result.get("started"))
-                if started:
-                    self.started_server = True
-            run_request(
+            engine = str(kwargs.get("engine") or "general")
+            profile = str(kwargs.get("profile_name") or "")
+            if engine == "legacy" or profile.startswith("legacy:"):
+                if not profile.startswith("fake:"):
+                    result = ensure_server()
+                    started = bool(result.get("started"))
+                    if started:
+                        self.started_server = True
+                run_request(
+                    kwargs["repo"], kwargs["request"],
+                    profile_name=profile.removeprefix("legacy:"),
+                    execution=kwargs.get("execution"),
+                    state_dir=self.state_dir,
+                    episode_id=kwargs["episode_id"],
+                    listener=self._emit,
+                    cancel_event=self.cancel_event,
+                    ensure_local_server=False,
+                )
+                return
+            from local_coder.general.coordinator import run_general_request
+
+            run_general_request(
                 kwargs["repo"], kwargs["request"],
-                profile_name=kwargs["profile_name"],
-                execution=kwargs.get("execution"),
-                state_dir=self.state_dir,
-                episode_id=kwargs["episode_id"],
+                request_id=kwargs["episode_id"],
+                kind=str(kwargs.get("kind") or "create"),
                 listener=self._emit,
                 cancel_event=self.cancel_event,
-                ensure_local_server=False,
             )
         except AppError as exc:
             self.last_error = exc.detail
@@ -742,8 +797,14 @@ class AppRuntime:
                 self._thread = None
 
     def cancel(self) -> dict[str, Any]:
-        """Request stop of the active episode."""
+        """Request stop of the active episode and its OpenCode session."""
         self.cancel_event.set()
+        try:
+            from local_coder.general.coordinator import cancel_active
+
+            cancel_active()
+        except Exception:
+            pass
         return {"ok": True, "episode_id": self.active_episode, "detail": "Stop requested."}
 
     def shutdown(self) -> dict[str, Any]:

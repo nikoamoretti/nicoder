@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from pathlib import Path
 from typing import Any, TextIO
 
 from .app_service import (
@@ -102,25 +103,45 @@ class RpcServer:
             return load_prefs()
         if method == "save_prefs":
             prefs = load_prefs()
-            prefs.update({k: v for k, v in params.items() if k in {"profile", "recent_projects"}})
+            prefs.update({k: v for k, v in params.items() if k in {"profile", "recent_projects", "engine"}})
             save_prefs(prefs)
             return prefs
         if method == "history":
             return {"episodes": list_history(params["path"])}
         if method == "snapshot":
-            return snapshot(params["episode_id"])
+            return snapshot(params["episode_id"], repo=params.get("path"))
         if method == "run_request":
             return self.runtime.start_request(
                 params["path"], params["text"],
                 profile_name=params.get("profile") or load_prefs().get("profile") or DEFAULT_PROFILE,
                 execution=params.get("execution"),
+                engine=params.get("engine") or load_prefs().get("engine") or "general",
+                kind=params.get("kind") or "create",
             )
         if method == "cancel":
             return self.runtime.cancel()
         if method == "keep":
             return keep_changes(params["episode_id"], params["path"])
         if method == "discard":
-            return discard_changes(params["episode_id"])
+            return discard_changes(params["episode_id"], repo=params.get("path"))
+        if method == "new_project":
+            from local_coder.general.starter import create_project
+
+            dest = create_project(params["parent"], params["name"])
+            remember_project(dest)
+            from local_coder.general.inspect import inspect_project as general_inspect
+
+            return {"path": str(dest), "inspection": general_inspect(dest)}
+        if method == "preview_start":
+            from local_coder.general.coordinator import project_id_for
+            from local_coder.general.preview import start_preview
+
+            folder = Path(params["path"])
+            return start_preview(folder, params.get("project_id") or project_id_for(folder))
+        if method == "preview_stop":
+            from local_coder.general.preview import stop_preview
+
+            return stop_preview()
         if method == "open_docker":
             return open_docker_desktop()
         if method == "build_worker":

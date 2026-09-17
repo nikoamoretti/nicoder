@@ -7,6 +7,23 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+
+@pytest.fixture(autouse=True)
+def git_without_xcode_license(monkeypatch):
+    """Use Command Line Tools git when the Xcode license is unsigned."""
+    clt = Path("/Library/Developer/CommandLineTools")
+    if clt.exists():
+        monkeypatch.setenv("DEVELOPER_DIR", str(clt))
+
+
+@pytest.fixture(autouse=True)
+def isolated_local_coder_data(tmp_path, monkeypatch):
+    """Keep general-engine data out of the developer's machine directories."""
+    from local_coder import machine
+
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "local-coder-data"))
+    monkeypatch.setenv(machine.CONFIG_DIR_ENV, str(tmp_path / "machine-config"))
+
 from local_coder.config import load_config  # noqa: E402
 from local_coder.controller import Controller  # noqa: E402
 from local_coder.execution.trusted_local import TrustedLocalBackend  # noqa: E402

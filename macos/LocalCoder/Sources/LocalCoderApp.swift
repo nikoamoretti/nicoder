@@ -85,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = NSMenu(title: "File")
         let open = file.addItem(withTitle: "Open Project…", action: #selector(openProject(_:)), keyEquivalent: "o")
         open.target = self
+        let created = file.addItem(withTitle: "New Project…", action: #selector(newProject(_:)), keyEquivalent: "n")
+        created.target = self
         let fileItem = NSMenuItem()
         fileItem.submenu = file
         main.addItem(fileItem)
@@ -94,6 +96,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openProject(_ sender: Any?) {
         Task { @MainActor in
             self.model?.openProject()
+        }
+    }
+
+    @objc private func newProject(_ sender: Any?) {
+        Task { @MainActor in
+            self.model?.newProject()
         }
     }
 }

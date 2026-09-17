@@ -148,10 +148,13 @@ def server_start(cfg: MachineConfig, wait_s: int = 90) -> dict:
     argv = [
         resolved,
         "-m", str(model),
+        "--host", "127.0.0.1",
         "--port", _port(cfg.endpoint),
-        "-c", str(cfg.n_ctx),
+        "-c", str(max(cfg.n_ctx, 32768)),
         "--n-gpu-layers", "99",
         "--alias", cfg.model_alias,
+        "--parallel", "1",
+        "--jinja",
         "--reasoning", "off",
     ]
     log_path().parent.mkdir(parents=True, exist_ok=True)

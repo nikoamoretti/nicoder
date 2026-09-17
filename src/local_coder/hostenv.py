@@ -27,6 +27,9 @@ def apply_host_path() -> str:
         if Path(extra).exists() and extra not in parts:
             parts.insert(0, extra)
     os.environ["PATH"] = ":".join(parts)
+    clt = Path("/Library/Developer/CommandLineTools")
+    if clt.exists() and not os.environ.get("DEVELOPER_DIR"):
+        os.environ["DEVELOPER_DIR"] = str(clt)
     return os.environ["PATH"]
 
 

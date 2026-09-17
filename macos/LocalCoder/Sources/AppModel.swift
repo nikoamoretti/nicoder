@@ -32,6 +32,9 @@ final class AppModel: ObservableObject {
     @Published var explainSummary: String?
     @Published var explainHits: [[String: Any]] = []
     @Published var showSettings = false
+    @Published var previewURL: String?
+    @Published var followUpReady = false
+    @Published var engineName = "general"
 
     private let engine = EngineClient()
     private var activeEpisode: String?
@@ -94,6 +97,9 @@ final class AppModel: ObservableObject {
                 if let name = prefs["profile"] as? String, !name.isEmpty {
                     profile = name
                 }
+                if let enginePref = prefs["engine"] as? String, !enginePref.isEmpty {
+                    engineName = enginePref
+                }
                 recent = Self.parseRecent(prefs["recent_projects"])
                 readiness = try await engine.call("readiness")
                 ready = true
@@ -102,6 +108,39 @@ final class AppModel: ObservableObject {
                 let log = FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent("Library/Logs/local-coder-app.log")
                 try? (error.localizedDescription + "\n").write(to: log, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+
+    func newProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the folder that should contain the new project."
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let parent = panel.url else { return }
+        let alert = NSAlert()
+        alert.messageText = "Name the new project"
+        alert.informativeText = "Local Coder will create an empty React starter here. The local model writes the real application after you describe it."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: "my-app")
+        field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        field.setAccessibilityIdentifier("newProjectName")
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        Task {
+            do {
+                let result = try await engine.call("new_project", ["parent": parent.path, "name": name])
+                if let path = result["path"] as? String {
+                    selectProject(path)
+                    banner = "New project created. Describe what you want to build."
+                }
+            } catch {
+                banner = error.localizedDescription
             }
         }
     }
@@ -156,10 +195,13 @@ final class AppModel: ObservableObject {
                 running = true
                 progress = "Starting the local coding engine."
                 snapshot = nil
+                previewURL = nil
                 let started = try await engine.call("run_request", [
                     "path": path,
                     "text": text,
                     "profile": profile,
+                    "engine": engineName,
+                    "kind": followUpReady ? "follow_up" : "create",
                 ])
                 activeEpisode = started["episode_id"] as? String
             } catch {
@@ -181,8 +223,10 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 _ = try await engine.call("keep", ["episode_id": episode, "path": path])
-                snapshot = try await engine.call("snapshot", ["episode_id": episode])
-                banner = "Changes were kept in the project."
+                snapshot = try await engine.call("snapshot", ["episode_id": episode, "path": path])
+                banner = "Changes were kept in the project. You can ask for the next change."
+                followUpReady = true
+                requestText = ""
                 try await refreshSidebars()
             } catch {
                 banner = error.localizedDescription
@@ -194,9 +238,14 @@ final class AppModel: ObservableObject {
         guard let episode = snapshot?["episode_id"] as? String else { return }
         Task {
             do {
-                _ = try await engine.call("discard", ["episode_id": episode])
-                snapshot = try await engine.call("snapshot", ["episode_id": episode])
+                var params: [String: Any] = ["episode_id": episode]
+                if let path = projectPath {
+                    params["path"] = path
+                }
+                _ = try await engine.call("discard", params)
+                snapshot = try await engine.call("snapshot", params)
                 banner = "Proposed changes were discarded. The original project is unchanged."
+                followUpReady = false
                 try await refreshSidebars()
             } catch {
                 banner = error.localizedDescription
@@ -207,7 +256,11 @@ final class AppModel: ObservableObject {
     func openHistory(_ row: HistoryRow) {
         Task {
             do {
-                snapshot = try await engine.call("snapshot", ["episode_id": row.episodeID])
+                var params: [String: Any] = ["episode_id": row.episodeID]
+                if let path = projectPath {
+                    params["path"] = path
+                }
+                snapshot = try await engine.call("snapshot", params)
                 requestText = (snapshot?["ticket"] as? String) ?? row.request
                 explainSummary = nil
             } catch {
@@ -251,7 +304,7 @@ final class AppModel: ObservableObject {
 
     func saveProfile() {
         Task {
-            _ = try? await engine.call("save_prefs", ["profile": profile])
+            _ = try? await engine.call("save_prefs", ["profile": profile, "engine": engineName])
         }
     }
 
@@ -280,7 +333,8 @@ final class AppModel: ObservableObject {
             running = false
             banner = event.payload["detail"] as? String ?? "The request failed."
         }
-        if event.type == "handoff_written" || event.type == "cancelled" {
+        if event.type == "handoff_written" || event.type == "cancelled"
+            || event.type == "done" || event.type == "stopped" || event.type == "budget" {
             finishActiveEpisode()
         }
     }
@@ -292,7 +346,17 @@ final class AppModel: ObservableObject {
         }
         Task {
             do {
-                snapshot = try await engine.call("snapshot", ["episode_id": episode])
+                var params: [String: Any] = ["episode_id": episode]
+                if let path = projectPath {
+                    params["path"] = path
+                }
+                snapshot = try await engine.call("snapshot", params)
+                if let preview = snapshot?["preview"] as? [String: Any], let url = preview["url"] as? String {
+                    previewURL = url
+                } else if let path = projectPath {
+                    let preview = try? await engine.call("preview_start", ["path": path], timeoutSeconds: 60)
+                    previewURL = preview?["url"] as? String
+                }
                 progress = (snapshot?["progress"] as? [String: Any])?["phrase"] as? String ?? progress
                 try await refreshSidebars()
             } catch {
