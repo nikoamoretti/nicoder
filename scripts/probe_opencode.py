@@ -27,7 +27,7 @@ def write_json(path: Path, payload: object) -> None:
 def probe_server(out: Path, project: Path) -> dict:
     """Start isolated OpenCode and inspect health, config, and providers."""
     cfg = load_machine_config()
-    server = OpenCodeServer(project, llama_endpoint=cfg.endpoint)
+    server = OpenCodeServer(project, llama_endpoint=cfg.endpoint, model_id=cfg.model_alias)
     started = server.start(wait_s=40)
     client = server.client()
     health = client.health()

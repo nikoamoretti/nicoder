@@ -29,3 +29,8 @@ var/
 
 # Swift package build
 macos/LocalCoder/.build/
+
+# Independent evals (Playwright lives outside model workspaces)
+evals/**/node_modules/
+evals/**/test-results/
+evals/**/playwright-report/
