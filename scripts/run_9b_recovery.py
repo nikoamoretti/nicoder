@@ -24,7 +24,12 @@ HISTORICAL = (
     / ".local/share/local-coder/projects/app-user-cabb260102a3"
     / "requests/trial-create-9b-1789670226"
 )
-EVIDENCE = Path.home() / ".local/share/local-coder/evidence/9b-taskboard-recovery-2026-09-17"
+SOURCE = (
+    Path.home()
+    / ".local/share/local-coder/projects/app-user-cabb260102a3"
+    / "requests/trial-recover-9b-1789697755"
+)
+EVIDENCE = Path.home() / ".local/share/local-coder/evidence/9b-taskboard-continue-2026-09-18"
 EVALS = Path("/Users/nico-yardlogix/projects/local-coder-16gb/evals/taskboard")
 REPO = Path("/Users/nico-yardlogix/projects/local-coder-16gb")
 
@@ -373,11 +378,13 @@ def recovery_prompt(pre: dict[str, Any], report: dict[str, Any]) -> str:
         "- A previous 9B session overflowed after large tool dumps "
         "(first prompt about 20526 tokens; a later request about 104101 tokens "
         "against a 32768 context).\n"
-        "- Task-board files already exist (App.tsx mounts TaskBoard; "
-        "src/components/TaskBoard.tsx, TaskCard, src/utils/tasks.ts).\n"
-        "- Independent browser checks failed: the page did not show the three "
-        "columns or title inputs.\n"
-        "- Request 2 (due dates) must wait until this board actually works.\n\n"
+        "- A later recovery session mounted the board. The earlier runtime error "
+        "was: The requested module '/src/utils/tasks.ts' does not provide an "
+        "export named 'Task'. Do not treat a type-only import as done unless "
+        "add/edit/move/search/refresh actually work.\n"
+        "- Independent checks of the CURRENT preview: three columns are visible "
+        "and there is no console SyntaxError. Creating a task does not make a "
+        "card appear, so edit/move/search/refresh checks fail. Request 2 waits.\n\n"
         "Independent checks of the CURRENT files (not a guess):\n"
         f"build returncode={build.get('returncode')} stdout_tail:\n"
         f"{(build.get('stdout') or '')[-1800:]}\n"
@@ -391,6 +398,44 @@ def recovery_prompt(pre: dict[str, Any], report: dict[str, Any]) -> str:
         "columns, search/filter, and keep tasks after refresh. Run the project's "
         "own checks when you have a coherent change."
     )
+
+
+def request1_feedback(
+    checks1: dict[str, Any],
+    after_report: dict[str, Any],
+    pre: dict[str, Any],
+) -> str:
+    """Concise independent-check facts. Does not prescribe a patch."""
+    build = pre.get("build") or {}
+    page = after_report.get("report") or {}
+    return (
+        "Independent checks of the running preview failed. Do not weaken the "
+        "requirements. Do not start from a blank starter. The current project "
+        "files are already in this workspace. Read them in bounded slices.\n\n"
+        f"Original application requirements:\n{REQUEST_1}\n\n"
+        "Playwright on the owned preview (1 passed: three columns visible; "
+        "5 failed because added titles never appear):\n"
+        f"{(checks1.get('stdout') or '')[-2500:]}\n\n"
+        f"Page title={page.get('title')!r} headings={page.get('headings')}\n"
+        f"Body excerpt:\n{(page.get('body') or '')[:600]}\n"
+        f"storage={page.get('storage')}\n"
+        f"console errors={json.dumps(page.get('errors'), default=str)[:800]}\n\n"
+        f"tsc/build returncode={build.get('returncode')} stdout_tail:\n"
+        f"{(build.get('stdout') or '')[-1500:]}\n\n"
+        "A created task must appear in a column. Editing, moving, searching, "
+        "blank-title rejection, and refresh persistence must work."
+    )
+
+
+def restore_ledger(prior: dict[str, Any]) -> Ledger:
+    """Resume generation/wall counts. Does not start a new attempt."""
+    snap = prior.get("ledger") or {}
+    ledger = Ledger()
+    elapsed = float(snap.get("elapsed_s") or 0.0)
+    ledger.started = time.time() - elapsed
+    ledger.closed = int(snap.get("generations") or 0)
+    ledger.snapshots = list(snap.get("history") or [])
+    return ledger
 
 
 def continue_session(
@@ -491,24 +536,19 @@ def application_phase(
     record["classification"]["independent_checks"].append("request-1-playwright")
 
     remaining_create = CREATE_WALL_S - (time.time() - create_started)
-    if checks1.get("returncode") != 0 and remaining_create > 90 and ledger.remaining_total() > 90:
+    feedback_budget = ledger.remaining_total()
+    if remaining_create > 90:
+        feedback_budget = min(feedback_budget, remaining_create)
+    if checks1.get("returncode") != 0 and feedback_budget > 90:
         if ledger.generations() < MAX_GENS:
-            feedback = (
-                "Independent checks of the running preview failed. Do not weaken "
-                "the requirements. Observed failures:\n\n"
-                f"{(checks1.get('stdout') or '')[-2500:]}\n\n"
-                "Current runtime/console errors:\n"
-                f"{json.dumps((after_report.get('report') or {}).get('errors'), default=str)[:1500]}\n\n"
-                "A created task must appear in the To do column. Editing, moving, "
-                "searching, and refresh persistence must work."
-            )
+            feedback = request1_feedback(checks1, after_report, pre)
             print("feeding factual failures back", flush=True)
             fb = continue_session(
                 client,
                 str(recovery["session_id"]),
                 feedback,
                 ledger,
-                min(remaining_create, ledger.remaining_total()),
+                min(feedback_budget, ledger.remaining_total()),
                 "recovery-feedback",
             )
             record["recovery_feedback"] = {"watch": fb.get("watch"), "summary": fb.get("summary")}
@@ -597,11 +637,19 @@ def main() -> int:
     model = ensure_model_server()
     write_json(EVIDENCE / "model-server.json", model)
     print("stopping leftover OpenCode", stop_owned(), flush=True)
-    meta = prepare_recovery_workspace(HISTORICAL, request_id)
+    source_app = (SOURCE / "candidate" / "src" / "App.tsx").read_bytes()
+    source_board = (SOURCE / "candidate" / "src" / "components" / "TaskBoard.tsx").read_bytes()
+    meta = prepare_recovery_workspace(SOURCE, request_id)
     after = historical_fingerprints()
     write_json(EVIDENCE / "historical-after-copy.json", after)
     if after != before:
         raise SystemExit("historical candidate bytes changed during copy; refusing to continue")
+    if (SOURCE / "candidate" / "src" / "App.tsx").read_bytes() != source_app:
+        raise SystemExit("current source App.tsx changed during copy; refusing to continue")
+    if (SOURCE / "candidate" / "src" / "components" / "TaskBoard.tsx").read_bytes() != source_board:
+        raise SystemExit("current source TaskBoard changed during copy; refusing to continue")
+    meta["copied_from_current"] = str(SOURCE)
+    meta["historical_overflow"] = str(HISTORICAL)
     candidate = Path(meta["candidate"])
     start_index = index_tree(candidate)
     write_json(EVIDENCE / "meta.json", meta)
@@ -674,17 +722,18 @@ def main() -> int:
         print(f"live compatibility probe {attempt}", flush=True)
         prompt = (
             "Compatibility probe only. Do not modify application files. "
-            "Read src/App.tsx with your read tool, then reply with exactly the word READY."
+            "Reply with exactly the word READY. Do not call tools."
             if attempt == 1
             else
-            "Compatibility probe retry. Do not modify files. Reply with exactly READY."
+            "Compatibility probe retry. Read src/App.tsx with your read tool, "
+            "then reply with exactly READY. Do not modify files."
         )
         probe = prompt_session(
             client,
             f"compat-probe-{attempt}",
             prompt,
             ledger,
-            min(180.0, ledger.remaining_total()),
+            min(240.0, ledger.remaining_total()),
             f"probe-{attempt}",
         )
         write_json(EVIDENCE / f"probe-{attempt}-ledger.json", ledger.snapshot())
@@ -753,10 +802,7 @@ def continue_existing() -> int:
     saved_path = EVIDENCE / "attempt-ledger.json"
     if saved_path.exists():
         saved = json.loads(saved_path.read_text(encoding="utf-8"))
-    ledger = Ledger()
-    ledger.started = float(meta.get("created_ts") or time.time())
-    ledger.closed = int(saved.get("generations") or prior_ledger.get("generations") or 0)
-    ledger.snapshots = list(saved.get("history") or prior_ledger.get("history") or [])
+    ledger = restore_ledger({"ledger": saved} if saved else prior)
     record = prior
     record["probe"] = {
         "ok": True,
@@ -808,9 +854,162 @@ def continue_existing() -> int:
     )
 
 
+def feedback_existing() -> int:
+    """Same attempt: restart the dead in-process proxy and feed check failures."""
+    prior = json.loads((EVIDENCE / "summary.json").read_text(encoding="utf-8"))
+    meta = json.loads((EVIDENCE / "meta.json").read_text(encoding="utf-8"))
+    before = json.loads((EVIDENCE / "historical-before.json").read_text(encoding="utf-8"))
+    after = historical_fingerprints()
+    if after != before:
+        raise SystemExit("historical candidate bytes changed; refusing to continue")
+    candidate = Path(meta["candidate"])
+    start_index = index_tree(candidate)
+    pre = json.loads((EVIDENCE / "prechecks.json").read_text(encoding="utf-8"))
+    pre["build"] = run_cmd(["npm", "run", "build"], candidate, timeout=180)
+    write_json(EVIDENCE / "prechecks-before-feedback.json", pre)
+    checks1 = json.loads((EVIDENCE / "create_checks.json").read_text(encoding="utf-8"))
+    after_report = json.loads((EVIDENCE / "page-report-after-recovery.json").read_text(encoding="utf-8"))
+    preview = json.loads((EVIDENCE / "preview.json").read_text(encoding="utf-8"))
+    url = str(preview.get("url") or "")
+    ledger = restore_ledger(prior)
+    write_json(EVIDENCE / "attempt-ledger.json", ledger.snapshot())
+    record = prior
+    record["classification"]["manual_intervention"].append(
+        "builder fed independent Playwright/tsc failures into a fresh session "
+        "after CREATE wall; same generation budget; no TaskBoard hand-edit"
+    )
+    print("stopping orphaned OpenCode (proxy died with the runner)", stop_owned(), flush=True)
+    ensure_model_server()
+    cfg = load_machine_config()
+    if cfg.n_ctx != 32768 or cfg.model_alias != MODEL_ID:
+        raise SystemExit(f"refusing unexpected machine config {cfg.model_alias} n_ctx={cfg.n_ctx}")
+    server = OpenCodeServer(
+        candidate,
+        llama_endpoint=cfg.endpoint,
+        model_id=MODEL_ID,
+        context=cfg.n_ctx,
+        output=cfg.max_tokens,
+        max_steps=MAX_GENS,
+    )
+    started = server.start(wait_s=30)
+    write_json(EVIDENCE / "opencode-feedback-restart.json", started)
+    preview = start_preview(candidate, str(meta["project_id"]))
+    write_json(EVIDENCE / "preview.json", preview)
+    url = str(preview.get("url") or url)
+    if ledger.generations() >= MAX_GENS or ledger.remaining_total() < 90:
+        record["request1"] = {"ok": False, "blocked": "budget"}
+        write_json(EVIDENCE / "summary.json", record)
+        return 5
+    print(
+        f"feeding factual failures gens={ledger.generations()} "
+        f"remaining={ledger.remaining_total():.0f}s candidate={candidate}",
+        flush=True,
+    )
+    recovery = prompt_session(
+        server.client(),
+        "taskboard-recovery-feedback",
+        request1_feedback(checks1, after_report, pre),
+        ledger,
+        min(ledger.remaining_total() - 60.0, 18 * 60),
+        "recovery-feedback",
+    )
+    record["recovery_feedback"] = {
+        "session_id": recovery.get("session_id"),
+        "watch": recovery.get("watch"),
+        "summary": recovery.get("summary"),
+        "ledger": ledger.snapshot(),
+    }
+    if is_hard_transport(recovery):
+        record["request1"] = {
+            "ok": False,
+            "blocked": "transport",
+            "detail": recovery.get("detail") or recovery.get("watch", {}).get("detail"),
+        }
+        write_json(EVIDENCE / "summary.json", record)
+        print(json.dumps({"stopped": "transport", "detail": record["request1"]["detail"]}, indent=2))
+        return 2
+    record["classification"]["model_generated"] = model_delta(start_index, candidate)
+    after_report = page_report(url, "report") if url else {}
+    write_json(EVIDENCE / "page-report-after-feedback.json", after_report)
+    checks1 = run_playwright(url, "request 1") if url else {"ok": False, "detail": "no preview"}
+    write_json(EVIDENCE / "create_checks_after_feedback.json", checks1)
+    record["classification"]["independent_checks"].append("request-1-playwright-after-feedback")
+    request1_ok = checks1.get("returncode") == 0
+    record["request1"] = {
+        "ok": request1_ok,
+        "playwright": {"returncode": checks1.get("returncode"), "seconds": checks1.get("seconds")},
+        "page": (after_report.get("report") or {}).get("errors"),
+        "model_files": record["classification"]["model_generated"],
+    }
+    if not request1_ok:
+        record["request2"] = {"ok": False, "blocked": "request_1_not_working"}
+        record["ledger"] = ledger.snapshot()
+        write_json(EVIDENCE / "summary.json", record)
+        write_json(EVIDENCE / "attempt-ledger.json", ledger.snapshot())
+        print(json.dumps({
+            "request1": False,
+            "request2": "not_run",
+            "preview": url,
+            "generations": ledger.generations(),
+            "elapsed_s": round(ledger.elapsed(), 2),
+            "candidate": str(candidate),
+        }, indent=2), flush=True)
+        return 4
+    print("request 1 passed; seeding tasks before due dates", flush=True)
+    seeded = page_report(url, "seed")
+    write_json(EVIDENCE / "seeded-tasks.json", seeded)
+    record["seeded"] = seeded.get("report") or seeded
+    if ledger.generations() >= MAX_GENS or ledger.remaining_total() < 60:
+        record["request2"] = {"ok": False, "blocked": "budget"}
+        record["ledger"] = ledger.snapshot()
+        write_json(EVIDENCE / "summary.json", record)
+        return 5
+    print("request 2 follow-up", flush=True)
+    follow = prompt_session(
+        server.client(),
+        "taskboard-due-dates",
+        REQUEST_2 + "\n\nExisting saved tasks must remain. Do not reset storage.",
+        ledger,
+        min(FOLLOW_WALL_S, ledger.remaining_total()),
+        "follow-up",
+    )
+    record["classification"]["model_generated"] = model_delta(start_index, candidate)
+    preserved = page_report(url, "report")
+    write_json(EVIDENCE / "page-report-after-due-dates.json", preserved)
+    checks2 = run_playwright(url, "request 2")
+    write_json(EVIDENCE / "follow_checks.json", checks2)
+    seed_ok = (
+        (preserved.get("report") or {}).get("visibleSeededOpen", 0) > 0
+        and (preserved.get("report") or {}).get("visibleKeepMe", 0) > 0
+    )
+    record["request2"] = {
+        "ok": checks2.get("returncode") == 0 and seed_ok,
+        "playwright": {"returncode": checks2.get("returncode"), "seconds": checks2.get("seconds")},
+        "seeded_still_visible": seed_ok,
+        "storage_after": (preserved.get("report") or {}).get("storage"),
+        "follow": {"watch": follow.get("watch"), "summary": follow.get("summary")},
+    }
+    record["ledger"] = ledger.snapshot()
+    record["preview"] = {"url": url, "pid": preview.get("pid"), "dir": str(candidate)}
+    write_json(EVIDENCE / "summary.json", record)
+    write_json(EVIDENCE / "attempt-ledger.json", ledger.snapshot())
+    print(json.dumps({
+        "request1": True,
+        "request2": record["request2"]["ok"],
+        "preview": url,
+        "generations": ledger.generations(),
+        "elapsed_s": round(ledger.elapsed(), 2),
+        "candidate": str(candidate),
+        "seeded_still_visible": seed_ok,
+    }, indent=2), flush=True)
+    return 0 if record["request2"]["ok"] else 6
+
+
 if __name__ == "__main__":
     import sys
 
+    if "--feedback-existing" in sys.argv:
+        raise SystemExit(feedback_existing())
     if "--continue-existing" in sys.argv:
         raise SystemExit(continue_existing())
     raise SystemExit(main())

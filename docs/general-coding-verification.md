@@ -253,8 +253,44 @@ attempt after a false “transport” classification of aborted-but-readable
 probes; restarted OpenCode after diagnosing a hung SSE that lacked
 `[DONE]` / connection close.
 
+## Recorded continuation (2026-09-18)
+
+This is a **second recorded recovery**, copied from the mounted
+`trial-recover-9b-1789697755` candidate, not from a blank starter and not
+by replaying the overflowed `trial-create-9b-1789670226` transcript.
+Historical create bytes remain unchanged (`App.tsx` SHA-256 `7984b095…`,
+`TaskBoard.tsx` SHA-256 `a482b36a…`). First-recovery evidence under
+`9b-taskboard-recovery-2026-09-17/` was not overwritten.
+
+- Continuation: `.../requests/trial-recover-9b-1789712467/candidate/`
+- Evidence: `~/.local/share/local-coder/evidence/9b-taskboard-continue-2026-09-18/`
+- Compatibility tests (OpenCode parser / stream / budget / isolation /
+  recovery-copy): **43 passed** (~26 s).
+- Live probe 1: READY in ~60 s; 6678 prompt tokens vs `n_ctx=32768`;
+  `llama.cpp /tokenize`; `estimated=false`; `output_source=max_tokens`.
+- Live sizes this attempt: **6678–15073** prompt tokens. Last turn
+  `remaining_headroom=15203`, output reserve 2048, safety 512. One tool
+  result stored (`49712 → 27145` visible chars). No overflow.
+- Generations: **30 / 30**. Elapsed: **1988 s (~33 min / 45)**. CREATE
+  20 min wall stopped the first coding session at gen 17; remaining
+  diagnostic budget was used to feed Playwright/tsc failures into a
+  fresh session (`ses_f4cbb54c…`) without resetting the count.
+- Model-generated in the first session: `TaskBoard.tsx`, `TaskCard.tsx`,
+  `tasks.ts` (SHA `559dd925…` → `3d543093…` vs the previous mounted
+  board). Feedback session tools were `read` / `glob` / `bash` only;
+  **no further file edits**.
+- Independent Playwright after both sessions: **1 passed** (three
+  columns), **5 failed**. Added titles never appear. `tsc -b` still
+  fails on unused locals (`deleteTask` / `updateTask` shadowed;
+  unused `filteredTasks`). Page report: headings present, console
+  empty, `localStorage.tasks=[]`.
+- Request 2 not run (`request_1_not_working`).
+
+The builder did not hand-edit TaskBoard. Dock app remains 0.3.0.
+
 ## What this is not
 
 This is not a finished general coder. A mounted three-column board is not
 a working task board if created tasks never appear. **Qwen3.5-9B Q4_K_M
-did not complete request 1 on this recovery.** Dock app remains 0.3.0.
+did not complete request 1 on this recovery or the 2026-09-18
+continuation.** Dock app remains 0.3.0.
