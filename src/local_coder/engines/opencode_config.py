@@ -240,9 +240,12 @@ def write_engine_home(config: dict[str, Any]) -> Path:
     agents = cfg_dir / "AGENTS.md"
     agents.write_text(
         "Local Coder engine profile. Work only in this project folder.\n"
-        "Do not use host skills, cloud providers, or parent-directory instructions.\n",
+        "Do not use host skills, cloud providers, or parent-directory instructions.\n"
+        "Clipped tool results can be continued with "
+        "`local-coder-observe <observation_id> <offset>` via the bash tool.\n",
         encoding="utf-8",
     )
+    _install_observe_cli(home)
     return path
 
 
@@ -255,6 +258,7 @@ def isolated_env(
     home = engine_home()
     home.mkdir(parents=True, exist_ok=True)
     path = [
+        str(home / "bin"),
         str(pinned_binary().parent),
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -291,6 +295,9 @@ def isolated_env(
         "OPENCODE_ENABLE_EXA": "0",
         "OPENCODE_ENABLE_PARALLEL": "0",
         "PATH": ":".join(path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2]) + (
+            os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""
+        ),
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
         "TERM": "dumb",
@@ -342,3 +349,18 @@ def _clear_unwanted_discovery(home: Path) -> None:
             shutil.rmtree(path)
         elif path.exists():
             path.unlink()
+
+
+def _install_observe_cli(home: Path) -> Path:
+    """Install the bounded-observe helper on the isolated PATH."""
+    dest = home / "bin" / "local-coder-observe"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src_root = Path(__file__).resolve().parents[2]
+    dest.write_text(
+        "#!/bin/sh\n"
+        f'export PYTHONPATH="{src_root}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+        'exec python3 -m local_coder.engines.observe_cli "$@"\n',
+        encoding="utf-8",
+    )
+    dest.chmod(stat.S_IRWXU)
+    return dest

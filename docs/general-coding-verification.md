@@ -171,11 +171,90 @@ The leftover 4B OpenCode provider mapping is refused: one resolved alias is
 written into the isolated config, reuse requires the same project and model,
 and a stale registered model aborts before a coding task.
 
-This does **not** install Dock app 0.4.0 and does **not** rerun the task
-board. The failed 9B candidate and evidence are unchanged.
+This does **not** install Dock app 0.4.0. The original 9B overflowed
+candidate under `trial-create-9b-1789670226` is unchanged.
+
+## Stream contract, accounting, and recorded 9B recovery (2026-09-17 evening)
+
+This is a **recorded recovery/continuation**, not evidence that the model
+built the application from scratch. Historical candidate bytes were copied
+into `trial-recover-9b-1789697755` and then left untouched.
+
+### Compatibility (mocked OpenCode parser + live 9B)
+
+- Proxy now streams `chat.completion.chunk` objects (`choices[].delta`).
+  A buffered full completion is translated into those chunks; wrapping the
+  original JSON in `data:` is rejected.
+- Upstream HTTP errors stay errors. Oversized writes return HTTP 400 /
+  an SSE error object, not a fake assistant completion.
+- After `finish_reason`, the proxy emits `data: [DONE]` and closes the
+  stream (`Connection: close`). Without that, OpenCode executed tools and
+  then waited indefinitely.
+- Output reserve follows the request’s effective `max_tokens` /
+  `max_completion_tokens` (missing → configured default; conflict → min).
+  Flattened tokenize + template slack is labeled `estimated` when
+  `/tokenize` is unavailable. `n_ctx` stayed **32768**.
+- Observations are clipped tool results. `local-coder-observe` is an
+  explicit bash CLI; transcript text is not auto-scanned for OBSERVE.
+- Tests: `tests/test_stream_contract.py` (including a real OpenCode 1.18.22
+  session against a scripted mock), `tests/test_context_budget.py`,
+  `tests/test_opencode_isolation.py`, recovery-copy immutability.
+
+Live probes on the production proxy + 9B (same attempt, 2 tries):
+
+| Probe | Tokens in | Result |
+|---|---|---|
+| 1 | 6686 (`llama.cpp /tokenize`, not estimated) | Native `read` of `src/App.tsx` + READY. Aborted at 180s before idle. |
+| 2 | 6672 | Assistant text `READY`. Same abort-before-idle. |
+
+Those were readable provider responses, not transport failures. Headroom
+was ~23500 of 32768 after a 2048 output reserve and 512 margin.
+
+### Recovery attempt
+
+- Historical: `~/.local/share/local-coder/projects/app-user-cabb260102a3/requests/trial-create-9b-1789670226/` (bytes unchanged; `App.tsx` SHA-1 `184eda4e…`).
+- Continuation: `.../requests/trial-recover-9b-1789697755/candidate/`
+- Evidence: `~/.local/share/local-coder/evidence/9b-taskboard-recovery-2026-09-17/`
+- Model: owned `Qwen3.5-9B-Q4_K_M` at `127.0.0.1:8080`, `n_ctx=32768`.
+- Engine: OpenCode 1.18.22 through the corrected proxy. Local inference only.
+- Generations: **25 / 30**. Elapsed: **~41 min / 45**. CREATE watch 20 min
+  exhausted during the last turn (no extra trial campaign).
+- Live request sizes: 6672–16102 prompt tokens vs 32768. Last turn
+  `remaining_headroom=14106`, `output_source=max_tokens`, `estimated=false`,
+  one tool result compacted to an observation store (`31394 → 26788` chars).
+
+Independent checks **before** the model edited anything:
+
+- `tsc -b` failed: `Task` is a type and must be imported with `import type`
+  under `verbatimModuleSyntax`.
+- Browser: `SyntaxError: The requested module '/src/utils/tasks.ts' does not provide an export named 'Task'`. Empty body, no columns.
+
+The **local model** then edited `TaskBoard.tsx`, `TaskCard.tsx`, and
+`tasks.ts` (builder did not hand-edit those files). It switched the value
+import to `import { type Task, ... }`. The app **mounts**.
+
+Independent checks **after** that recovery (preview `http://127.0.0.1:4554/`):
+
+- Page report: headings `Task Board / To do / In progress / Done`. No
+  console errors. `localStorage.tasks` is `[]`.
+- Playwright request 1: **1 passed** (columns), **5 failed**. Adding a
+  task does not make a card appear (edit/move/search/refresh/phone/blank-
+  title checks never get a visible task). `npm run build` still fails on
+  unused locals/imports (`noUnusedLocals`), not on the old `Task` export.
+- Observed remaining application bug (model-owned, not patched here):
+  `addNewTask` calls `addTask(...)` then clears the form and never
+  `setTasks(...)`. `deleteTask` / `updateTask` in the component still
+  shadow the imported helpers and recurse.
+
+Request 2 (due dates / Overdue) was **not run**.
+
+Builder interventions that were not TaskBoard edits: continued the same
+attempt after a false “transport” classification of aborted-but-readable
+probes; restarted OpenCode after diagnosing a hung SSE that lacked
+`[DONE]` / connection close.
 
 ## What this is not
 
-This is not a finished general coder. Successful native tool calls and a
-non-empty file tree are not a working task board. **Qwen3.5-9B Q4_K_M did not
-complete the required application.**
+This is not a finished general coder. A mounted three-column board is not
+a working task board if created tasks never appear. **Qwen3.5-9B Q4_K_M
+did not complete request 1 on this recovery.** Dock app remains 0.3.0.

@@ -121,6 +121,39 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
     return meta
 
 
+def prepare_recovery_workspace(historical_root: Path | str, request_id: str) -> dict[str, Any]:
+    """Copy a failed candidate into a new request without mutating the original."""
+    historical_root = Path(historical_root).expanduser().resolve()
+    hist_meta = json.loads((historical_root / "meta.json").read_text(encoding="utf-8"))
+    sentinel = (historical_root / "candidate" / "src" / "App.tsx").read_bytes()
+    hist_meta_bytes = (historical_root / "meta.json").read_bytes()
+    user_path = Path(str(hist_meta["user_path"]))
+    pid = str(hist_meta["project_id"])
+    root = request_dir(pid, request_id)
+    copy_snapshot(historical_root / "baseline", root / "baseline")
+    copy_snapshot(historical_root / "candidate", root / "candidate")
+    write_index(root / "baseline.json", index_tree(root / "baseline"))
+    write_index(root / "recovery_start.json", index_tree(root / "candidate"))
+    meta = {
+        "request_id": request_id,
+        "project_id": pid,
+        "user_path": str(user_path),
+        "baseline": str(root / "baseline"),
+        "candidate": str(root / "candidate"),
+        "starter_used": False,
+        "recovered_from": str(historical_root),
+        "created_ts": time.time(),
+        "engine": "opencode",
+        "pin": pin_record(),
+    }
+    (root / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    if (historical_root / "meta.json").read_bytes() != hist_meta_bytes:
+        raise GeneralError("historical meta.json changed during recovery copy", code="evidence")
+    if (historical_root / "candidate" / "src" / "App.tsx").read_bytes() != sentinel:
+        raise GeneralError("historical candidate changed during recovery copy", code="evidence")
+    return meta
+
+
 def load_meta(project_id: str, request_id: str) -> dict[str, Any]:
     path = request_dir(project_id, request_id) / "meta.json"
     return json.loads(path.read_text(encoding="utf-8"))

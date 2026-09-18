@@ -6,13 +6,12 @@ returns a small count is refused by tests because counts must scale.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from .observations import (
     ClipPolicy,
     ObservationStore,
-    find_observe_requests,
     looks_like_tool_message,
     message_text,
     set_message_text,
@@ -60,13 +59,17 @@ class LlamaCppTokenizer:
                     json={"content": text, "add_special": False},
                 )
             if response.status_code != 200:
+                self.labeled = "estimate"
                 return ConservativeEstimator().count(text)
             payload = response.json()
         except (httpx.HTTPError, OSError, ValueError):
+            self.labeled = "estimate"
             return ConservativeEstimator().count(text)
         tokens = payload.get("tokens")
         if isinstance(tokens, list):
+            self.labeled = "llama.cpp /tokenize"
             return len(tokens)
+        self.labeled = "estimate"
         return ConservativeEstimator().count(text)
 
 
@@ -104,6 +107,8 @@ class RequestAccounting:
     provider_visible_chars: int = 0
     stored_path: str | None = None
     compacted: bool = False
+    output_source: str = "configured_default"
+    estimated: bool = False
 
 
 class ContextBudgetError(Exception):
@@ -160,7 +165,37 @@ def account(body: dict[str, Any], counter: TokenCounter, policy: ContextPolicy) 
         remaining_headroom=remaining,
         n_ctx=policy.n_ctx,
         counter_label=counter.labeled,
+        estimated=counter.labeled == "estimate",
     )
+
+
+def resolve_output_limit(body: dict[str, Any], policy: ContextPolicy) -> tuple[int, str]:
+    """Return the output allowance that will actually be sent to llama.cpp."""
+    raw_tokens = body.get("max_tokens")
+    raw_completion = body.get("max_completion_tokens")
+    parsed_tokens = _positive_int(raw_tokens)
+    parsed_completion = _positive_int(raw_completion)
+    if parsed_tokens is not None and parsed_completion is not None and parsed_tokens != parsed_completion:
+        return min(parsed_tokens, parsed_completion), "conflicting_max_tokens_used_min"
+    if parsed_completion is not None:
+        return parsed_completion, "max_completion_tokens"
+    if parsed_tokens is not None:
+        return parsed_tokens, "max_tokens"
+    if raw_tokens is not None or raw_completion is not None:
+        return policy.output_reserve, "invalid_nonpositive_used_default"
+    return policy.output_reserve, "configured_default"
+
+
+def _positive_int(value: Any) -> int | None:
+    if value is None or value is False:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
 
 
 def prepare_chat_request(
@@ -174,18 +209,37 @@ def prepare_chat_request(
     """Bound, compact if needed, then refuse before dispatch if still too large."""
     prepared = json.loads(json.dumps(body))
     _require_model(prepared, expected_model)
-    _attach_observe_slices(prepared, store)
     _bound_tool_defs(prepared, store, policy)
     original_chars, visible_chars, stored = _bound_messages(prepared, store, policy)
-    measured = account(prepared, counter, policy)
+    requested_out, out_source = resolve_output_limit(prepared, policy)
+    measured = account(prepared, counter, replace(policy, output_reserve=requested_out))
     compacted = False
     if not measured.allowed:
         prepared, compacted = _compact_history(prepared, store, policy)
-        measured = account(prepared, counter, policy)
+        measured = account(prepared, counter, replace(policy, output_reserve=requested_out))
         measured.compacted = compacted
+    room = policy.n_ctx - measured.input_tokens - policy.safety_margin
+    if room < 1:
+        measured.allowed = False
+        measured.reason = (
+            f"irreducible context: complete input {measured.input_tokens} + "
+            f"safety {policy.safety_margin} exceeds n_ctx {policy.n_ctx}. "
+            "No generation was dispatched."
+        )
+        raise ContextBudgetError(measured.reason, measured)
+    effective_out = min(requested_out, room)
+    if effective_out < requested_out:
+        out_source = f"{out_source};capped_to_remaining_context"
+    prepared["max_tokens"] = effective_out
+    if "max_completion_tokens" in prepared:
+        prepared["max_completion_tokens"] = effective_out
+    measured = account(prepared, counter, replace(policy, output_reserve=effective_out))
     measured.original_result_chars = original_chars
     measured.provider_visible_chars = visible_chars
     measured.stored_path = stored
+    measured.output_source = out_source
+    measured.estimated = counter.labeled == "estimate"
+    measured.compacted = compacted
     if not measured.allowed:
         measured.reason = (
             f"irreducible context: {measured.reason}. "
@@ -195,46 +249,73 @@ def prepare_chat_request(
     return prepared, measured
 
 
-def reject_oversized_write(completion: dict[str, Any], policy: ContextPolicy) -> dict[str, Any]:
-    """Refuse a write/edit tool call that is too large instead of applying a slice."""
+@dataclass
+class CompletionGate:
+    """Whether a completion may be returned as a successful model response."""
+
+    allowed: bool
+    completion: dict[str, Any] | None
+    error: dict[str, Any] | None = None
+    evidence_path: str | None = None
+    original_action: dict[str, Any] | None = None
+
+
+WRITE_TOOLS = frozenset({"write", "edit", "write_file", "apply_patch"})
+
+
+def gate_completion(
+    completion: dict[str, Any],
+    policy: ContextPolicy,
+    store: ObservationStore | None = None,
+) -> CompletionGate:
+    """Refuse an oversized write as a provider error, keeping the original action."""
+    if completion.get("error"):
+        err = completion["error"]
+        return CompletionGate(False, None, err if isinstance(err, dict) else {"message": str(err)})
     choices = completion.get("choices")
     if not isinstance(choices, list):
-        return completion
-    updated = json.loads(json.dumps(completion))
-    for choice in updated.get("choices") or []:
+        return CompletionGate(True, completion)
+    for choice in choices:
         message = choice.get("message") if isinstance(choice, dict) else None
         if not isinstance(message, dict):
             continue
-        calls = message.get("tool_calls")
-        if not isinstance(calls, list):
-            continue
-        kept: list[Any] = []
-        rejected = False
-        for call in calls:
+        for call in message.get("tool_calls") or []:
             if not isinstance(call, dict):
-                kept.append(call)
                 continue
             raw_fn = call.get("function")
             fn = raw_fn if isinstance(raw_fn, dict) else {}
             name = str(fn.get("name") or "")
             args = fn.get("arguments")
             raw = args if isinstance(args, str) else json.dumps(args or {}, ensure_ascii=False)
-            if name in {"write", "edit", "write_file"} and len(raw) > policy.clip.write_arg_chars:
-                rejected = True
-                continue
-            kept.append(call)
-        if rejected:
-            message["tool_calls"] = kept
-            note = (
-                "Rejected oversized file-writing arguments. "
-                f"Limit is {policy.clip.write_arg_chars} characters. "
-                "No partial write was applied."
-            )
-            existing = message.get("content") or ""
-            message["content"] = f"{existing}\n{note}".strip()
-            if not kept:
-                choice["finish_reason"] = "stop"
-    return updated
+            if name in WRITE_TOOLS and len(raw) > policy.clip.write_arg_chars:
+                evidence = None
+                if store is not None:
+                    view = store.put(raw, tool=name, status="rejected_oversized_write")
+                    evidence = view.path
+                error = {
+                    "type": "oversized_write_rejected",
+                    "code": "oversized_write",
+                    "message": (
+                        f"Rejected oversized {name} arguments "
+                        f"({len(raw)} > {policy.clip.write_arg_chars}). "
+                        "No partial write was applied."
+                    ),
+                    "tool": name,
+                    "tool_call_id": call.get("id"),
+                    "argument_chars": len(raw),
+                    "limit_chars": policy.clip.write_arg_chars,
+                    "evidence_path": evidence,
+                }
+                return CompletionGate(False, None, error, evidence, json.loads(json.dumps(call)))
+    return CompletionGate(True, completion)
+
+
+def reject_oversized_write(completion: dict[str, Any], policy: ContextPolicy) -> dict[str, Any]:
+    """Compatibility wrapper. Prefer gate_completion for new callers."""
+    gate = gate_completion(completion, policy)
+    if gate.allowed and gate.completion is not None:
+        return gate.completion
+    return {"error": gate.error, "choices": []}
 
 
 def _require_model(body: dict[str, Any], expected: str) -> None:
@@ -258,23 +339,6 @@ def _require_model(body: dict[str, Any], expected: str) -> None:
         body["model"] = expected
 
 
-def _attach_observe_slices(body: dict[str, Any], store: ObservationStore) -> None:
-    messages = body.get("messages")
-    if not isinstance(messages, list):
-        return
-    extra: list[dict[str, Any]] = []
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        for oid, offset in find_observe_requests(message_text(message)):
-            try:
-                view = store.read_slice(oid, offset=offset)
-            except (OSError, ValueError, KeyError):
-                continue
-            extra.append({"role": "user", "content": view.as_text()})
-    messages.extend(extra)
-
-
 def _bound_messages(
     body: dict[str, Any],
     store: ObservationStore,
@@ -287,17 +351,14 @@ def _bound_messages(
     visible = 0
     stored_path: str | None = None
     tool_chars = 0
-    latest_user = max(
-        (i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"),
-        default=-1,
-    )
     for index, message in enumerate(list(messages)):
         if not isinstance(message, dict):
             continue
         text = message_text(message)
         original += len(text)
+        role = str(message.get("role") or "")
         may_clip = looks_like_tool_message(message) or (
-            _oversized_plain(text, policy) and index != latest_user
+            role == "assistant" and _oversized_plain(text, policy) and not message.get("tool_calls")
         )
         if may_clip:
             view = store.put(
@@ -312,8 +373,7 @@ def _bound_messages(
                 rendered = (
                     f"tool: {view.tool}\nstatus: omitted_for_aggregate_budget\n"
                     f"observation_id: {view.observation_id}\n"
-                    f"more: write OBSERVE {view.observation_id} 0 "
-                    "to attach a bounded slice\n"
+                    f"more: run local-coder-observe {view.observation_id} 0\n"
                 )
             tool_chars += len(rendered)
             messages[index] = set_message_text(message, rendered)

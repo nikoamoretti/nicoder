@@ -12,10 +12,12 @@ from typing import Any
 
 from .llama_proxy import LlamaProxy
 from .model_identity import resolve_model_id, stale_mapping
+from .observations import ObservationStore
 from .opencode_client import OpenCodeClient
 from .opencode_config import (
     DEFAULT_MODEL_ID,
     PROVIDER_ID,
+    data_root,
     engine_home,
     ensure_pinned_binary,
     ensure_secret,
@@ -120,11 +122,13 @@ class OpenCodeServer:
                         "reused": True, "pin": pin_record(), "model_id": self.model_id}
             stop_owned()
         binary = ensure_pinned_binary()
+        store = ObservationStore(data_root() / "tool-observations" / self.project_dir.name)
         proxy = _start_proxy(
             self.llama_endpoint,
             self.model_id,
             context=self.context,
             output=self.output,
+            store=store,
         )
         config = opencode_config(
             llama_base_url=proxy.url,
@@ -138,6 +142,7 @@ class OpenCodeServer:
         self.url = f"http://127.0.0.1:{self.port}"
         env = isolated_env(extra={
             "OPENCODE_CONFIG_CONTENT": overlay_content(config),
+            "LOCAL_CODER_OBSERVE_ROOT": str(store.root),
         })
         argv = [
             str(binary),
@@ -254,6 +259,7 @@ def _start_proxy(
     *,
     context: int = 32768,
     output: int = 2048,
+    store: ObservationStore | None = None,
 ) -> LlamaProxy:
     global _PROXY
     stop_proxy()
@@ -263,6 +269,7 @@ def _start_proxy(
         upstream,
         expected_model=model_id,
         policy=ContextPolicy(n_ctx=context, output_reserve=output),
+        store=store,
     )
     proxy.start()
     _PROXY = proxy

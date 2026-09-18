@@ -98,8 +98,8 @@ def test_proxy_strips_host_markers_from_assembled_request(tmp_path):
                 json={
                     "model": "Qwen3.5-9B-Q4_K_M",
                     "messages": [
-                        {"role": "system", "content": dumped},
                         {"role": "user", "content": "build"},
+                        {"role": "tool", "name": "bash", "tool_call_id": "t1", "content": dumped},
                     ],
                 },
             )

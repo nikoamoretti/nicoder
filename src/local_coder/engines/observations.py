@@ -48,8 +48,7 @@ class ObservationView:
             lines.append(f"omitted_bytes: {self.omitted_bytes}")
             if self.next_offset is not None:
                 lines.append(
-                    f"more: write OBSERVE {self.observation_id} {self.next_offset} "
-                    "to attach another bounded slice"
+                    f"more: run local-coder-observe {self.observation_id} {self.next_offset}"
                 )
             else:
                 lines.append("more: none")
@@ -101,6 +100,7 @@ class ObservationStore:
         folder = self.root / oid
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "full.txt").write_bytes(raw)
+        status = observation_status(exit_code=exit_code, payload=payload, requested=status)
         record = {
             "observation_id": oid,
             "tool": tool,
@@ -197,8 +197,28 @@ def _consumed_chars(remaining: str, excerpt: str, budget: int) -> int:
 
 
 def find_observe_requests(text: str) -> list[tuple[str, int]]:
-    """Parse explicit OBSERVE id offset tags from model or user text."""
+    """Parse legacy OBSERVE tags. Automatic attachment must not use this."""
     return [(m.group(1), int(m.group(2))) for m in OBSERVE_TAG.finditer(text)]
+
+
+def observation_status(*, exit_code: int | None, payload: str, requested: str = "ok") -> str:
+    """Preserve genuine failure. A nonzero exit is never an unqualified ok."""
+    if requested in {"error", "failed", "compacted", "clipped_description", "omitted_for_aggregate_budget"}:
+        return requested
+    if exit_code not in (None, 0):
+        return "error"
+    head = payload[:2_000].lower()
+    if "exit_code: 0" in head or head.startswith("exit: 0"):
+        return "ok"
+    if ERROR_LINE.search(payload[:2_000]) and ("exit_code" in head or head.startswith("exit:")):
+        return "error"
+    return requested
+
+
+def is_observe_tool(message: dict[str, Any]) -> bool:
+    """True when this tool result is an explicit local-coder-observe call."""
+    name = str(message.get("name") or message.get("tool") or "")
+    return name in {"local_coder_observe", "local-coder-observe"}
 
 
 def looks_like_tool_message(message: dict[str, Any]) -> bool:

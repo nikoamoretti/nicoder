@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -13,11 +15,12 @@ from local_coder.engines.context_budget import (
     LlamaCppTokenizer,
     account,
     flatten_request,
+    gate_completion,
     prepare_chat_request,
-    reject_oversized_write,
+    resolve_output_limit,
 )
 from local_coder.engines.model_identity import ModelIdentityError, resolve_model_id, stale_mapping
-from local_coder.engines.observations import ClipPolicy, ObservationStore, clip_text
+from local_coder.engines.observations import ClipPolicy, ObservationStore, clip_text, message_text
 from local_coder.machine import MachineConfig
 
 
@@ -312,23 +315,94 @@ def test_compaction_is_local_and_does_not_call_cloud(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_observe_tag_attaches_another_slice(tmp_path):
+def test_observe_tag_in_tool_text_does_not_autoload(tmp_path):
     store = ObservationStore(tmp_path / "obs", ClipPolicy(excerpt_chars=120, head_chars=40, tail_chars=40))
     view = store.put("AAAA" + ("b" * 2000) + "ZZZZ", tool="read")
+    mention = f"example OBSERVE {view.observation_id} {view.next_offset} in a log"
     body = {
         "model": "Qwen3.5-9B-Q4_K_M",
-        "messages": [{"role": "user", "content": f"OBSERVE {view.observation_id} {view.next_offset}"}],
+        "messages": [
+            {"role": "user", "content": "keep going"},
+            _tool_message(mention, tool="bash"),
+        ],
     }
     prepared, _ = prepare_chat_request(
         body, store=store, counter=ConservativeEstimator(),
         policy=ContextPolicy(), expected_model="Qwen3.5-9B-Q4_K_M",
     )
-    attached = prepared["messages"][-1]["content"]
-    assert "observation_id:" in attached
-    assert len(attached) < 2000
+    roles = [m.get("role") for m in prepared["messages"]]
+    assert roles.count("user") == 1
+    assert all("AAAA" not in message_text(m) for m in prepared["messages"])
 
 
-def test_oversized_write_is_rejected_not_clipped():
+def test_explicit_observe_cli_returns_bounded_slice(tmp_path, monkeypatch):
+    from local_coder.engines.observe_cli import main
+
+    store = ObservationStore(tmp_path / "obs", ClipPolicy(excerpt_chars=120, head_chars=40, tail_chars=40))
+    text = "HEADMARK" + ("q" * 4000) + "TAILMARK"
+    view = store.put(text, tool="read")
+    monkeypatch.setenv("LOCAL_CODER_OBSERVE_ROOT", str(store.root))
+    buf = StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    assert main([view.observation_id, str(view.next_offset or 0)]) == 0
+    out = buf.getvalue()
+    assert len(out) < len(text)
+    assert text not in out
+    assert "observation_id:" in out
+
+
+def test_long_user_and_system_instructions_are_not_clipped(tmp_path):
+    store = ObservationStore(tmp_path / "obs")
+    requirement = "REQ-KEEP " * 3_000
+    system = "SYS-KEEP " * 3_000
+    body = {
+        "model": "Qwen3.5-9B-Q4_K_M",
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": requirement},
+            _tool_message("x" * 50_000, tool="bash"),
+        ],
+    }
+    prepared, _ = prepare_chat_request(
+        body, store=store, counter=ConservativeEstimator(),
+        policy=ContextPolicy(), expected_model="Qwen3.5-9B-Q4_K_M",
+    )
+    assert prepared["messages"][0]["content"] == system
+    assert prepared["messages"][1]["content"] == requirement
+    assert len(prepared["messages"][2]["content"]) < 12_000
+
+
+def test_output_limit_matches_request(tmp_path):
+    store = ObservationStore(tmp_path / "obs")
+    body = {
+        "model": "Qwen3.5-9B-Q4_K_M",
+        "max_tokens": 512,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    prepared, accounting = prepare_chat_request(
+        body, store=store, counter=ConservativeEstimator(),
+        policy=ContextPolicy(n_ctx=32768, output_reserve=2048),
+        expected_model="Qwen3.5-9B-Q4_K_M",
+    )
+    assert prepared["max_tokens"] == 512
+    assert accounting.output_reserve == 512
+    assert accounting.output_source == "max_tokens"
+    limit, source = resolve_output_limit(
+        {"max_tokens": 800, "max_completion_tokens": 200},
+        ContextPolicy(),
+    )
+    assert limit == 200
+    assert "conflict" in source
+
+
+def test_failed_tool_status_is_not_ok(tmp_path):
+    store = ObservationStore(tmp_path / "obs")
+    view = store.put("exit_code: 1\nTRACEBACK boom\n", tool="bash", exit_code=1)
+    assert view.status == "error"
+
+
+def test_oversized_write_is_provider_error(tmp_path):
+    store = ObservationStore(tmp_path / "obs")
     completion = {
         "choices": [{
             "message": {
@@ -341,10 +415,12 @@ def test_oversized_write_is_rejected_not_clipped():
             }
         }]
     }
-    out = reject_oversized_write(completion, ContextPolicy())
-    message = out["choices"][0]["message"]
-    assert message.get("tool_calls") == []
-    assert "Rejected oversized file-writing" in message["content"]
+    gate = gate_completion(completion, ContextPolicy(), store)
+    assert gate.allowed is False
+    assert gate.completion is None
+    assert gate.error and gate.error["type"] == "oversized_write_rejected"
+    assert gate.original_action and gate.original_action["id"] == "w1"
+    assert gate.evidence_path and Path(gate.evidence_path).exists()
 
 
 def test_model_mismatch_refuses_dispatch(tmp_path):
