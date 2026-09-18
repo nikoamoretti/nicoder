@@ -16,6 +16,7 @@ htmlcov/
 # Local Coder runtime state (episodes, candidates, evidence bundles)
 var/
 .local-coder/
+tool-observations/
 *.log
 
 # Local secrets and configuration

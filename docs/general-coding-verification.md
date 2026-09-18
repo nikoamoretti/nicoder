@@ -148,6 +148,32 @@ therefore **not** demonstrated. An internal API/preview run is not a substitute.
 - llama-server is bound to `127.0.0.1`. Its log still warns that CORS defaults
   are permissive when no API key is set.
 
+## Context bounding and isolation fix (no new live generation)
+
+The 9B overflow happened on the OpenCode → llama.cpp `/v1/chat/completions`
+hop: OpenCode assembled full tool output (one ~379 KB message; next request
+104101 tokens) and llama.cpp refused it. Local Coder now owns that hop with a
+loopback proxy. Full tool payloads are stored under the app data directory
+(`tool-observations/`, not Git). The model sees a bounded observation with an
+`OBSERVE` handle. A complete-request token check runs before every dispatch
+(`input + output reserve + safety <= n_ctx`). Irreducible requests return
+`context_budget_error` and do not generate. Compaction is deterministic and
+local; `small_model` is the same llama.cpp alias.
+
+Host-instruction isolation is no longer “change HOME and hope.” The owned
+OpenCode 1.18.22 process sets `OPENCODE_TEST_HOME`, `OPENCODE_CONFIG_DIR`,
+`OPENCODE_PURE`, and the supported disable flags for default plugins, external
+skills, Claude-compatible instructions/skills/prompt, project/parent
+`AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` discovery, model catalog fetch, share,
+and autoupdate. Nico’s real `~/.claude` and `~/.agents` are not edited.
+
+The leftover 4B OpenCode provider mapping is refused: one resolved alias is
+written into the isolated config, reuse requires the same project and model,
+and a stale registered model aborts before a coding task.
+
+This does **not** install Dock app 0.4.0 and does **not** rerun the task
+board. The failed 9B candidate and evidence are unchanged.
+
 ## What this is not
 
 This is not a finished general coder. Successful native tool calls and a

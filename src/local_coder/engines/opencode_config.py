@@ -17,7 +17,7 @@ from typing import Any
 from .opencode_pin import PINNED_SHA256, PINNED_VERSION, SYSTEM_BINARY, pinned_binary
 
 PROVIDER_ID = "llama.cpp"
-DEFAULT_MODEL_ID = "Qwen3.5-4B-Q4_K_M"
+DEFAULT_MODEL_ID = "Qwen3.5-9B-Q4_K_M"
 DEFAULT_CONTEXT = 32768
 DEFAULT_OUTPUT = 2048
 
@@ -45,6 +45,21 @@ DISABLED_PROVIDERS = [
     "huggingface",
     "nvidia",
 ]
+
+ISOLATION_ENV_KEYS = (
+    "OPENCODE_TEST_HOME",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_PURE",
+    "OPENCODE_DISABLE_DEFAULT_PLUGINS",
+    "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+    "OPENCODE_DISABLE_CLAUDE_CODE",
+    "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS",
+    "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT",
+    "OPENCODE_DISABLE_PROJECT_CONFIG",
+    "OPENCODE_DISABLE_MODELS_FETCH",
+    "OPENCODE_DISABLE_SHARE",
+    "OPENCODE_DISABLE_AUTOUPDATE",
+)
 
 CLOUD_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
@@ -154,8 +169,6 @@ def opencode_config(
         "share": "disabled",
         "enabled_providers": [PROVIDER_ID],
         "disabled_providers": list(DISABLED_PROVIDERS),
-        "plugin": [],
-        "mcp": {},
         "provider": {
             PROVIDER_ID: {
                 "npm": "@ai-sdk/openai-compatible",
@@ -206,6 +219,10 @@ def opencode_config(
                 "permission": {"task": "deny", "webfetch": "deny", "websearch": "deny"},
             },
         },
+        "instructions": [],
+        "plugin": [],
+        "mcp": {},
+        "skills": {"paths": [], "urls": []},
         "compaction": {"auto": True},
     }
 
@@ -217,8 +234,15 @@ def write_engine_home(config: dict[str, Any]) -> Path:
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (home / ".local" / "share" / "opencode").mkdir(parents=True, exist_ok=True)
     (home / ".cache" / "opencode").mkdir(parents=True, exist_ok=True)
+    _clear_unwanted_discovery(home)
     path = cfg_dir / "opencode.json"
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    agents = cfg_dir / "AGENTS.md"
+    agents.write_text(
+        "Local Coder engine profile. Work only in this project folder.\n"
+        "Do not use host skills, cloud providers, or parent-directory instructions.\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -242,6 +266,7 @@ def isolated_env(
         path = path_entries + path
     env = {
         "HOME": str(home),
+        "OPENCODE_TEST_HOME": str(home),
         "USER": os.environ.get("USER", "local-coder"),
         "LOGNAME": os.environ.get("LOGNAME", os.environ.get("USER", "local-coder")),
         "TMPDIR": str(home / "tmp"),
@@ -250,8 +275,21 @@ def isolated_env(
         "XDG_CACHE_HOME": str(home / ".cache"),
         "XDG_STATE_HOME": str(home / ".local" / "state"),
         "OPENCODE_CONFIG": str(home / ".config" / "opencode" / "opencode.json"),
+        "OPENCODE_CONFIG_DIR": str(home / ".config" / "opencode"),
         "OPENCODE_SERVER_USERNAME": "local-coder",
         "OPENCODE_SERVER_PASSWORD": ensure_secret(),
+        "OPENCODE_PURE": "1",
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "1",
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+        "OPENCODE_DISABLE_MODELS_FETCH": "1",
+        "OPENCODE_DISABLE_SHARE": "1",
+        "OPENCODE_DISABLE_AUTOUPDATE": "1",
+        "OPENCODE_ENABLE_EXA": "0",
+        "OPENCODE_ENABLE_PARALLEL": "0",
         "PATH": ":".join(path),
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
@@ -274,7 +312,9 @@ def overlay_content(config: dict[str, Any]) -> str:
         "disabled_providers": list(DISABLED_PROVIDERS),
         "plugin": [],
         "mcp": {},
+        "skills": {"paths": [], "urls": []},
         "provider": config["provider"],
+        "instructions": [],
         "permission": {
             "webfetch": "deny",
             "websearch": "deny",
@@ -283,3 +323,22 @@ def overlay_content(config: dict[str, Any]) -> str:
         },
     }
     return json.dumps(overlay)
+
+
+def _clear_unwanted_discovery(home: Path) -> None:
+    """Remove leftover skill/plugin trees from the app-owned fake HOME only."""
+    for relative in (
+        ".claude",
+        ".agents",
+        ".config/opencode/skills",
+        ".config/opencode/skill",
+        ".config/opencode/plugin",
+        ".config/opencode/plugins",
+        ".config/opencode/command",
+        ".config/opencode/commands",
+    ):
+        path = home / relative
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()

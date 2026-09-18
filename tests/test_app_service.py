@@ -75,7 +75,8 @@ def test_classify_explain_and_web_are_allowed():
     assert kind["kind"] == "code"
     assert classify_request("Fix add so it returns a sum",
                             {"supported": True, "exists": True, "languages": ["Python"]})["kind"] == "code"
-    assert classify_legacy_request("add a search box", {"supported": True, "languages": ["Python"]})["kind"] == "unsupported"
+    legacy = classify_legacy_request("add a search box", {"supported": True, "languages": ["Python"]})
+    assert legacy["kind"] == "unsupported"
     assert inspect_legacy_project.__name__ == "inspect_legacy_project"
 
 

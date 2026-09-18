@@ -10,7 +10,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .opencode_client import OpenCodeClient, OpenCodeError
+from .llama_proxy import LlamaProxy
+from .model_identity import resolve_model_id, stale_mapping
+from .opencode_client import OpenCodeClient
 from .opencode_config import (
     DEFAULT_MODEL_ID,
     PROVIDER_ID,
@@ -23,6 +25,8 @@ from .opencode_config import (
     write_engine_home,
 )
 from .opencode_pin import PINNED_VERSION, pin_record
+
+_PROXY: LlamaProxy | None = None
 
 
 class EngineServerError(Exception):
@@ -88,14 +92,14 @@ class OpenCodeServer:
         project_dir: Path,
         *,
         llama_endpoint: str,
-        model_id: str = DEFAULT_MODEL_ID,
+        model_id: str | None = None,
         context: int = 32768,
         output: int = 2048,
         max_steps: int = 120,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.llama_endpoint = llama_endpoint.rstrip("/")
-        self.model_id = model_id
+        self.model_id = resolve_model_id(model_id)
         self.context = context
         self.output = output
         self.max_steps = max_steps
@@ -107,15 +111,23 @@ class OpenCodeServer:
         """Start or reuse an owned server whose cwd is the candidate project."""
         existing = read_record()
         if existing and _alive(int(existing.get("pid") or 0)):
-            if existing.get("project") == str(self.project_dir):
+            same_project = existing.get("project") == str(self.project_dir)
+            same_model = existing.get("model_id") == self.model_id
+            if same_project and same_model and current_proxy() is not None:
                 self.url = str(existing["url"])
                 self.port = int(existing["port"])
                 return {"started": False, "url": self.url, "pid": existing["pid"],
-                        "reused": True, "pin": pin_record()}
+                        "reused": True, "pin": pin_record(), "model_id": self.model_id}
             stop_owned()
         binary = ensure_pinned_binary()
+        proxy = _start_proxy(
+            self.llama_endpoint,
+            self.model_id,
+            context=self.context,
+            output=self.output,
+        )
         config = opencode_config(
-            llama_base_url=self.llama_endpoint,
+            llama_base_url=proxy.url,
             model_id=self.model_id,
             context=self.context,
             output=self.output,
@@ -126,9 +138,6 @@ class OpenCodeServer:
         self.url = f"http://127.0.0.1:{self.port}"
         env = isolated_env(extra={
             "OPENCODE_CONFIG_CONTENT": overlay_content(config),
-            "OPENCODE_DISABLE_AUTOUPDATE": "1",
-            "OPENCODE_ENABLE_EXA": "0",
-            "OPENCODE_ENABLE_PARALLEL": "0",
         })
         argv = [
             str(binary),
@@ -153,6 +162,7 @@ class OpenCodeServer:
         last_error = ""
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
+                stop_proxy()
                 raise EngineServerError(
                     f"OpenCode {PINNED_VERSION} exited early (code {self.proc.returncode}). "
                     f"See {log_path()}."
@@ -163,6 +173,14 @@ class OpenCodeServer:
                 last_error = str(exc)
                 time.sleep(0.25)
                 continue
+            effective = self.client().config()
+            if stale_mapping(effective.get("model"), self.model_id):
+                self.stop()
+                stop_proxy()
+                raise EngineServerError(
+                    f"OpenCode registered {effective.get('model')!r} instead of "
+                    f"{self.model_id!r}. Refusing to continue with a stale mapping."
+                )
             write_record({
                 "pid": self.proc.pid,
                 "argv": argv,
@@ -170,6 +188,7 @@ class OpenCodeServer:
                 "port": self.port,
                 "project": str(self.project_dir),
                 "model_id": self.model_id,
+                "proxy": proxy.url,
                 "version": PINNED_VERSION,
                 "home": str(engine_home()),
                 "started_ts": time.time(),
@@ -180,8 +199,11 @@ class OpenCodeServer:
                 "pid": self.proc.pid,
                 "health": health,
                 "pin": pin_record(),
+                "model_id": self.model_id,
+                "proxy": proxy.url,
             }
         self.stop()
+        stop_proxy()
         raise EngineServerError(
             f"OpenCode did not become healthy within {wait_s}s ({last_error}). See {log_path()}."
         )
@@ -208,8 +230,43 @@ def stop_owned() -> dict[str, Any]:
     pid = int(record.get("pid") or 0)
     if pid and _alive(pid):
         _terminate(pid)
+    stop_proxy()
     record_path().unlink(missing_ok=True)
     return {"stopped": True, "pid": pid}
+
+
+def current_proxy() -> LlamaProxy | None:
+    """The owned llama.cpp proxy, if running."""
+    return _PROXY
+
+
+def stop_proxy() -> None:
+    """Stop the owned proxy only."""
+    global _PROXY
+    if _PROXY is not None:
+        _PROXY.stop()
+    _PROXY = None
+
+
+def _start_proxy(
+    upstream: str,
+    model_id: str,
+    *,
+    context: int = 32768,
+    output: int = 2048,
+) -> LlamaProxy:
+    global _PROXY
+    stop_proxy()
+    from .context_budget import ContextPolicy
+
+    proxy = LlamaProxy(
+        upstream,
+        expected_model=model_id,
+        policy=ContextPolicy(n_ctx=context, output_reserve=output),
+    )
+    proxy.start()
+    _PROXY = proxy
+    return proxy
 
 
 def _terminate(pid: int, grace_s: int = 8) -> None:

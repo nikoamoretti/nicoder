@@ -127,7 +127,13 @@ def main() -> int:
         return 0 if checks["returncode"] == 0 else 2
     session_id = None
     meta_path = None
-    root = Path.home() / ".local/share/local-coder/projects" / str(result.get("project_id")) / "requests" / str(result.get("request_id"))
+    root = (
+        Path.home()
+        / ".local/share/local-coder/projects"
+        / str(result.get("project_id"))
+        / "requests"
+        / str(result.get("request_id"))
+    )
     meta_path = root / "meta.json"
     if meta_path.exists():
         session_id = json.loads(meta_path.read_text(encoding="utf-8")).get("session_id")

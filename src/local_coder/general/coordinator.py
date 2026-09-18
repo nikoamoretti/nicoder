@@ -12,8 +12,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from local_coder.engines.model_identity import ModelIdentityError, assert_identity, resolve_model_id
 from local_coder.engines.opencode_client import OpenCodeError
-from local_coder.engines.opencode_config import DEFAULT_MODEL_ID, data_root
+from local_coder.engines.opencode_config import data_root
 from local_coder.engines.opencode_pin import pin_record
 from local_coder.engines.opencode_server import (
     OpenCodeServer,
@@ -36,7 +37,7 @@ from local_coder.general.snapshot import (
 from local_coder.general.starter import copy_starter
 from local_coder.machine import load_machine_config
 from local_coder.persistence import new_episode_id
-from local_coder.server import ServerError, server_start, server_status
+from local_coder.server import ServerError, server_status
 
 EventListener = Callable[[dict[str, Any]], None]
 
@@ -170,11 +171,13 @@ def run_general_request(
         return {"kind": "explain", **explain_request(folder, text)}
     request_id = request_id or new_episode_id()
     budget = budget_for(kind)
-    model = model_id or load_machine_config().model_alias or DEFAULT_MODEL_ID
+    try:
+        model = resolve_model_id(model_id)
+    except ModelIdentityError as exc:
+        raise GeneralError(exc.detail, code=exc.code) from exc
     _emit(listener, "preparing", {"request_id": request_id})
     meta = prepare_workspace(folder, request_id, allow_starter=True)
     candidate = Path(meta["candidate"])
-    baseline = Path(meta["baseline"])
     update_notebook(request_dir(meta["project_id"], request_id), goal=text.strip())
     cancel = cancel_event or threading.Event()
     started = time.monotonic()
@@ -184,11 +187,18 @@ def run_general_request(
     else:
         _emit(listener, "model_starting", {})
         ensure_model_server()
+        try:
+            assert_identity(model)
+        except ModelIdentityError as exc:
+            raise GeneralError(exc.detail, code=exc.code) from exc
         _emit(listener, "engine_starting", {"pin": pin_record()})
+        machine = load_machine_config()
         server = OpenCodeServer(
             candidate,
-            llama_endpoint=load_machine_config().endpoint,
+            llama_endpoint=machine.endpoint,
             model_id=model,
+            context=machine.n_ctx,
+            output=machine.max_tokens,
             max_steps=budget.max_generations,
         )
         server.start()
@@ -367,7 +377,12 @@ def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
     (request_dir(project_id, request_id) / "meta.json").write_text(
         json.dumps(meta, indent=2) + "\n", encoding="utf-8",
     )
-    return {"ok": True, "discarded": True, "request_id": request_id, "detail": "Discarded. The original project was not changed."}
+    return {
+        "ok": True,
+        "discarded": True,
+        "request_id": request_id,
+        "detail": "Discarded. The original project was not changed.",
+    }
 
 
 def cancel_active() -> dict[str, Any]:

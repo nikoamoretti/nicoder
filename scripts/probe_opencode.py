@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 
 from local_coder.engines.opencode_client import OpenCodeError
-from local_coder.engines.opencode_config import isolated_env, opencode_config
+from local_coder.engines.opencode_config import isolated_env
 from local_coder.engines.opencode_pin import pin_record
 from local_coder.engines.opencode_server import OpenCodeServer, stop_owned
 from local_coder.machine import load_machine_config

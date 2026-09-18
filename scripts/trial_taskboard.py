@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from local_coder.general.coordinator import keep_request, run_general_request
+from local_coder.general.coordinator import run_general_request
 from local_coder.general.starter import copy_starter
 
 REQUEST_1 = (
