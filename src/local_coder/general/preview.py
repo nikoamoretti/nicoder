@@ -3,19 +3,33 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from local_coder.engines.opencode_config import data_root
 
 PREVIEW_HOST = "127.0.0.1"
+_SCRIPT_SRC = re.compile(
+    r"""<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']""",
+    re.I,
+)
+_PREVIEW_ERROR_MARKERS = (
+    "[plugin:vite:react-babel]",
+    "plugin:vite:react-babel",
+    "plugin:vite:",
+    "failed to parse source",
+    "internal server error",
+    "vite-error-overlay",
+    "unexpected token",
+)
 
 
 def preview_record_path() -> Path:
@@ -147,8 +161,7 @@ def start_preview(project_dir: Path, project_id: str, *, wait_s: int = 45) -> di
                 "project_id": project_id,
                 "log": str(log),
             }
-            preview_record_path().parent.mkdir(parents=True, exist_ok=True)
-            preview_record_path().write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            write_preview_record(record)
             return record
         time.sleep(0.4)
     stop_preview()
@@ -156,6 +169,7 @@ def start_preview(project_dir: Path, project_id: str, *, wait_s: int = 45) -> di
 
 
 def _http_ok(url: str) -> bool:
+    """True when the preview process answers. A 200 page is not a compile check."""
     try:
         parsed = urlparse(url)
         if parsed.hostname not in {"127.0.0.1", "localhost"}:
@@ -165,6 +179,101 @@ def _http_ok(url: str) -> bool:
         return response.status_code < 500
     except (httpx.HTTPError, OSError):
         return False
+
+
+def preview_error_from_response(status: int, body: str) -> str | None:
+    """Return an error excerpt when Vite/Babel failed, else None."""
+    text = body or ""
+    if status >= 400:
+        return _error_excerpt(text) or f"HTTP {status}"
+    lowered = text.lower()
+    if any(marker in lowered for marker in _PREVIEW_ERROR_MARKERS):
+        return _error_excerpt(text)
+    return None
+
+
+def check_preview_health(
+    url: str,
+    project_dir: Path | None = None,
+    *,
+    client: httpx.Client | None = None,
+    wait_s: float = 4.0,
+) -> dict[str, Any]:
+    """Fetch the preview page and entry modules. Overlay/HTTP errors fail."""
+    parsed = urlparse(url)
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return {"ok": False, "code": "bad_url", "detail": "Preview URL is not loopback."}
+    own_client = client is None
+    http = client or httpx.Client(trust_env=False, timeout=2.0, follow_redirects=True)
+    try:
+        page = _get(http, url)
+        if page is None:
+            return {"ok": False, "code": "preview_unreachable", "detail": "The preview did not answer."}
+        error = preview_error_from_response(page.status_code, page.text)
+        if error:
+            return {"ok": False, "code": "vite_overlay", "detail": error}
+        targets = _entry_urls(url, page.text, project_dir)
+        deadline = time.monotonic() + max(0.0, wait_s)
+        while True:
+            failed: dict[str, Any] | None = None
+            for target in targets:
+                response = _get(http, target)
+                if response is None:
+                    failed = {"ok": False, "code": "preview_unreachable", "detail": f"No response from {target}."}
+                    break
+                error = preview_error_from_response(response.status_code, response.text)
+                if error:
+                    failed = {"ok": False, "code": "vite_overlay", "detail": error}
+                    break
+            if failed is None:
+                return {"ok": True, "code": "ok", "detail": "Preview modules loaded."}
+            if time.monotonic() >= deadline:
+                return failed
+            time.sleep(0.2)
+        return {"ok": False, "code": "preview_unreachable", "detail": "The preview did not answer."}
+    finally:
+        if own_client:
+            http.close()
+
+
+def write_preview_record(record: dict[str, Any]) -> None:
+    """Persist the current owned preview record."""
+    path = preview_record_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
+def _entry_urls(base: str, html: str, project_dir: Path | None) -> list[str]:
+    urls: list[str] = []
+    for match in _SCRIPT_SRC.finditer(html or ""):
+        urls.append(urljoin(base, match.group(1)))
+    if project_dir is not None:
+        for rel in ("src/main.tsx", "src/main.jsx", "src/App.tsx", "src/App.jsx"):
+            if (project_dir / rel).is_file():
+                urls.append(urljoin(base, "/" + rel))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in urls:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique or [urljoin(base, "/src/App.tsx")]
+
+
+def _get(client: httpx.Client, url: str) -> httpx.Response | None:
+    try:
+        parsed = urlparse(url)
+        if parsed.hostname not in {"127.0.0.1", "localhost"}:
+            return None
+        return client.get(url)
+    except (httpx.HTTPError, OSError):
+        return None
+
+
+def _error_excerpt(body: str) -> str:
+    compact = " ".join((body or "").split())
+    return compact[:400]
 
 
 def _which(name: str) -> str | None:

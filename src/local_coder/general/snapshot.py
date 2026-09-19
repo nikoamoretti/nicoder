@@ -33,6 +33,13 @@ EXTRA_EXCLUDE_DIRS = {
 }
 EXCLUDE = set(EXCLUDE_DIRS) | EXTRA_EXCLUDE_DIRS
 SECRET_NAMES = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
+NOISE_NAMES = {
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+}
 
 
 @dataclass
@@ -96,7 +103,9 @@ def is_excluded(rel: str) -> bool:
     if any(part in EXCLUDE or part.endswith(".egg-info") for part in parts):
         return True
     name = Path(rel).name
-    if name in SECRET_NAMES or name.endswith(".pem") or name.endswith(".key"):
+    if name in SECRET_NAMES or name in NOISE_NAMES:
+        return True
+    if name.endswith(".pem") or name.endswith(".key"):
         return True
     from fnmatch import fnmatch
 
@@ -156,6 +165,17 @@ def copy_snapshot(source: Path, dest: Path) -> TreeIndex:
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(full, target)
+    return index_tree(dest)
+
+
+def clone_snapshot(source: Path, dest: Path) -> TreeIndex:
+    """Duplicate an existing snapshot quickly (hardlinks when the volume allows)."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    try:
+        shutil.copytree(source, dest, copy_function=os.link)
+    except OSError:
+        shutil.copytree(source, dest, copy_function=shutil.copy2)
     return index_tree(dest)
 
 
@@ -344,3 +364,21 @@ def write_index(path: Path, index: TreeIndex) -> None:
         },
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def read_index(path: Path) -> TreeIndex:
+    """Load a frozen tree index written by write_index."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    root = Path(str(payload.get("root") or "."))
+    index = TreeIndex(root=root)
+    files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+    for rel, row in files.items():
+        if not isinstance(row, dict):
+            continue
+        index.files[str(rel)] = FileEntry(
+            rel=str(rel),
+            sha256=str(row.get("sha256") or ""),
+            mode=int(row.get("mode") or 0),
+            size=int(row.get("size") or 0),
+        )
+    return index

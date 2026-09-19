@@ -1,6 +1,7 @@
-"""Trusted coordinator: snapshots, OpenCode sessions, review, Keep/Discard.
+"""Trusted coordinator: snapshots, local apply, review, Keep/Discard.
 
-UI state stays here. OpenCode is not asked to accept into the original tree.
+UI state stays here. The model writes file bodies; this module applies them
+onto a disposable copy. The original tree changes only on Keep.
 """
 from __future__ import annotations
 
@@ -16,24 +17,22 @@ from local_coder.engines.model_identity import ModelIdentityError, assert_identi
 from local_coder.engines.opencode_client import OpenCodeError
 from local_coder.engines.opencode_config import data_root
 from local_coder.engines.opencode_pin import pin_record
-from local_coder.engines.opencode_server import (
-    OpenCodeServer,
-    client_from_record,
-    read_record,
-    stop_owned,
-)
-from local_coder.general.budgets import RequestBudget, budget_for
+from local_coder.engines.opencode_server import client_from_record, read_record, stop_owned
+from local_coder.general.direct_write import complete_files, fallback_explanation, reply_prose
 from local_coder.general.inspect import classify_request, inspect_project
 from local_coder.general.notebook import update_notebook
-from local_coder.general.preview import start_preview, stop_preview
+from local_coder.general.preview import check_preview_health, start_preview, stop_preview, write_preview_record
 from local_coder.general.snapshot import (
+    TreeIndex,
     apply_delta,
     compute_delta,
     copy_snapshot,
     index_tree,
+    read_index,
     unified_diff,
     write_index,
 )
+from local_coder.general.source_check import parse_retry_message, scan_changed_sources
 from local_coder.general.starter import copy_starter
 from local_coder.machine import load_machine_config
 from local_coder.persistence import new_episode_id
@@ -74,20 +73,38 @@ def _emit(listener: EventListener | None, event_type: str, data: dict[str, Any] 
 
 def _phrase(event_type: str, data: dict[str, Any]) -> str:
     mapping = {
-        "preparing": "Preparing a working copy…",
-        "engine_starting": "Starting the local coding engine…",
-        "model_starting": "Starting the local model…",
-        "prompt_sent": "The local model is working…",
-        "tool": f"Using {data.get('tool') or 'a tool'}…",
-        "file_changed": f"Changed {data.get('path') or 'a file'}",
-        "check": "Checking the result…",
-        "preview": "Opening a preview…",
+        "preparing": "Making a working copy of the project.",
+        "model_starting": "Loading the local model. This can take a minute.",
+        "engine_starting": (
+            str(data.get("detail") or "").strip()
+            or ("Reusing the coding engine." if data.get("reused") else "Starting the coding engine.")
+        ),
+        "prompt_sent": (
+            "The local model is writing code. Large models can sit here for several "
+            "minutes while they read the project."
+        ),
+        "tool": str(data.get("detail") or f"Using {data.get('tool') or 'a tool'}."),
+        "activity": str(data.get("detail") or "The model is working."),
+        "working": (
+            f"Still working — {data.get('elapsed_s', 0)} seconds so far. "
+            f"{data.get('last') or 'Waiting for the next update.'}"
+        ),
+        "file_changed": f"Changed {data.get('path') or 'a file'}.",
+        "check": "Checking the result.",
+        "preview": "Opening a preview.",
         "budget": "Reached the time or step limit for this request.",
         "stopped": "Stopped.",
         "done": "Finished this attempt. Review the result.",
         "error": data.get("detail") or "Something went wrong.",
     }
     return str(mapping.get(event_type) or data.get("phrase") or event_type)
+
+
+def live_dir(project_id: str) -> Path:
+    """Sticky working copy reused across requests for the same project."""
+    path = work_root(project_id) / "live"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) -> dict[str, Any]:
@@ -97,6 +114,7 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
     root = request_dir(pid, request_id)
     baseline = root / "baseline"
     candidate = root / "candidate"
+    live_candidate = live_dir(pid) / "candidate"
     user_path.mkdir(parents=True, exist_ok=True)
     empty = not any(user_path.iterdir())
     starter_used = False
@@ -104,7 +122,11 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
         copy_starter(user_path)
         starter_used = True
     b_index = copy_snapshot(user_path, baseline)
-    copy_snapshot(user_path, candidate)
+    # Real copies, not hardlinks: the engine writes the live tree, and a
+    # shared inode would also mutate the frozen baseline.
+    copy_snapshot(baseline, candidate)
+    if not live_candidate.is_dir():
+        copy_snapshot(baseline, live_candidate)
     write_index(root / "baseline.json", b_index)
     meta = {
         "request_id": request_id,
@@ -112,9 +134,10 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
         "user_path": str(user_path),
         "baseline": str(baseline),
         "candidate": str(candidate),
+        "engine_cwd": str(live_candidate),
         "starter_used": starter_used,
         "created_ts": time.time(),
-        "engine": "opencode",
+        "engine": "local",
         "pin": pin_record(),
     }
     (root / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -143,7 +166,7 @@ def prepare_recovery_workspace(historical_root: Path | str, request_id: str) -> 
         "starter_used": False,
         "recovered_from": str(historical_root),
         "created_ts": time.time(),
-        "engine": "opencode",
+        "engine": "local",
         "pin": pin_record(),
     }
     (root / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -174,7 +197,7 @@ def ensure_model_server() -> dict[str, Any]:
             code="foreign_server",
         )
     try:
-        result = _start(cfg, wait_s=120)
+        result = _start(cfg, wait_s=180)
     except ServerError as exc:
         raise GeneralError(str(exc), code="server") from exc
     return {"ok": True, "started": True, "status": server_status(cfg), "start": result}
@@ -190,9 +213,10 @@ def run_general_request(
     cancel_event: threading.Event | None = None,
     model_id: str | None = None,
     fake_engine: Callable[[Path, str, threading.Event | None], None] | None = None,
+    fake_complete: Callable[[str], str] | None = None,
     start_preview_after: bool = True,
 ) -> dict[str, Any]:
-    """Run one bounded OpenCode request against a snapshot copy."""
+    """Snapshot, ask the model for files, apply them, then review."""
     folder = Path(user_path).expanduser().resolve()
     inspection = inspect_project(folder)
     classified = classify_request(text, inspection)
@@ -202,178 +226,258 @@ def run_general_request(
         from local_coder.app_service import explain_request
 
         return {"kind": "explain", **explain_request(folder, text)}
+    if classified["kind"] == "chat":
+        from local_coder.app_service import chat_request
+
+        return chat_request(folder, text)
     request_id = request_id or new_episode_id()
-    budget = budget_for(kind)
     try:
         model = resolve_model_id(model_id)
     except ModelIdentityError as exc:
         raise GeneralError(exc.detail, code=exc.code) from exc
     _emit(listener, "preparing", {"request_id": request_id})
     meta = prepare_workspace(folder, request_id, allow_starter=True)
+    _emit(listener, "activity", {"detail": "Working copy is ready."})
     candidate = Path(meta["candidate"])
+    engine_cwd = Path(meta.get("engine_cwd") or candidate)
     update_notebook(request_dir(meta["project_id"], request_id), goal=text.strip())
     cancel = cancel_event or threading.Event()
-    started = time.monotonic()
-    generations = 0
     if fake_engine is not None:
-        fake_engine(candidate, text, cancel)
+        fake_engine(engine_cwd, text, cancel)
+        if engine_cwd != candidate:
+            copy_snapshot(engine_cwd, candidate)
     else:
-        _emit(listener, "model_starting", {})
-        ensure_model_server()
-        try:
-            assert_identity(model)
-        except ModelIdentityError as exc:
-            raise GeneralError(exc.detail, code=exc.code) from exc
-        _emit(listener, "engine_starting", {"pin": pin_record()})
-        machine = load_machine_config()
-        server = OpenCodeServer(
-            candidate,
-            llama_endpoint=machine.endpoint,
-            model_id=model,
-            context=machine.n_ctx,
-            output=machine.max_tokens,
-            max_steps=budget.max_generations,
-        )
-        server.start()
-        client = server.client()
-        session = client.create_session(title=text.strip()[:80])
-        session_id = str(session.get("id") or session.get("sessionID") or session.get("session_id"))
-        if not session_id:
-            raise GeneralError("OpenCode did not return a session id.", code="engine")
-        meta["session_id"] = session_id
+        if fake_complete is None:
+            _emit(listener, "model_starting", {})
+            ensure_model_server()
+            try:
+                assert_identity(model)
+            except ModelIdentityError as exc:
+                raise GeneralError(exc.detail, code=exc.code) from exc
         meta["model_id"] = model
+        meta["engine"] = "local"
         (Path(meta["baseline"]).parent / "meta.json").write_text(
             json.dumps(meta, indent=2) + "\n", encoding="utf-8",
         )
-        prompt = _user_prompt(text, inspection)
-        client.prompt_async(session_id, prompt, provider_id="llama.cpp", model_id=model)
-        _emit(listener, "prompt_sent", {"session_id": session_id})
-        generations += 1
-        _watch_session(
-            client, session_id, budget, started, cancel, listener,
-            generations_holder=lambda: generations,
-            inc=lambda: _inc(generations),
+        from local_coder.general.chat_log import conversation_excerpt
+
+        conversation = conversation_excerpt(folder)
+        written, raw = _apply_direct(
+            engine_cwd, text, inspection, meta, listener, complete=fake_complete,
+            conversation=conversation,
         )
+        if not written and not cancel.is_set():
+            written, raw = _apply_direct(
+                engine_cwd, text, inspection, meta, listener,
+                complete=fake_complete, previous=raw, conversation=conversation,
+            )
+        if written and not cancel.is_set():
+            problems = scan_changed_sources(engine_cwd, written)
+            if problems:
+                _emit(listener, "activity", {
+                    "detail": "The written files do not parse. Asking the model to fix them.",
+                })
+                written, raw = _apply_direct(
+                    engine_cwd, text, inspection, meta, listener,
+                    complete=fake_complete, previous=raw, conversation=conversation,
+                    retry_reason=parse_retry_message(problems),
+                )
+        if not written:
+            meta["model_commentary"] = (
+                "The model was asked twice for files and did not return any."
+            )
+            _save_meta(meta)
+        if engine_cwd != candidate:
+            copy_snapshot(engine_cwd, candidate)
+    _maybe_attach_preview(meta, candidate, listener, start_preview_after=start_preview_after)
     review = review_payload(meta["project_id"], request_id)
-    if start_preview_after and (candidate / "package.json").exists():
-        _emit(listener, "preview", {})
-        preview = start_preview(candidate, meta["project_id"])
-        review["preview"] = preview
+    from local_coder.general.chat_log import append_turn, load_chat
+
+    append_turn(folder, "user", text.strip())
+    note = str(review.get("model_commentary") or review.get("summary") or "").strip()
+    if note:
+        append_turn(folder, "assistant", note)
+    review["turns"] = load_chat(folder)["turns"]
     _emit(listener, "done", {"request_id": request_id})
     return review
 
 
-def _inc(value: int) -> int:
-    return value + 1
-
-
-def _user_prompt(text: str, inspection: dict[str, Any]) -> str:
-    return (
-        "You are working in this project folder. Implement the user's request using "
-        "your normal file and command tools. Create and edit whatever files you need. "
-        "Use React and TypeScript with the existing Vite tooling when this is a web app. "
-        "Run the project's checks when you have a coherent change. Do not invent hidden "
-        "cloud services. Do not require the user to run terminal commands.\n\n"
-        f"Project: {inspection.get('name')}\n"
-        f"Path: {inspection.get('path')}\n"
-        f"Languages: {', '.join(inspection.get('languages') or []) or 'new or mixed'}\n\n"
-        f"User request:\n{text.strip()}\n"
+def _save_meta(meta: dict[str, Any]) -> None:
+    (Path(meta["baseline"]).parent / "meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
     )
 
 
-def _watch_session(
-    client: Any,
-    session_id: str,
-    budget: RequestBudget,
-    started: float,
-    cancel: threading.Event,
+def _apply_direct(
+    engine_cwd: Path,
+    text: str,
+    inspection: dict[str, Any],
+    meta: dict[str, Any],
     listener: EventListener | None,
     *,
-    generations_holder: Callable[[], int],
-    inc: Callable[[], int],
-) -> None:
-    idle_deadline = time.monotonic() + budget.wall_seconds
-    last_event = time.monotonic()
+    complete: Callable[[str], str] | None = None,
+    previous: str | None = None,
+    conversation: str = "",
+    retry_reason: str | None = None,
+) -> tuple[list[str], str]:
+    """Write model file bodies onto the working copy."""
+    _emit(listener, "activity", {"detail": "Asking the model to write the files now."})
     try:
-        for event in client.events():
-            if cancel.is_set():
-                try:
-                    client.abort(session_id)
-                except OpenCodeError:
-                    pass
-                _emit(listener, "stopped", {})
-                return
-            if time.monotonic() - started > budget.wall_seconds:
-                client.abort(session_id)
-                _emit(listener, "budget", {"reason": "wall_clock"})
-                return
-            last_event = time.monotonic()
-            etype = str(event.get("type") or event.get("event") or "")
-            payload = event.get("properties") or event.get("payload") or event
-            if "permission" in etype and isinstance(payload, dict):
-                permission_id = payload.get("id") or payload.get("permissionID")
-                if permission_id:
-                    try:
-                        client.respond_permission(session_id, str(permission_id), "once")
-                    except OpenCodeError:
-                        pass
-            if etype == "file.edited" and isinstance(payload, dict):
-                _emit(listener, "file_changed", {"path": payload.get("file")})
-            part = payload.get("part") if isinstance(payload, dict) else None
-            tool_name = ""
-            if isinstance(payload, dict):
-                tool_name = str(payload.get("name") or payload.get("tool") or "")
-            if isinstance(part, dict):
-                tool_name = tool_name or str(part.get("tool") or part.get("name") or "")
-            if tool_name:
-                _emit(listener, "tool", {"tool": tool_name, "raw_type": etype})
-            status = payload.get("status") if isinstance(payload, dict) else None
-            if isinstance(status, dict) and status.get("type") == "idle":
-                return
-            if "session.idle" in etype or etype.endswith(".idle"):
-                return
-            if "session.error" in etype:
-                _emit(listener, "error", {"detail": str(payload)})
-                return
-            if time.monotonic() - last_event > 90 and time.monotonic() > idle_deadline:
-                return
-    except OpenCodeError as exc:
-        if cancel.is_set():
-            _emit(listener, "stopped", {})
-            return
-        _emit(listener, "error", {"detail": exc.detail})
+        written, raw = complete_files(
+            engine_cwd, text, inspection, complete=complete, previous=previous,
+            conversation=conversation, retry_reason=retry_reason,
+        )
+    except (RuntimeError, OSError) as exc:
+        _emit(listener, "activity", {"detail": f"The model did not return usable files: {exc}"})
+        return [], ""
+    if not written:
+        _emit(listener, "activity", {"detail": "The model replied without file blocks."})
+        return [], raw
+    meta["model_commentary"] = reply_prose(raw) or fallback_explanation(written)
+    _save_meta(meta)
+    _emit(listener, "activity", {"detail": f"Wrote {written[0]}."})
+    return written, raw
+
+
+def _preview_failed_summary(detail: str, files: list[str]) -> str:
+    excerpt = " ".join((detail or "").split())[:400]
+    count = len(files)
+    noun = "file" if count == 1 else "files"
+    return (
+        f"I wrote {count} {noun}, but the in-app preview does not run. "
+        f"{excerpt} "
+        "This is not a finished UI. The original project is unchanged. "
+        "Keep only if you want these files anyway, or Discard."
+    )
+
+
+def _maybe_attach_preview(
+    meta: dict[str, Any],
+    candidate: Path,
+    listener: EventListener | None,
+    *,
+    start_preview_after: bool,
+) -> None:
+    """Start preview after apply, then record an honest compile check."""
+    if not start_preview_after or not (candidate / "package.json").exists():
+        return
+    if not _has_file_changes(Path(meta["baseline"]), candidate):
+        return
+    _emit(listener, "preview", {})
+    preview = start_preview(candidate, str(meta["project_id"]))
+    url = str(preview.get("url") or "").strip()
+    if preview.get("ok") and url:
+        health = check_preview_health(url, candidate)
+    else:
+        health = {
+            "ok": False,
+            "code": preview.get("code") or "preview_failed",
+            "detail": preview.get("detail") or "The preview did not start.",
+        }
+    if preview.get("ok") and not health.get("ok"):
+        preview = {
+            **preview,
+            "ok": False,
+            "code": health.get("code") or "vite_overlay",
+            "detail": health.get("detail") or "The preview does not run.",
+        }
+        if preview.get("pid"):
+            write_preview_record(preview)
+        _emit(listener, "activity", {
+            "detail": "The preview does not run. Files were written, but this is not a finished UI.",
+        })
+    meta["preview_health"] = {
+        "ok": bool(health.get("ok")),
+        "code": health.get("code"),
+        "detail": health.get("detail"),
+    }
+    if not health.get("ok"):
+        files = sorted(compute_delta(_frozen_baseline(Path(meta["baseline"])), index_tree(candidate)).touched())
+        meta["model_claim"] = meta.get("model_commentary")
+        meta["model_commentary"] = _preview_failed_summary(str(health.get("detail") or ""), files or ["the candidate"])
+    _save_meta(meta)
+
+
+def _frozen_baseline(before: Path) -> TreeIndex:
+    frozen = before.parent / "baseline.json"
+    if frozen.is_file():
+        return read_index(frozen)
+    return index_tree(before)
+
+
+def _has_file_changes(before: Path, after: Path) -> bool:
+    """True when the working copy differs from the request baseline."""
+    if not after.is_dir():
+        return False
+    if not before.is_dir() and not (before.parent / "baseline.json").is_file():
+        return False
+    return bool(compute_delta(_frozen_baseline(before), index_tree(after)).touched())
 
 
 def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
     meta = load_meta(project_id, request_id)
     baseline = Path(meta["baseline"])
     candidate = Path(meta["candidate"])
-    delta = compute_delta(index_tree(baseline), index_tree(candidate))
+    frozen = baseline.parent / "baseline.json"
+    before = read_index(frozen) if frozen.is_file() else index_tree(baseline)
+    delta = compute_delta(before, index_tree(candidate))
     diff = unified_diff(baseline, candidate)
     files = sorted(delta.touched())
+    commentary = str(meta.get("model_commentary") or "").strip() or None
     from local_coder.general.preview import read_preview
 
-    preview = read_preview() or {}
+    preview: dict[str, Any] = {}
+    current = read_preview() or {}
+    if files and current.get("project_id") == project_id and current.get("dir") == str(candidate):
+        preview = dict(current)
+    health = meta.get("preview_health") if isinstance(meta.get("preview_health"), dict) else None
+    if health and health.get("ok"):
+        preview_status = "ok"
+        if preview:
+            preview["ok"] = True
+    elif health:
+        preview_status = "failed"
+        preview = {
+            "ok": False,
+            "code": health.get("code") or "preview_failed",
+            "detail": health.get("detail") or "The preview does not run.",
+        }
+        commentary = _preview_failed_summary(str(health.get("detail") or ""), files)
+    elif not files:
+        preview_status = "not_run"
+    elif preview.get("ok"):
+        preview_status = "ok"
+    else:
+        preview_status = "not_run"
+    if files and preview_status == "failed":
+        summary = commentary or _preview_failed_summary("", files)
+    elif files:
+        summary = commentary or (
+            f"I changed {len(files)} file(s). Review the preview, then Keep or Discard."
+        )
+    elif commentary:
+        summary = (
+            "The model stopped after planning and did not write files. "
+            "The original project was not modified. Send the request again, "
+            "or ask for a smaller first step such as “Create src/App.tsx with a task list.”"
+        )
+    else:
+        summary = "No file changes were recorded. The original project was not modified."
     return {
         "kind": "code",
-        "engine": "opencode",
+        "engine": "local",
         "request_id": request_id,
         "episode_id": request_id,
         "preview": preview,
         "project_id": project_id,
         "repo_path": meta["user_path"],
-        "summary": (
-            f"Proposed changes in {len(files)} file(s). Review the preview and diff "
-            "before keeping them."
-            if files else
-            "No file changes were recorded. The original project was not modified."
-        ),
+        "summary": summary,
         "diff": diff,
         "facts": {
             "files": files,
             "delta": delta.as_dict(),
-            "complete": bool(files),
-            "engine": "opencode",
+            "complete": False,
+            "engine": "local",
             "model_id": meta.get("model_id"),
             "pin": meta.get("pin") or pin_record(),
         },
@@ -384,9 +488,9 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "typecheck": "not_run",
             "tests": "not_run",
             "browser": "not_run",
-            "preview": "unknown",
+            "preview": preview_status,
         },
-        "model_commentary": None,
+        "model_commentary": commentary,
         "accept_requires_confirmation": True,
     }
 

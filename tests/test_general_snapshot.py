@@ -17,14 +17,46 @@ def test_snapshot_includes_untracked_and_skips_node_modules(tmp_path):
     _write(src, "src/App.tsx", "export default function App() { return null }\n")
     _write(src, "notes.txt", "untracked note\n")
     _write(src, "node_modules/pkg/index.js", "secret-dep\n")
+    _write(src, "package-lock.json", "{}\n")
     _write(src, ".env", "TOKEN=1\n")
     dest = tmp_path / "snap"
     index = copy_snapshot(src, dest)
     assert "src/App.tsx" in index.files
     assert "notes.txt" in index.files
     assert "node_modules/pkg/index.js" not in index.files
+    assert "package-lock.json" not in index.files
     assert ".env" not in index.files
     assert not (dest / "node_modules").exists()
+
+
+def test_read_index_survives_later_hardlink_writes(tmp_path):
+    from local_coder.general.snapshot import clone_snapshot, read_index, write_index
+
+    src = tmp_path / "user"
+    _write(src, "src/App.tsx", "one\n")
+    baseline = tmp_path / "B"
+    live = tmp_path / "live"
+    copy_snapshot(src, baseline)
+    clone_snapshot(baseline, live)
+    write_index(tmp_path / "baseline.json", index_tree(baseline))
+    _write(live, "src/App.tsx", "two\n")
+    frozen = read_index(tmp_path / "baseline.json")
+    live_index = index_tree(live)
+    delta = compute_delta(frozen, live_index)
+    assert "src/App.tsx" in delta.touched()
+
+
+def test_clone_snapshot_duplicates_an_existing_snapshot(tmp_path):
+    from local_coder.general.snapshot import clone_snapshot
+
+    src = tmp_path / "user"
+    _write(src, "src/App.tsx", "export {}\n")
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    copy_snapshot(src, first)
+    index = clone_snapshot(first, second)
+    assert "src/App.tsx" in index.files
+    assert (second / "src" / "App.tsx").read_text(encoding="utf-8") == "export {}\n"
 
 
 def test_keep_applies_delta_and_preserves_unrelated_user_edit(tmp_path):
