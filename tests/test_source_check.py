@@ -11,12 +11,17 @@ def test_scan_text_flags_mismatched_type_quotes():
     assert any("quote" in item.lower() for item in problems)
 
 
-def test_scan_text_flags_smart_quotes_and_tsx_generics():
+def test_scan_text_flags_smart_quotes():
     text = (
         'const c: Record<Task["status"], number> = { todo: 0, “in-progress”: 0, done: 0 };\n'
     )
     problems = scan_text("src/App.tsx", text)
-    assert any("generic" in item.lower() or "quote" in item.lower() for item in problems)
+    assert any("quote" in item.lower() for item in problems)
+
+
+def test_scan_text_accepts_valid_typescript_generics():
+    text = 'const c: Record<Task["status"], number> = { todo: 0, "in-progress": 0, done: 0 };\n'
+    assert scan_text("src/App.tsx", text) == []
 
 
 def test_scan_text_accepts_plain_react():
@@ -37,8 +42,8 @@ def test_scan_changed_sources_reads_only_listed_files(tmp_path):
     assert not any("ok.tsx" in item for item in problems)
 
 
-def test_parse_retry_message_asks_for_js_friendly_files():
+def test_parse_retry_message_asks_for_straight_quotes():
     note = parse_retry_message(['src/App.tsx: mismatched quotes in a type'])
     assert "do not parse" in note.lower()
-    assert "generic" in note.lower()
+    assert "straight quotes" in note.lower()
     assert "src/App.tsx" in note

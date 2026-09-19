@@ -7,8 +7,10 @@ import signal
 import socket
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .llama_proxy import LlamaProxy
 from .model_identity import resolve_model_id, stale_mapping
@@ -82,7 +84,7 @@ def write_record(data: dict[str, Any]) -> None:
 def client_from_record(record: dict[str, Any] | None = None) -> OpenCodeClient:
     row = record or read_record()
     if not row:
-        raise EngineServerError("OpenCode server is not running.")
+        raise EngineServerError("The coding engine is not running.")
     return OpenCodeClient(str(row["url"]), "local-coder", ensure_secret())
 
 
@@ -109,20 +111,64 @@ class OpenCodeServer:
         self.url = ""
         self.port = 0
 
-    def start(self, *, wait_s: int = 30) -> dict[str, Any]:
+    def start(
+        self,
+        *,
+        wait_s: int = 90,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         """Start or reuse an owned server whose cwd is the candidate project."""
+
+        def progress(message: str) -> None:
+            if on_progress is not None and message.strip():
+                on_progress(message.strip())
+
         existing = read_record()
         if existing and _alive(int(existing.get("pid") or 0)):
             same_project = existing.get("project") == str(self.project_dir)
             same_model = existing.get("model_id") == self.model_id
-            if same_project and same_model and current_proxy() is not None:
+            if same_project and same_model:
                 self.url = str(existing["url"])
                 self.port = int(existing["port"])
-                return {"started": False, "url": self.url, "pid": existing["pid"],
-                        "reused": True, "pin": pin_record(), "model_id": self.model_id}
-            stop_owned()
+                try:
+                    self.client().health(timeout=2.0)
+                except Exception:
+                    progress("The previous coding engine was stale. Starting a fresh one.")
+                    stop_owned()
+                else:
+                    if current_proxy() is None:
+                        proxy_url = str(existing.get("proxy") or "")
+                        parsed = urlparse(proxy_url) if proxy_url else None
+                        port = int(parsed.port) if parsed and parsed.port else 0
+                        try:
+                            _start_proxy(
+                                self.llama_endpoint,
+                                self.model_id,
+                                context=self.context,
+                                output=self.output,
+                                store=ObservationStore(
+                                    data_root() / "tool-observations" / self.project_dir.name
+                                ),
+                                port=port,
+                            )
+                        except OSError:
+                            progress("Could not restore the model proxy. Starting a fresh coding engine.")
+                            stop_owned()
+                        else:
+                            progress("Reusing the warm coding engine.")
+                            return {"started": False, "url": self.url, "pid": existing["pid"],
+                                    "reused": True, "pin": pin_record(), "model_id": self.model_id}
+                    else:
+                        progress("Reusing the warm coding engine.")
+                        return {"started": False, "url": self.url, "pid": existing["pid"],
+                                "reused": True, "pin": pin_record(), "model_id": self.model_id}
+            else:
+                progress("Stopping the previous coding engine.")
+                stop_owned()
+        progress("Preparing the coding engine.")
         binary = ensure_pinned_binary()
         store = ObservationStore(data_root() / "tool-observations" / self.project_dir.name)
+        progress("Starting the local model proxy.")
         proxy = _start_proxy(
             self.llama_endpoint,
             self.model_id,
@@ -152,6 +198,7 @@ class OpenCodeServer:
             "--port", str(self.port),
             "--log-level", "WARN",
         ]
+        progress("Launching the coding engine process.")
         log_path().parent.mkdir(parents=True, exist_ok=True)
         with log_path().open("ab") as handle:
             self.proc = subprocess.Popen(
@@ -163,27 +210,34 @@ class OpenCodeServer:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-        deadline = time.monotonic() + wait_s
+        started_at = time.monotonic()
+        deadline = started_at + wait_s
         last_error = ""
+        last_tick = 0
+        progress("Waiting for the coding engine to become ready.")
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
                 stop_proxy()
                 raise EngineServerError(
-                    f"OpenCode {PINNED_VERSION} exited early (code {self.proc.returncode}). "
+                    f"The coding engine exited early (code {self.proc.returncode}). "
                     f"See {log_path()}."
                 )
+            elapsed = int(time.monotonic() - started_at)
+            if elapsed >= last_tick + 3:
+                last_tick = elapsed
+                progress(f"Still starting the coding engine… ({elapsed}s)")
             try:
-                health = self.client().health()
+                health = self.client().health(timeout=2.0)
             except Exception as exc:  # noqa: BLE001 — startup poll; failures are retried
                 last_error = str(exc)
                 time.sleep(0.25)
                 continue
-            effective = self.client().config()
+            effective = self.client().config(timeout=2.0)
             if stale_mapping(effective.get("model"), self.model_id):
                 self.stop()
                 stop_proxy()
                 raise EngineServerError(
-                    f"OpenCode registered {effective.get('model')!r} instead of "
+                    f"The coding engine registered {effective.get('model')!r} instead of "
                     f"{self.model_id!r}. Refusing to continue with a stale mapping."
                 )
             write_record({
@@ -198,6 +252,7 @@ class OpenCodeServer:
                 "home": str(engine_home()),
                 "started_ts": time.time(),
             })
+            progress("Coding engine is ready.")
             return {
                 "started": True,
                 "url": self.url,
@@ -210,14 +265,14 @@ class OpenCodeServer:
         self.stop()
         stop_proxy()
         raise EngineServerError(
-            f"OpenCode did not become healthy within {wait_s}s ({last_error}). See {log_path()}."
+            f"The coding engine did not become ready within {wait_s}s ({last_error}). See {log_path()}."
         )
 
     def client(self) -> OpenCodeClient:
         if not self.url:
             record = read_record()
             if not record:
-                raise EngineServerError("OpenCode server is not running.")
+                raise EngineServerError("The coding engine is not running.")
             self.url = str(record["url"])
         return OpenCodeClient(self.url, "local-coder", ensure_secret())
 
@@ -260,6 +315,7 @@ def _start_proxy(
     context: int = 32768,
     output: int = 2048,
     store: ObservationStore | None = None,
+    port: int = 0,
 ) -> LlamaProxy:
     global _PROXY
     stop_proxy()
@@ -271,7 +327,7 @@ def _start_proxy(
         policy=ContextPolicy(n_ctx=context, output_reserve=output),
         store=store,
     )
-    proxy.start()
+    proxy.start(port=port)
     _PROXY = proxy
     return proxy
 

@@ -32,8 +32,9 @@ from local_coder.general.snapshot import (
     unified_diff,
     write_index,
 )
-from local_coder.general.source_check import parse_retry_message, scan_changed_sources
+from local_coder.general.source_check import parse_retry_message
 from local_coder.general.starter import copy_starter
+from local_coder.general.toolchain import ensure_ts_preview
 from local_coder.machine import load_machine_config
 from local_coder.persistence import new_episode_id
 from local_coder.server import ServerError, server_status
@@ -127,6 +128,9 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
     copy_snapshot(baseline, candidate)
     if not live_candidate.is_dir():
         copy_snapshot(baseline, live_candidate)
+    # Candidate-only: Keep can persist SWC so Bonsai TypeScript compiles next time.
+    ensure_ts_preview(candidate)
+    ensure_ts_preview(live_candidate)
     write_index(root / "baseline.json", b_index)
     meta = {
         "request_id": request_id,
@@ -262,30 +266,27 @@ def run_general_request(
         from local_coder.general.chat_log import conversation_excerpt
 
         conversation = conversation_excerpt(folder)
-        written, raw = _apply_direct(
+        written, raw, problems = _apply_direct(
             engine_cwd, text, inspection, meta, listener, complete=fake_complete,
             conversation=conversation,
         )
         if not written and not cancel.is_set():
-            written, raw = _apply_direct(
+            reason = parse_retry_message(problems) if problems else None
+            written, raw, problems = _apply_direct(
                 engine_cwd, text, inspection, meta, listener,
                 complete=fake_complete, previous=raw, conversation=conversation,
+                retry_reason=reason,
             )
-        if written and not cancel.is_set():
-            problems = scan_changed_sources(engine_cwd, written)
-            if problems:
-                _emit(listener, "activity", {
-                    "detail": "The written files do not parse. Asking the model to fix them.",
-                })
-                written, raw = _apply_direct(
-                    engine_cwd, text, inspection, meta, listener,
-                    complete=fake_complete, previous=raw, conversation=conversation,
-                    retry_reason=parse_retry_message(problems),
-                )
         if not written:
-            meta["model_commentary"] = (
-                "The model was asked twice for files and did not return any."
-            )
+            if problems:
+                meta["model_commentary"] = (
+                    "The model wrote files the preview cannot compile, so they were not applied. "
+                    + problems[0]
+                )
+            else:
+                meta["model_commentary"] = (
+                    "The model was asked twice for files and did not return any."
+                )
             _save_meta(meta)
         if engine_cwd != candidate:
             copy_snapshot(engine_cwd, candidate)
@@ -319,24 +320,29 @@ def _apply_direct(
     previous: str | None = None,
     conversation: str = "",
     retry_reason: str | None = None,
-) -> tuple[list[str], str]:
+) -> tuple[list[str], str, list[str]]:
     """Write model file bodies onto the working copy."""
     _emit(listener, "activity", {"detail": "Asking the model to write the files now."})
     try:
-        written, raw = complete_files(
+        written, raw, problems = complete_files(
             engine_cwd, text, inspection, complete=complete, previous=previous,
             conversation=conversation, retry_reason=retry_reason,
         )
     except (RuntimeError, OSError) as exc:
         _emit(listener, "activity", {"detail": f"The model did not return usable files: {exc}"})
-        return [], ""
+        return [], "", []
+    if problems:
+        _emit(listener, "activity", {
+            "detail": "The model wrote files the preview cannot compile. They were not applied.",
+        })
+        return [], raw, problems
     if not written:
         _emit(listener, "activity", {"detail": "The model replied without file blocks."})
-        return [], raw
+        return [], raw, []
     meta["model_commentary"] = reply_prose(raw) or fallback_explanation(written)
     _save_meta(meta)
     _emit(listener, "activity", {"detail": f"Wrote {written[0]}."})
-    return written, raw
+    return written, raw, []
 
 
 def _preview_failed_summary(detail: str, files: list[str]) -> str:

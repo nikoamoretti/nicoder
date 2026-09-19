@@ -78,10 +78,10 @@ class LlamaProxy:
         host_s = host.decode("ascii") if isinstance(host, (bytes, bytearray)) else str(host)
         return f"http://{host_s}:{int(port)}"
 
-    def start(self) -> dict[str, Any]:
-        """Bind an ephemeral loopback port and serve in a daemon thread."""
+    def start(self, *, port: int = 0) -> dict[str, Any]:
+        """Bind a loopback port (0 = ephemeral) and serve in a daemon thread."""
         handler = _handler_for(self)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         return {"url": self.url, "upstream": self.upstream, "model": self.expected_model}

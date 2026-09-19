@@ -24,6 +24,8 @@ _SCRIPT_SRC = re.compile(
 _PREVIEW_ERROR_MARKERS = (
     "[plugin:vite:react-babel]",
     "plugin:vite:react-babel",
+    "[plugin:vite:react-swc]",
+    "plugin:vite:react-swc",
     "plugin:vite:",
     "failed to parse source",
     "internal server error",

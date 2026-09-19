@@ -33,7 +33,7 @@ CREATE = RequestBudget(
 )
 FOLLOW_UP = RequestBudget(
     kind="follow_up",
-    wall_seconds=10 * 60,
+    wall_seconds=20 * 60,
     max_generations=60,
     max_commands=120,
     max_output_bytes=1_000_000,

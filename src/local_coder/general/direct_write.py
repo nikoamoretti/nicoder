@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from local_coder.general.snapshot import EXCLUDE
+from local_coder.general.source_check import scan_text
 from local_coder.machine import load_machine_config
 from local_coder.server import ServerError, server_start
 
@@ -122,6 +123,15 @@ def fallback_explanation(written: list[str]) -> str:
     )
 
 
+def checked_blocks(raw: str) -> tuple[dict[str, str], list[str]]:
+    """Parse fenced files and list problems Vite cannot compile."""
+    files = parse_file_blocks(raw)
+    problems: list[str] = []
+    for rel, body in files.items():
+        problems.extend(scan_text(rel, body))
+    return files, problems
+
+
 def apply_files(root: Path, files: dict[str, str]) -> list[str]:
     """Write parsed files under root. Returns relative paths that were written."""
     written: list[str] = []
@@ -196,9 +206,8 @@ def implement_prompt(
         "For a web UI, also write src/App.css. Make it look finished: a real page "
         "background, a type scale, spacing, and cards or columns. Do not ship a "
         "row of default pills on a blank page. "
-        "In .tsx files, write JavaScript-friendly React. Avoid TypeScript generics "
-        "(Record<...>, useState<T>); they often fail the Vite/Babel preview. "
-        "Use straight quotes, not curly quotes.\n\n"
+        "Write real TypeScript when the project is TypeScript. Generics, typed "
+        "useState, and Record<...> are fine. Use straight quotes, not curly quotes.\n\n"
         "```src/App.tsx\n"
         "export default function App() {\n"
         "  return <main>…</main>\n"
@@ -217,7 +226,7 @@ def local_complete(prompt: str) -> str:
     """One non-streaming chat completion from the owned llama.cpp server."""
     cfg = load_machine_config()
     try:
-        server_start(cfg, wait_s=180)
+        server_start(cfg, wait_s=300)
     except ServerError:
         pass
     url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
@@ -271,14 +280,17 @@ def complete_files(
     previous: str | None = None,
     conversation: str = "",
     retry_reason: str | None = None,
-) -> tuple[list[str], str]:
-    """Ask the model once. Returns written paths and the raw reply."""
+) -> tuple[list[str], str, list[str]]:
+    """Ask the model once. Write only files the preview can compile."""
     prompt = implement_prompt(
         text, inspection, root, previous=previous, conversation=conversation,
         retry_reason=retry_reason,
     )
     raw = (complete or local_complete)(prompt)
-    return apply_files(root, parse_file_blocks(raw)), raw
+    files, problems = checked_blocks(raw)
+    if not files or problems:
+        return [], raw, problems
+    return apply_files(root, files), raw, []
 
 
 def implement_files(
@@ -292,7 +304,7 @@ def implement_files(
     retry_reason: str | None = None,
 ) -> list[str]:
     """Ask the model for files and write them under root."""
-    written, _raw = complete_files(
+    written, _raw, _problems = complete_files(
         root, text, inspection, complete=complete, previous=previous,
         conversation=conversation, retry_reason=retry_reason,
     )

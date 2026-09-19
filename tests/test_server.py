@@ -70,6 +70,7 @@ def test_start_status_stop_lifecycle(config_home, tmp_path, stub_binary, monkeyp
     record = json.loads((config_home / "server.json").read_text())
     assert record["pid"] == result["pid"]
     assert "--reasoning" in record["argv"] and "off" in record["argv"]
+    assert record["argv"][record["argv"].index("-c") + 1] == str(cfg.n_ctx)
     status = server_status(cfg)
     assert status == {"endpoint": cfg.endpoint, "owned": True, "running": True, "healthy": True,
                       "pid": result["pid"], "model_alias": "stub-model", "note": ""}

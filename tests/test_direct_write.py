@@ -4,6 +4,8 @@ from __future__ import annotations
 from local_coder.general.coordinator import run_general_request
 from local_coder.general.direct_write import (
     apply_files,
+    checked_blocks,
+    complete_files,
     fallback_explanation,
     implement_prompt,
     is_blank_starter,
@@ -24,6 +26,20 @@ export default function App() { return <h1>Board</h1> }
     assert "App.tsx" not in reply_prose(text)
     assert reply_prose("```src/App.tsx\nexport const App = () => null\n```\n") == ""
     assert "src/App.tsx" in fallback_explanation(["src/App.tsx"])
+
+
+def test_checked_blocks_rejects_the_kanban_tsx_error():
+    raw = """I rebuilt the board.
+
+```src/App.tsx
+const columns: Task["status'][] = ["todo", "in-progress", "done"];
+const c: Record<Task["status"], number> = { todo: 0, "in-progress": 0, done: 0 };
+export default function App() { return <main /> }
+```
+"""
+    files, problems = checked_blocks(raw)
+    assert "src/App.tsx" in files
+    assert problems
 
 
 def test_parse_file_blocks_reads_path_and_body():
@@ -104,7 +120,7 @@ def test_implement_prompt_covers_first_build_and_wrap(tmp_path):
     assert "electron/" in prompt
     assert "2-4 sentences" in prompt
     assert "App.css" in prompt
-    assert "generic" in prompt.lower()
+    assert "typescript" in prompt.lower()
     assert "only replace App.tsx" not in prompt.lower()
     retry = implement_prompt(
         "Build a task board",
@@ -195,3 +211,48 @@ def test_wrap_as_app_uses_same_apply_loop(tmp_path, monkeypatch):
     assert "electron/main.cjs" in result["facts"]["files"]
     assert "package.json" in result["facts"]["files"]
     assert not (user / "electron").exists()
+
+
+def test_complete_files_applies_valid_typescript_generics(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "src").mkdir()
+    body = (
+        'const counts: Record<Task["status"], number> = { todo: 0, "in-progress": 0, done: 0 };\n'
+        "export default function App(){return <main />}\n"
+    )
+
+    written, _raw, problems = complete_files(
+        root,
+        "Build a board",
+        {"name": "app", "languages": ["TypeScript"]},
+        complete=lambda _prompt: f"```src/App.tsx\n{body}```\n",
+    )
+    assert problems == []
+    assert written == ["src/App.tsx"]
+    assert "Record<Task" in (root / "src" / "App.tsx").read_text(encoding="utf-8")
+
+
+def test_complete_files_does_not_write_unparseable_tsx(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (root / "src" / "App.tsx").write_text(original, encoding="utf-8")
+
+    def complete(_prompt: str) -> str:
+        return (
+            "```src/App.tsx\n"
+            'const columns: Task["status\'][] = ["todo"];\n'
+            "export default function App(){return <main />}\n"
+            "```\n"
+        )
+
+    written, raw, problems = complete_files(
+        root, "Make the UI better", {"name": "app", "languages": ["TypeScript"]},
+        complete=complete,
+    )
+    assert written == []
+    assert problems
+    assert "status" in raw
+    assert (root / "src" / "App.tsx").read_text(encoding="utf-8") == original

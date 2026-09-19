@@ -60,6 +60,41 @@ def test_empty_file_reply_is_retried_once(tmp_path, monkeypatch):
     assert "hi" in (user / "src" / "App.tsx").read_text(encoding="utf-8")
 
 
+def test_unparseable_tsx_is_not_applied(tmp_path, monkeypatch):
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+
+    def complete(prompt: str) -> str:
+        prompts.append(prompt)
+        return (
+            "I rebuilt the board.\n\n"
+            "```src/App.tsx\n"
+            'const columns: Task["status\'][] = ["todo", "in-progress", "done"];\n'
+            'const c: Record<Task["status"], number> = { todo: 0, "in-progress": 0, done: 0 };\n'
+            "export default function App(){return <main />}\n"
+            "```\n"
+        )
+
+    result = run_general_request(
+        user,
+        "Make the UI better",
+        request_id="req-reject",
+        fake_complete=complete,
+        start_preview_after=False,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert len(prompts) == 2
+    assert "do not parse" in prompts[1].lower()
+    assert result["can_keep"] is False
+    assert result["facts"]["files"] == []
+    assert "cannot compile" in (result.get("model_commentary") or "").lower()
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
 def test_two_empty_file_replies_is_honest_stop(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LOCAL_CODER_CONFIG_DIR", str(tmp_path / "config"))

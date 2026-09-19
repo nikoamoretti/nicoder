@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -16,8 +17,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from . import __version__
 from . import accept as accept_mod
+from .catalog import entry_by_id, list_models
 from .config import CONFIG_FILENAME, EXAMPLE_TOML, RepoConfig, load_config
 from .controller import Controller, git_is_dirty, git_revision
 from .execution.isolated import IsolatedBackend, IsolationUnavailable
@@ -108,6 +112,10 @@ def load_prefs() -> dict[str, Any]:
     data.setdefault("recent_projects", [])
     data.setdefault("profile", DEFAULT_PROFILE)
     data.setdefault("engine", "general")
+    data["recent_projects"] = [
+        row for row in data["recent_projects"]
+        if isinstance(row, dict) and Path(str(row.get("path") or "")).expanduser().is_dir()
+    ]
     return data
 
 
@@ -131,6 +139,33 @@ def remember_project(repo: str | Path) -> dict[str, Any]:
     prefs["recent_projects"] = recent[:12]
     save_prefs(prefs)
     return prefs
+
+
+def start_chat(text: str, *, parent: str | Path | None = None) -> dict[str, Any]:
+    """Create a project from the first welcome message and remember it."""
+    from local_coder.general.inspect import inspect_project as general_inspect
+    from local_coder.general.starter import (
+        allocate_project_name,
+        create_project,
+        project_name_from_request,
+        projects_home,
+    )
+
+    request = text.strip()
+    if not request:
+        raise AppError("Write what you would like to build or change.", code="empty")
+    home = Path(parent).expanduser() if parent else projects_home()
+    home.mkdir(parents=True, exist_ok=True)
+    name = allocate_project_name(home, project_name_from_request(request))
+    dest = create_project(home, name)
+    remember_project(dest)
+    report = general_inspect(dest)
+    return {
+        "path": str(dest),
+        "name": dest.name,
+        "inspection": report,
+        "detail": f"Created {dest.name} in {home}.",
+    }
 
 
 def _count_by_suffix(root: Path, suffixes: tuple[str, ...], limit: int = 400) -> int:
@@ -319,13 +354,201 @@ def explain_request(path: str | Path, text: str) -> dict[str, Any]:
     else:
         names = ", ".join(sorted({str(row["path"]) for row in excerpts}))
         summary = f"These project files match the question: {names}. The excerpts below are the actual source."
+    from local_coder.general.chat_log import append_turn
+
+    append_turn(repo, "user", text.strip())
+    transcript = append_turn(repo, "assistant", summary)
     return {
         "kind": "explain",
         "summary": summary,
         "hits": excerpts,
         "status": observation.get("status"),
         "model_commentary": None,
+        "turns": transcript["turns"],
     }
+
+
+def chat_request(path: str | Path, text: str) -> dict[str, Any]:
+    """Answer an ordinary question with the local model. No canned replies."""
+    from local_coder.general.inspect import asked_to_see_ui
+
+    repo = Path(path).expanduser().resolve()
+    if not repo.is_dir():
+        raise AppError("That folder does not exist.")
+    question = text.strip()
+    if not question:
+        raise AppError("Write a question first.")
+    extra = ""
+    preview = None
+    if asked_to_see_ui(question):
+        preview, extra = _start_preview_note(repo)
+    from local_coder.general.chat_log import recent_messages
+
+    reply = _local_chat_completion(
+        question, repo, extra=extra, history=recent_messages(repo),
+    )
+    result = _chat_result(repo, question, reply)
+    if preview is not None:
+        result["preview"] = preview
+    return result
+
+
+def _start_preview_note(repo: Path) -> tuple[dict[str, Any] | None, str]:
+    """Start preview as an action. The model writes the user-facing reply."""
+    from local_coder.general.coordinator import project_id_for
+    from local_coder.general.preview import start_preview
+
+    if not (repo / "package.json").is_file():
+        return None, "There is no package.json, so a web preview could not be started."
+    preview = start_preview(repo, project_id_for(repo))
+    url = str(preview.get("url") or "").strip()
+    if url:
+        return preview, f"A web preview is running at {url}."
+    detail = str(preview.get("detail") or "The preview did not start.")
+    return preview, f"The preview did not start: {detail}"
+
+
+def _project_brief(repo: Path) -> str:
+    """Compact facts the chat model (and shortcuts) can rely on."""
+    from local_coder.general.inspect import inspect_project
+
+    inspection = inspect_project(repo)
+    lines = [
+        f"Project name: {inspection.get('name')}",
+        f"Project folder: {repo}",
+        f"Languages: {', '.join(inspection.get('languages') or []) or 'unknown'}",
+        f"Summary: {inspection.get('summary') or 'n/a'}",
+    ]
+    package = repo / "package.json"
+    if package.is_file():
+        try:
+            data = json.loads(package.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        scripts = data.get("scripts") if isinstance(data, dict) else {}
+        deps = data.get("dependencies") if isinstance(data, dict) else {}
+        lines.append(f"package.json name: {data.get('name') if isinstance(data, dict) else 'n/a'}")
+        if isinstance(scripts, dict) and scripts:
+            lines.append("npm scripts: " + ", ".join(sorted(scripts)))
+        if isinstance(deps, dict) and deps:
+            lines.append("dependencies: " + ", ".join(sorted(deps)[:12]))
+        lines.append(
+            "This is a Local Coder web project folder (typically React/Vite). "
+            "It is not a separate Mac .app. The running UI is opened with the in-app preview."
+        )
+        missing = _missing_web_files(repo)
+        if missing:
+            lines.append("Missing web entry files: " + ", ".join(missing))
+    return "\n".join(lines)
+
+
+def _missing_web_files(repo: Path) -> list[str]:
+    """Entry files a Vite starter needs before a preview can show UI."""
+    needed = ("src/main.tsx", "src/App.tsx")
+    return [name for name in needed if not (repo / name).is_file()]
+
+
+def _chat_result(repo: Path, question: str, reply: str) -> dict[str, Any]:
+    from local_coder.general.chat_log import append_turn
+
+    append_turn(repo, "user", question)
+    transcript = append_turn(repo, "assistant", reply)
+    return {
+        "kind": "chat",
+        "summary": reply,
+        "hits": [],
+        "model_commentary": reply,
+        "status": "answered",
+        "turns": transcript["turns"],
+    }
+
+
+def load_project_chat(path: str | Path) -> dict[str, Any]:
+    """Return the saved chat transcript for a project folder."""
+    from local_coder.general.chat_log import load_chat
+
+    repo = Path(path).expanduser().resolve()
+    if not repo.is_dir():
+        raise AppError("That folder does not exist.")
+    return load_chat(repo)
+
+
+def clear_project_chat(path: str | Path) -> dict[str, Any]:
+    """Clear the saved chat transcript for a project folder."""
+    from local_coder.general.chat_log import clear_chat
+
+    repo = Path(path).expanduser().resolve()
+    if not repo.is_dir():
+        raise AppError("That folder does not exist.")
+    return clear_chat(repo)
+
+
+def _local_chat_completion(
+    question: str,
+    project_path: Path,
+    *,
+    extra: str = "",
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    """One short non-streaming chat completion from the owned local server."""
+    ensure_server(wait_s=300)
+    cfg = load_machine_config()
+    brief = _project_brief(project_path)
+    system = (
+        "You are Local Coder, a local coding assistant inside a Mac app. "
+        "You already have the project facts below — never claim you cannot see the "
+        "project folder, the user's screen, or the code path. "
+        "Use the recent conversation when the user refers to it. "
+        "Do not claim you forgot earlier messages in this session. "
+        "Answer like a person in a few sentences. Do not paste the fact list. "
+        "Do not dump package.json, npm scripts, or dependency names unless asked. "
+        "This project is edited inside Local Coder; the usual way to see the UI is the "
+        "web preview, not Dock/Spotlight. "
+        "Do not say the work must happen outside Local Coder. "
+        "Do not claim you edited files.\n\n"
+        f"{brief}"
+    )
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    for row in history or []:
+        role = str(row.get("role") or "")
+        content = str(row.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+    user = question.strip()
+    if extra.strip():
+        user = f"{user}\n\n({extra.strip()})"
+    messages.append({"role": "user", "content": user})
+    url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
+    payload = {
+        "model": cfg.model_alias,
+        "messages": messages,
+        "temperature": 0.3,
+        "max_tokens": min(512, int(cfg.max_tokens or 512)),
+        "stream": False,
+    }
+    try:
+        with httpx.Client(timeout=cfg.gen_timeout, trust_env=False, follow_redirects=False) as client:
+            response = client.post(url, json=payload)
+    except (httpx.HTTPError, OSError) as exc:
+        raise AppError(f"The local model did not answer: {exc}", code="chat") from exc
+    if response.status_code != 200:
+        raise AppError(f"The local model returned HTTP {response.status_code}.", code="chat")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise AppError("The local model returned an unreadable reply.", code="chat") from exc
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise AppError("The local model returned an empty reply.", code="chat")
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = ""
+    if isinstance(message, dict):
+        content = str(message.get("content") or "").strip()
+    if not content and isinstance(choices[0], dict):
+        content = str(choices[0].get("text") or "").strip()
+    if not content:
+        raise AppError("The local model returned an empty reply.", code="chat")
+    return content
 
 
 def prepare_project(path: str | Path, *, write_config: bool = False) -> dict[str, Any]:
@@ -355,17 +578,83 @@ def ensure_machine_config() -> dict[str, Any]:
     """Write machine config only when missing, using detected local defaults."""
     path = config_path()
     if path.exists():
-        cfg = load_machine_config()
+        cfg = apply_speed_defaults()
         return {"wrote": False, "path": str(path), "config": cfg.model_dump()}
     cfg = load_machine_config()
     written = write_machine_config(cfg)
     return {"wrote": True, "path": str(written), "config": cfg.model_dump()}
 
 
+def apply_speed_defaults() -> Any:
+    """Keep context modest and give the selected catalog model its generation budget."""
+    cfg = load_machine_config()
+    entry = None
+    for row in list_models(cfg).get("models") or []:
+        if row.get("selected"):
+            entry = entry_by_id(str(row.get("id") or ""))
+            break
+    updates: dict[str, Any] = {}
+    if entry is not None and cfg.n_ctx > entry.n_ctx:
+        updates["n_ctx"] = entry.n_ctx
+    elif cfg.n_ctx >= 32768:
+        alias = cfg.model_alias.lower()
+        updates["n_ctx"] = 8192 if "4b" in alias else 16384
+    if entry is not None:
+        if cfg.gen_timeout < entry.gen_timeout:
+            updates["gen_timeout"] = entry.gen_timeout
+        if cfg.max_tokens < entry.max_tokens:
+            updates["max_tokens"] = entry.max_tokens
+    if not updates:
+        return cfg
+    updated = cfg.model_copy(update=updates)
+    write_machine_config(updated)
+    if "n_ctx" in updates:
+        stop_owned_server()
+    return updated
+
+
+def select_model(model_id: str) -> dict[str, Any]:
+    """Switch the machine config to a catalog model. Does not start a server."""
+    apply_host_path()
+    entry = entry_by_id(model_id)
+    if entry is None:
+        raise AppError(f"Unknown model: {model_id}", code="unknown_model")
+    path = Path(entry.model_file).expanduser()
+    if not path.is_file():
+        raise AppError(f"{entry.name} is not installed on this Mac.", code="missing_model")
+    if not (shutil.which(entry.server_binary) or Path(entry.server_binary).expanduser().is_file()):
+        raise AppError(
+            f"The server for {entry.name} was not found ({entry.server_binary}).",
+            code="missing_binary",
+        )
+    stop_owned_server()
+    cfg = load_machine_config().model_copy(update={
+        "model_file": str(path.resolve()),
+        "model_alias": entry.model_alias,
+        "server_binary": entry.server_binary,
+        "n_ctx": entry.n_ctx,
+        "quantization": entry.quantization,
+        "max_tokens": entry.max_tokens,
+        "gen_timeout": entry.gen_timeout,
+    })
+    write_machine_config(cfg)
+    return {
+        "ok": True,
+        "selected": entry.id,
+        "config": cfg.model_dump(),
+        "catalog": list_models(cfg),
+        "detail": (
+            f"{entry.name} is selected. Open or create a project, then describe "
+            "what you want. The model loads while you do that."
+        ),
+    }
+
+
 def readiness() -> dict[str, Any]:
     """Prerequisites for ordinary app use. No model generation."""
     apply_host_path()
     cfg = load_machine_config()
+    catalog = list_models(cfg)
     rows = []
     blocking = []
     for name, ok, detail in machine_status(cfg):
@@ -383,8 +672,8 @@ def readiness() -> dict[str, Any]:
     })
     isolation = isolation_status()
     rows.append({"name": "isolated tests", "ok": isolation["ok"], "detail": isolation["detail"]})
-    if not isolation["ok"]:
-        blocking.append(str(isolation["detail"]))
+    # Ordinary use is the general engine. Docker isolation is only required for
+    # the legacy Python repair path, so a stopped Docker app is not a blocker.
     docker_app = Path("/Applications/Docker.app").exists()
     return {
         "ok": not blocking,
@@ -395,10 +684,13 @@ def readiness() -> dict[str, Any]:
         "docker_app_present": docker_app,
         "config_path": str(config_path()),
         "version": __version__,
+        "models": catalog["models"],
+        "selected_model": catalog["selected"],
+        "current_alias": catalog["current_alias"],
     }
 
 
-def ensure_server(*, wait_s: int = 90) -> dict[str, Any]:
+def ensure_server(*, wait_s: int = 300) -> dict[str, Any]:
     """Start the owned local model if needed. Never adopt a foreign server."""
     apply_host_path()
     cfg = load_machine_config()
@@ -706,6 +998,7 @@ class AppRuntime:
         self.started_server = False
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._emit_lock = threading.Lock()
         self.active_episode: str | None = None
         self.active_repo: str | None = None
         self.last_error: str | None = None
@@ -716,10 +1009,17 @@ class AppRuntime:
         self._listeners.append(listener)
 
     def _emit(self, event: dict[str, Any]) -> None:
-        progress = phrase_for_event(str(event.get("type", "")), event.get("data") or {})
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        mapped = phrase_for_event(str(event.get("type", "")), data or {})
+        existing = event.get("phrase")
+        progress = existing if isinstance(existing, str) and existing.strip() else mapped
         payload = {**event, "phrase": progress}
-        for listener in list(self._listeners):
-            listener(payload)
+        # Surface nested error detail for the Mac UI banner.
+        if event.get("type") == "app_error" and "detail" not in payload and data.get("detail"):
+            payload["detail"] = data["detail"]
+        with self._emit_lock:
+            for listener in list(self._listeners):
+                listener(payload)
 
     def start_request(self, repo: str, request: str, profile_name: str = DEFAULT_PROFILE,
                       execution: str | None = None, engine: str | None = None,

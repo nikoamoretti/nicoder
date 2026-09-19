@@ -2,8 +2,11 @@
 
 ## Product invariants
 
-1. **Default engine is general coding.** Ordinary app use is OpenCode plus
-   local llama.cpp, with New Project / preview / Keep / Discard. The old
+1. **Default engine is general coding.** Ordinary app use is Local Coder apply
+   plus local llama.cpp: classify talk / look / act, write files onto a
+   disposable candidate, then preview / Keep / Discard. Bonsai 2 27B is the
+   preferred local model when it is installed; do not steer ordinary use to
+   Qwen. OpenCode stays pinned but is not on the default path. The old
    eight-generation Python FIND/PATCH/CHECK/DONE loop is a legacy path only.
    General-engine budgets are request wall-clock and generation ceilings in
    `general/budgets.py`, not the old four-file span cap.

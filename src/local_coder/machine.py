@@ -15,6 +15,12 @@ from pydantic import BaseModel, ConfigDict
 CONFIG_DIR_ENV = "LOCAL_CODER_CONFIG_DIR"
 DEFAULT_MODEL = Path.home() / ".cache" / "local-coder" / "models" / "Qwen_Qwen3.5-4B-Q4_K_M.gguf"
 DEFAULT_MODEL_ALIAS = "Qwen3.5-4B-Q4_K_M"
+DEFAULT_BONSAI = (
+    Path.home() / "Models" / "Bonsai-demo" / "models" / "bonsai2-gguf" / "27B"
+    / "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+)
+DEFAULT_BONSAI_ALIAS = "Ternary-Bonsai-2-27B-PQ2_0"
+DEFAULT_BONSAI_SERVER = Path.home() / "Models" / "Bonsai-demo" / "bin" / "mac" / "llama-server"
 DEFAULT_ENDPOINT = "http://127.0.0.1:8080"
 DEFAULT_SERVER_BINARY = "llama-server"
 
@@ -46,14 +52,33 @@ def config_path() -> Path:
     return config_dir() / "config.toml"
 
 
+def _guess_installed_model() -> MachineConfig:
+    """Prefer Bonsai when the GGUF and PrismML server are already on this Mac.
+
+    Tests that override the config dir must not inherit this machine's models.
+    """
+    if not os.environ.get(CONFIG_DIR_ENV):
+        if DEFAULT_BONSAI.is_file() and DEFAULT_BONSAI_SERVER.is_file():
+            return MachineConfig(
+                model_file=str(DEFAULT_BONSAI),
+                model_alias=DEFAULT_BONSAI_ALIAS,
+                server_binary=str(DEFAULT_BONSAI_SERVER),
+                quantization="PQ2_0",
+                n_ctx=8192,
+                max_tokens=3072,
+                gen_timeout=600,
+            )
+    cfg = MachineConfig()
+    if DEFAULT_MODEL.exists():
+        return cfg.model_copy(update={"model_file": str(DEFAULT_MODEL)})
+    return cfg
+
+
 def load_machine_config() -> MachineConfig:
     """Load machine config; missing file yields defaults (model path guessed)."""
     path = config_path()
     if not path.exists():
-        cfg = MachineConfig()
-        if DEFAULT_MODEL.exists():
-            cfg = cfg.model_copy(update={"model_file": str(DEFAULT_MODEL)})
-        return cfg
+        return _guess_installed_model()
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:

@@ -1,4 +1,4 @@
-"""Cheap syntax checks for files the Vite/Babel preview must compile."""
+"""Cheap syntax checks for files the Vite preview must compile."""
 from __future__ import annotations
 
 import re
@@ -7,7 +7,6 @@ from pathlib import Path
 _SMART_QUOTES = frozenset("“”‘’")
 _WEB_SUFFIX = {".tsx", ".ts", ".jsx", ".js", ".css"}
 _MISMATCHED_INDEX = re.compile(r"""\["[^"\n]*'\]|\['[^'\n]*"\]""")
-_TSX_TYPE_GENERIC = re.compile(r":\s*[A-Za-z_]\w*\s*<\s*[A-Za-z_]\w*\s*\[")
 _PAIRS = {")": "(", "]": "[", "}": "{"}
 
 
@@ -18,8 +17,6 @@ def scan_text(rel: str, text: str) -> list[str]:
         problems.append(f"{rel}: curly/smart quotes that Vite cannot parse")
     if _MISMATCHED_INDEX.search(text):
         problems.append(f"{rel}: mismatched quotes in a type or index")
-    if rel.endswith(".tsx") and _TSX_TYPE_GENERIC.search(text):
-        problems.append(f"{rel}: TypeScript generic in .tsx that Babel often treats as JSX")
     if _unbalanced(text):
         problems.append(f"{rel}: unmatched brackets or braces")
     return problems
@@ -45,8 +42,7 @@ def parse_retry_message(problems: list[str]) -> str:
     listed = "\n".join(f"- {item}" for item in problems)
     return (
         "The files you wrote do not parse, so the preview cannot run. "
-        "Do not use TypeScript generics in .tsx (write JavaScript-friendly React, "
-        "or add a trailing comma inside generics). Use straight quotes, not curly quotes. "
+        "Use straight quotes, not curly quotes. TypeScript generics are fine. "
         f"Problems:\n{listed}\n"
         "Reply again with complete fenced files."
     )

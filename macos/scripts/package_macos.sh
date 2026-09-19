@@ -41,7 +41,7 @@ fi
 if [[ ! -d "$DURABLE_VENV" ]]; then
   "$PYTHON" -m venv "$DURABLE_VENV"
 fi
-"$DURABLE_VENV/bin/pip" install --upgrade "$WHEEL"
+"$DURABLE_VENV/bin/pip" install --upgrade --force-reinstall "$WHEEL"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$DURABLE_VENV/bin/local-coder" "$HOME/.local/bin/local-coder"
 

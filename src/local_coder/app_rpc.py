@@ -24,21 +24,28 @@ from .app_service import (
     AppError,
     AppRuntime,
     build_worker_image,
+    chat_request,
     classify_request,
+    clear_project_chat,
     discard_changes,
     ensure_machine_config,
+    ensure_server,
     explain_request,
     inspect_project,
     keep_changes,
     list_history,
     load_prefs,
+    load_project_chat,
     open_docker_desktop,
     readiness,
     remember_project,
     save_prefs,
+    select_model,
     snapshot,
+    start_chat,
     stop_owned_server,
 )
+from .catalog import list_models
 from .hostenv import apply_host_path
 from .profiles import DEFAULT_PROFILE
 
@@ -95,10 +102,22 @@ class RpcServer:
             return classify_request(params.get("text", ""), inspection)
         if method == "explain_request":
             return explain_request(params["path"], params["text"])
+        if method == "chat_request":
+            return chat_request(params["path"], params["text"])
+        if method == "load_chat":
+            return load_project_chat(params["path"])
+        if method == "clear_chat":
+            return clear_project_chat(params["path"])
         if method == "readiness":
             return readiness()
+        if method == "list_models":
+            return list_models()
+        if method == "select_model":
+            return select_model(str(params.get("id") or ""))
         if method == "ensure_machine":
             return ensure_machine_config()
+        if method == "ensure_server":
+            return ensure_server(wait_s=int(params.get("wait_s") or 300))
         if method == "prefs":
             return load_prefs()
         if method == "save_prefs":
@@ -132,6 +151,9 @@ class RpcServer:
             from local_coder.general.inspect import inspect_project as general_inspect
 
             return {"path": str(dest), "inspection": general_inspect(dest)}
+        if method == "start_chat":
+            parent = params.get("parent")
+            return start_chat(str(params.get("text") or ""), parent=parent)
         if method == "preview_start":
             from local_coder.general.coordinator import project_id_for
             from local_coder.general.preview import start_preview

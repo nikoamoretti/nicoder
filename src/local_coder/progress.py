@@ -27,12 +27,27 @@ _EVENT_PHRASES: tuple[tuple[str, str], ...] = (
     ("episode_created", "Inspecting the project."),
     ("resumed", "Continuing the previous request."),
     ("cancelled", "Stopped at your request."),
+    ("preparing", "Making a working copy of the project."),
+    ("model_starting", "Loading the local model. This can take a minute."),
+    ("engine_starting", "Starting the coding engine."),
+    ("prompt_sent", "The local model is writing code. This can take several minutes."),
+    ("preview", "Opening a preview."),
+    ("done", "Finished this attempt. Review the result."),
+    ("stopped", "Stopped."),
+    ("budget", "Reached the time or step limit for this request."),
 )
 
 
 def phrase_for_event(event_type: str, data: dict[str, Any] | None = None) -> str | None:
     """One user-facing sentence for a known event type, or None."""
     data = data or {}
+    if event_type == "engine_starting":
+        detail = str(data.get("detail") or "").strip()
+        if detail:
+            return detail
+        if data.get("reused"):
+            return "Reusing the coding engine."
+        return "Starting the coding engine."
     if event_type == "check_intent" and data.get("scope") == "baseline":
         return "Running the project's existing tests."
     if event_type == "check_completed" and data.get("scope") == "baseline":
@@ -46,6 +61,19 @@ def phrase_for_event(event_type: str, data: dict[str, Any] | None = None) -> str
         if status == "fail":
             return "The final check found a problem."
         return "The final check did not finish cleanly."
+    if event_type in {"activity", "tool"}:
+        detail = str(data.get("detail") or "").strip()
+        if detail:
+            return detail
+        tool = str(data.get("tool") or "a tool")
+        return f"Using {tool}."
+    if event_type == "working":
+        last = str(data.get("last") or "Waiting for the next update.")
+        return f"Still working — {data.get('elapsed_s', 0)} seconds so far. {last}"
+    if event_type == "file_changed":
+        return f"Changed {data.get('path') or 'a file'}."
+    if event_type in {"error", "app_error"}:
+        return str(data.get("detail") or "Something went wrong.")
     if event_type == "handoff_written":
         outcome = data.get("outcome")
         if outcome == "solved":

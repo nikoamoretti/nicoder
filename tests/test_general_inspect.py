@@ -47,6 +47,8 @@ def test_classify_web_and_search_box_are_code():
     kind = classify_request("add a search box", {"supported": True, "exists": True, "languages": ["Python"]})
     assert kind["kind"] == "code"
     assert classify_request("Build a polished task-board web app")["kind"] == "code"
+    assert classify_request("Can you make this a standalone mac app?")["kind"] == "code"
+    assert classify_request("is this a React project?")["kind"] == "chat"
 
 
 def test_legacy_inspect_and_classify_still_refuse_javascript(tmp_path):

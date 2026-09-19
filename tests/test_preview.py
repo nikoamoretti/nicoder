@@ -8,6 +8,16 @@ import httpx
 from local_coder.general.preview import check_preview_health, preview_error_from_response
 
 
+def test_preview_error_from_swc_overlay():
+    body = (
+        "[plugin:vite:react-swc] /candidate/src/App.tsx: Unexpected token\n"
+        'const columns: Task["status\'][] = ["todo"];\n'
+    )
+    detail = preview_error_from_response(200, body)
+    assert detail is not None
+    assert "react-swc" in detail
+
+
 def test_preview_error_from_babel_overlay():
     body = (
         "[plugin:vite:react-babel] /candidate/src/App.tsx: Unexpected token, expected \";\"\n"

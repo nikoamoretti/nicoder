@@ -35,13 +35,13 @@ class OpenCodeClient:
             follow_redirects=False,
         )
 
-    def health(self) -> dict[str, Any]:
+    def health(self, *, timeout: float | None = None) -> dict[str, Any]:
         """GET /global/health, falling back to /health on older builds."""
         try:
-            return self._json("GET", "/global/health")
+            return self._json("GET", "/global/health", timeout=timeout)
         except OpenCodeError as exc:
             if exc.status == 404:
-                return self._json("GET", "/health")
+                return self._json("GET", "/health", timeout=timeout)
             raise
 
     def openapi(self) -> dict[str, Any]:
@@ -55,8 +55,8 @@ class OpenCodeClient:
         except ValueError as exc:
             raise OpenCodeError("openapi document was not JSON") from exc
 
-    def config(self) -> dict[str, Any]:
-        return self._json("GET", "/config")
+    def config(self, *, timeout: float | None = None) -> dict[str, Any]:
+        return self._json("GET", "/config", timeout=timeout)
 
     def providers(self) -> dict[str, Any]:
         return self._json("GET", "/provider")
@@ -132,8 +132,9 @@ class OpenCodeClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> Any:
-        with self._client() as client:
+        with self._client(timeout=timeout) as client:
             response = client.request(method, path, json=json, params=params)
         if response.status_code >= 400:
             raise OpenCodeError(
