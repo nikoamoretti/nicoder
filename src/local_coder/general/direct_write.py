@@ -5,30 +5,42 @@ still decide what lands in the user's folder.
 """
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from local_coder.general.harness import (
+    format_hashed,
+    header_kind,
+    iter_fences,
+    materialize,
+    parse_actions,
+    path_from_header,
+    read_files,
+    safe_rel,
+    strip_think,
+)
 from local_coder.general.snapshot import EXCLUDE
 from local_coder.general.source_check import scan_text
 from local_coder.machine import load_machine_config
 from local_coder.server import ServerError, server_start
 
-_FENCE = re.compile(r"```(?P<header>[^\n]*)\n(?P<body>.*?)```", re.S)
-_THINK = re.compile(r"<think>.*?</think>", re.S)
-_ALLOWED_SUFFIX = {".tsx", ".ts", ".css", ".jsx", ".js", ".html", ".cjs", ".mjs", ".json"}
-_ALLOWED_ROOTS = {"src", "electron", "public"}
-_ROOT_NAMES = {
-    "index.html",
-    "package.json",
-    "vite.config.ts",
-    "vite.config.js",
-    "electron-builder.json",
-    "electron-builder.yml",
-}
+# Re-export for tests and callers that imported these from here.
+__all__ = [
+    "apply_files",
+    "checked_blocks",
+    "complete_files",
+    "fallback_explanation",
+    "implement_files",
+    "implement_prompt",
+    "is_blank_starter",
+    "local_complete",
+    "parse_file_blocks",
+    "reply_prose",
+    "safe_rel",
+]
 
 
 def is_blank_starter(root: Path) -> bool:
@@ -45,52 +57,16 @@ def is_blank_starter(root: Path) -> bool:
     return "empty on purpose" in text or "<h1>new app</h1>" in text
 
 
-def safe_rel(rel: str) -> str | None:
-    """Return a project-relative path, or None if it is unsafe."""
-    cleaned = rel.strip().strip("`").replace("\\", "/")
-    while cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    if not cleaned:
-        return None
-    path = Path(cleaned)
-    if path.is_absolute() or ".." in path.parts:
-        return None
-    if any(part in EXCLUDE or part.endswith(".egg-info") for part in path.parts):
-        return None
-    suffix = path.suffix.lower()
-    if suffix not in _ALLOWED_SUFFIX and path.name not in _ROOT_NAMES:
-        return None
-    posix = path.as_posix()
-    if len(path.parts) == 1:
-        if posix in _ROOT_NAMES or suffix in {".html", ".css", ".ts", ".js", ".cjs", ".mjs", ".tsx", ".jsx"}:
-            return posix
-        return None
-    if path.parts[0] not in _ALLOWED_ROOTS:
-        return None
-    if suffix == ".json" and path.parts[0] != "electron":
-        return None
-    return posix
-
-
-def _path_from_header(header: str) -> str | None:
-    text = header.strip()
-    if not text:
-        return None
-    if ":" in text and "/" in text.split(":", 1)[-1]:
-        text = text.split(":", 1)[-1].strip()
-    for token in reversed(text.split()):
-        candidate = safe_rel(token)
-        if candidate:
-            return candidate
-    return safe_rel(text)
-
-
 def parse_file_blocks(text: str) -> dict[str, str]:
-    """Extract path → body from fenced blocks. Last block for a path wins."""
-    cleaned = _THINK.sub("", text or "")
+    """Extract path → body from write fences. Read/edit/shell blocks are ignored."""
     files: dict[str, str] = {}
-    for match in _FENCE.finditer(cleaned):
-        rel = _path_from_header(match.group("header") or "")
+    for match in iter_fences(strip_think(text or "")):
+        header = match.group("header") or ""
+        kind, rel = header_kind(header)
+        if kind != "write":
+            continue
+        if not rel:
+            rel = path_from_header(header)
         if not rel:
             continue
         body = match.group("body")
@@ -102,7 +78,7 @@ def parse_file_blocks(text: str) -> dict[str, str]:
 
 def reply_prose(text: str) -> str:
     """Plain-language text before the first file fence."""
-    cleaned = _THINK.sub("", text or "").strip()
+    cleaned = strip_think(text or "").strip()
     before = cleaned.split("```", 1)[0].strip()
     if len(before) < 24:
         return ""
@@ -124,7 +100,7 @@ def fallback_explanation(written: list[str]) -> str:
 
 
 def checked_blocks(raw: str) -> tuple[dict[str, str], list[str]]:
-    """Parse fenced files and list problems Vite cannot compile."""
+    """Parse write fences and list problems Vite cannot compile."""
     files = parse_file_blocks(raw)
     problems: list[str] = []
     for rel, body in files.items():
@@ -173,13 +149,14 @@ def implement_prompt(
     previous: str | None = None,
     conversation: str = "",
     retry_reason: str | None = None,
+    observations: str = "",
 ) -> str:
-    """Ask the model for complete files, not a plan."""
+    """Ask the model for write, edit, or read blocks. No shell."""
     app = ""
     app_path = root / "src" / "App.tsx"
     if app_path.is_file():
         try:
-            app = app_path.read_text(encoding="utf-8")[:1200]
+            app = format_hashed(app_path.read_text(encoding="utf-8"))
         except OSError:
             app = ""
     retry = ""
@@ -194,13 +171,28 @@ def implement_prompt(
             f"Previous reply:\n{previous[:2000]}\n\n"
         )
     convo = f"{conversation.strip()}\n\n" if conversation.strip() else ""
+    seen = f"Files you asked to read:\n{observations.strip()}\n\n" if observations.strip() else ""
     return (
         f"{retry}"
         "Implement the user's request now. "
         "Do not plan. Do not say the work must happen outside Local Coder. "
         "First write 2-4 sentences for the user: what changed and how the app "
         "looks or behaves now. No code, no file-path dump. "
-        "Then write complete files as fenced blocks. The fence header must be the path.\n"
+        "Then use only these blocks. No bash, no shell, no other tools.\n"
+        "Write a full file:\n"
+        "```src/App.tsx\n"
+        "export default function App() {\n"
+        "  return <main>…</main>\n"
+        "}\n"
+        "```\n"
+        "Or edit hashed lines (the 8 characters before |):\n"
+        "```edit src/App.tsx\n"
+        "-aaaaaaaa\n"
+        "+  return <h1>Board</h1>\n"
+        "```\n"
+        "Or read one file you were not shown:\n"
+        "```read src/App.css\n"
+        "```\n"
         "You may create or replace files under src/, electron/, public/, "
         "plus root files such as index.html or package.json. "
         "For a web UI, also write src/App.css. Make it look finished: a real page "
@@ -208,15 +200,11 @@ def implement_prompt(
         "row of default pills on a blank page. "
         "Write real TypeScript when the project is TypeScript. Generics, typed "
         "useState, and Record<...> are fine. Use straight quotes, not curly quotes.\n\n"
-        "```src/App.tsx\n"
-        "export default function App() {\n"
-        "  return <main>…</main>\n"
-        "}\n"
-        "```\n\n"
         f"Project: {inspection.get('name')}\n"
         f"Languages: {', '.join(inspection.get('languages') or []) or 'TypeScript'}\n"
         f"Existing files:\n{_tree_sketch(root)}\n\n"
-        f"Current src/App.tsx:\n{app}\n\n"
+        f"Current src/App.tsx (hash|line):\n{app}\n\n"
+        f"{seen}"
         f"{convo}"
         f"User request:\n{text.strip()}\n"
     )
@@ -236,8 +224,8 @@ def local_complete(prompt: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "You write complete source files for Local Coder. "
-                    "First a short plain-language summary, then fenced files. No plans."
+                    "You change files in Local Coder with write, edit, or read blocks. "
+                    "First a short plain-language summary. No plans. No shell."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -280,17 +268,42 @@ def complete_files(
     previous: str | None = None,
     conversation: str = "",
     retry_reason: str | None = None,
+    on_event: Callable[[str, str], None] | None = None,
 ) -> tuple[list[str], str, list[str]]:
-    """Ask the model once. Write only files the preview can compile."""
-    prompt = implement_prompt(
-        text, inspection, root, previous=previous, conversation=conversation,
-        retry_reason=retry_reason,
-    )
-    raw = (complete or local_complete)(prompt)
-    files, problems = checked_blocks(raw)
-    if not files or problems:
-        return [], raw, problems
-    return apply_files(root, files), raw, []
+    """Ask the model. Apply write/edit only when the preview can compile."""
+    generate = complete or local_complete
+    observations = ""
+    last_raw = ""
+    last_problems: list[str] = []
+    for turn in range(2):
+        prompt = implement_prompt(
+            text, inspection, root, previous=previous, conversation=conversation,
+            retry_reason=retry_reason, observations=observations,
+        )
+        raw = generate(prompt)
+        last_raw = raw
+        parsed = parse_actions(raw)
+        if parsed.writes or parsed.edits:
+            files, problems = materialize(root, parsed)
+            if problems or not files:
+                return [], raw, problems
+            written = apply_files(root, files)
+            if on_event:
+                for rel in written:
+                    on_event("edit" if rel not in parsed.writes else "write", rel)
+            return written, raw, []
+        if parsed.reads and turn == 0:
+            if on_event:
+                for rel in parsed.reads:
+                    on_event("read", rel)
+            observations = read_files(root, parsed.reads)
+            if observations:
+                previous = None
+                retry_reason = None
+                continue
+        last_problems = list(parsed.refused)
+        break
+    return [], last_raw, last_problems
 
 
 def implement_files(

@@ -3,8 +3,10 @@
 ## Product invariants
 
 1. **Default engine is general coding.** Ordinary app use is Local Coder apply
-   plus local llama.cpp: classify talk / look / act, write files onto a
-   disposable candidate, then preview / Keep / Discard. Bonsai 2 27B is the
+   plus local llama.cpp: classify talk / look / act, then a tiny Local Coder
+   harness (candidate-only read / write / hash-anchored edit, no host bash)
+   writes onto a disposable candidate, then preview / Keep / Discard. Do not
+   call Pi, Oh My Pi, or OpenCode on the default path. Bonsai 2 27B is the
    preferred local model when it is installed; do not steer ordinary use to
    Qwen. OpenCode stays pinned but is not on the default path. The old
    eight-generation Python FIND/PATCH/CHECK/DONE loop is a legacy path only.
@@ -49,6 +51,8 @@
 - `src/local_coder/accept.py` — single accept/discard implementation for CLI and app.
 - `src/local_coder/app_service.py` + `app_rpc.py` — structured Mac-app API
   (JSON-lines helper, no network server).
+- `src/local_coder/general/harness.py` — candidate-only read / write / hash-edit.
+  No host bash. No foreign agent CLI.
 - `macos/` — SwiftUI Local Coder.app. Do not add a web backend.
 
 ## Coding conventions

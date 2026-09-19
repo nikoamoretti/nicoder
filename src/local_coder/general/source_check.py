@@ -44,7 +44,7 @@ def parse_retry_message(problems: list[str]) -> str:
         "The files you wrote do not parse, so the preview cannot run. "
         "Use straight quotes, not curly quotes. TypeScript generics are fine. "
         f"Problems:\n{listed}\n"
-        "Reply again with complete fenced files."
+        "Reply again with write or edit blocks."
     )
 
 

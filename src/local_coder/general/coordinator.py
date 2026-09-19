@@ -324,9 +324,15 @@ def _apply_direct(
     """Write model file bodies onto the working copy."""
     _emit(listener, "activity", {"detail": "Asking the model to write the files now."})
     try:
+        def on_event(kind: str, detail: str) -> None:
+            if kind == "read":
+                _emit(listener, "activity", {"detail": f"Reading {detail}."})
+            elif kind == "edit":
+                _emit(listener, "activity", {"detail": f"Edited {detail}."})
+
         written, raw, problems = complete_files(
             engine_cwd, text, inspection, complete=complete, previous=previous,
-            conversation=conversation, retry_reason=retry_reason,
+            conversation=conversation, retry_reason=retry_reason, on_event=on_event,
         )
     except (RuntimeError, OSError) as exc:
         _emit(listener, "activity", {"detail": f"The model did not return usable files: {exc}"})
