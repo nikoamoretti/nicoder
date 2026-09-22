@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from . import __version__
+from . import BUILD_ID, __version__
 from . import accept as accept_mod
 from .catalog import entry_by_id, list_models
 from .config import CONFIG_FILENAME, EXAMPLE_TOML, RepoConfig, load_config
@@ -684,6 +684,7 @@ def readiness() -> dict[str, Any]:
         "docker_app_present": docker_app,
         "config_path": str(config_path()),
         "version": __version__,
+        "build_id": BUILD_ID,
         "models": catalog["models"],
         "selected_model": catalog["selected"],
         "current_alias": catalog["current_alias"],
@@ -1009,7 +1010,8 @@ class AppRuntime:
         self._listeners.append(listener)
 
     def _emit(self, event: dict[str, Any]) -> None:
-        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        raw_data = event.get("data")
+        data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
         mapped = phrase_for_event(str(event.get("type", "")), data or {})
         existing = event.get("phrase")
         progress = existing if isinstance(existing, str) and existing.strip() else mapped

@@ -3,8 +3,9 @@
 This directory is the native SwiftUI wrapper around the local engine.
 Ordinary use is: open **Local Coder.app**, start or open a project, describe
 a request, watch a preview, then keep or discard the change. The default
-engine is OpenCode plus local llama.cpp. The older Python-only repair loop
-is an advanced setting.
+engine is Local Coder apply plus local llama.cpp (Bonsai when installed).
+OpenCode is pinned but not used on that path. The older Python-only repair
+loop is an advanced setting.
 
 ## Build
 

@@ -20,6 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Any, TextIO
 
+from . import BUILD_ID, __version__
 from .app_service import (
     AppError,
     AppRuntime,
@@ -92,7 +93,7 @@ class RpcServer:
 
     def _call(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping":
-            return {"ok": True, "service": "local-coder-app"}
+            return {"ok": True, "service": "local-coder-app", "version": __version__, "build_id": BUILD_ID}
         if method == "inspect_project":
             report = inspect_project(params["path"])
             remember_project(report["path"]) if report.get("exists") else None

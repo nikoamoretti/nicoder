@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from local_coder.general.coordinator import (
+    MAX_CHECK_REPAIRS,
     _has_file_changes,
     discard_request,
     keep_request,
@@ -365,6 +366,161 @@ def test_unparseable_tsx_is_retried_once(tmp_path, monkeypatch):
     assert "hi" in (user / "src" / "App.tsx").read_text(encoding="utf-8")
 
 
+def test_broken_import_is_checked_then_repaired(tmp_path):
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+
+    def complete(prompt: str) -> str:
+        prompts.append(prompt)
+        if any("cannot resolve import" in item for item in prompts) and "cannot resolve import" in prompt:
+            return (
+                "I replaced the missing import with a heading.\n\n"
+                "```src/App.tsx\nexport default function App(){return <h1>Board</h1>}\n```\n"
+            )
+        if len(prompts) == 1:
+            return (
+                "```src/App.tsx\n"
+                'import { missing } from "./doesNotExist";\n'
+                "export default function App(){return <h1>Broken</h1>}\n"
+                "```\n"
+            )
+        return (
+            "I replaced the missing import with a heading.\n\n"
+            "```src/App.tsx\nexport default function App(){return <h1>Board</h1>}\n```\n"
+        )
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-import",
+        fake_complete=complete,
+        start_preview_after=False,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert len(prompts) >= 2
+    assert any("cannot resolve import" in item for item in prompts[1:])
+    candidate = request_dir(result["project_id"], "req-import") / "candidate" / "src" / "App.tsx"
+    assert "Board" in candidate.read_text(encoding="utf-8")
+    assert "doesNotExist" not in candidate.read_text(encoding="utf-8")
+    assert result["verification"]["typecheck"] == "pass"
+    assert result["facts"]["complete"] is False
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
+def test_blank_page_is_not_a_working_application(tmp_path, monkeypatch):
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "package.json").write_text('{"name":"app","scripts":{"dev":"vite"}}\n', encoding="utf-8")
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+
+    def complete(_prompt: str) -> str:
+        return (
+            "I left the starter in place.\n\n"
+            "```src/App.tsx\n"
+            "export default function App() {\n"
+            "  return (\n"
+            "    <main>\n"
+            "      <h1>New app</h1>\n"
+            "      <p>This starter is empty on purpose. Describe what you want to build.</p>\n"
+            "    </main>\n"
+            "  );\n"
+            "}\n"
+            "```\n"
+        )
+
+    monkeypatch.setattr(
+        "local_coder.general.coordinator.start_preview",
+        lambda project_dir, project_id, **_k: {
+            "ok": True, "url": "http://127.0.0.1:4198/", "dir": str(project_dir), "project_id": project_id,
+        },
+    )
+    monkeypatch.setattr(
+        "local_coder.general.coordinator.check_preview_health",
+        lambda *_a, **_k: {"ok": True, "code": "ok", "detail": "HTTP 200"},
+    )
+    result = run_general_request(
+        user,
+        "Build a task board",
+        request_id="req-blank",
+        fake_complete=complete,
+        start_preview_after=True,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert result["facts"]["complete"] is False
+    assert result["verification"]["page_mounted"] is False
+    assert result["verification"]["preview"] == "failed"
+    assert result["verification"]["behavior_verified"] is False
+    text = f"{result['summary']} {result.get('model_commentary') or ''}".lower()
+    assert "empty" in text or "does not run" in text or "starter" in text
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
+def test_repeated_check_failures_stop_inside_budget(tmp_path):
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+
+    def complete(_prompt: str) -> str:
+        prompts.append(_prompt)
+        return (
+            "```src/App.tsx\n"
+            'import { missing } from "./gone";\n'
+            "export default function App(){return <h1>Broken</h1>}\n"
+            "```\n"
+        )
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-loop",
+        fake_complete=complete,
+        start_preview_after=False,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert len(prompts) <= 1 + MAX_CHECK_REPAIRS
+    assert result["verification"]["stopped_incomplete"] is True
+    assert result["facts"]["complete"] is False
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
+def test_cancel_drops_late_model_output(tmp_path):
+    import threading
+
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    cancel = threading.Event()
+
+    def complete(_prompt: str) -> str:
+        cancel.set()
+        return "```src/App.tsx\nexport default function App(){return <h1>Late</h1>}\n```\n"
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-cancel",
+        fake_complete=complete,
+        start_preview_after=False,
+        cancel_event=cancel,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    candidate = request_dir(result["project_id"], "req-cancel") / "candidate" / "src" / "App.tsx"
+    assert "Late" not in candidate.read_text(encoding="utf-8")
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+    assert result["can_keep"] is False
+
+
 def test_prepare_recovery_does_not_mutate_historical(tmp_path):
     hist = tmp_path / "historical"
     (hist / "baseline" / "src").mkdir(parents=True)
@@ -389,3 +545,53 @@ def test_prepare_recovery_does_not_mutate_historical(tmp_path):
     assert copied.read_bytes() == app
     start = json.loads((Path(meta["baseline"]).parent / "recovery_start.json").read_text(encoding="utf-8"))
     assert "src/App.tsx" in start["files"]
+
+
+def test_build_failure_is_sent_back_for_repair(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCAL_CODER_CONFIG_DIR", str(tmp_path / "config"))
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+    builds = {"n": 0}
+
+    def fake_build(_root, **_k):
+        builds["n"] += 1
+        if builds["n"] == 1:
+            return {
+                "ran": True,
+                "ok": False,
+                "code": "build_failed",
+                "detail": "TS2305: Module '\"./types\"' has no exported member 'Column'.",
+            }
+        return {"ran": True, "ok": True, "code": "ok", "detail": "npm run build passed"}
+
+    monkeypatch.setattr("local_coder.general.candidate_check.run_project_build", fake_build)
+
+    def complete(prompt: str) -> str:
+        prompts.append(prompt)
+        if "TS2305" in prompt or "no exported member" in prompt:
+            return (
+                "I aligned TaskItem with the current Task type.\n\n"
+                "```src/App.tsx\nexport default function App(){return <h1>Board</h1>}\n```\n"
+            )
+        return (
+            "```src/App.tsx\nexport default function App(){return <h1>Broken types</h1>}\n```\n"
+        )
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-build",
+        fake_complete=complete,
+        start_preview_after=False,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert any("TS2305" in item or "no exported member" in item for item in prompts[1:])
+    candidate = request_dir(result["project_id"], "req-build") / "candidate" / "src" / "App.tsx"
+    assert "Board" in candidate.read_text(encoding="utf-8")
+    assert result["verification"]["build"] == "pass"
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original

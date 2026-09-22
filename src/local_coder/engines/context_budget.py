@@ -111,6 +111,13 @@ class RequestAccounting:
     estimated: bool = False
 
 
+def policy_for_runtime(*, n_ctx: int, output_reserve: int) -> ContextPolicy:
+    """Policy for the served model. Callers must pass the real window, not a larger one."""
+    if n_ctx <= 0:
+        raise ValueError("n_ctx must be a positive runtime context size")
+    return ContextPolicy(n_ctx=n_ctx, output_reserve=max(1, int(output_reserve)))
+
+
 class ContextBudgetError(Exception):
     """The request cannot be dispatched without overflowing the runtime context."""
 

@@ -1,0 +1,28 @@
+{
+  "kind": "continuation_baseline",
+  "not_from_scratch": true,
+  "project": "/Users/nico-yardlogix/Local Coder Projects/task-board-3",
+  "project_id": "task-board-3-c233e27c2678",
+  "engine": "local",
+  "model_alias": "Ternary-Bonsai-2-27B-PQ2_0",
+  "n_ctx": 8192,
+  "max_tokens": 3072,
+  "helper_version": "0.4.0",
+  "build_id": "20260922-check-repair",
+  "initial_behavior": {
+    "three_columns": true,
+    "column_labels": ["Todo", "In Progress", "Done"],
+    "add_form_present": true,
+    "add_uses_module_level_vars": true,
+    "search": false,
+    "localStorage": false,
+    "edit_title": false,
+    "seeded_cards_in_source": ["Welcome", "Start building", "Review code"]
+  },
+  "files": {
+    "src/App.tsx": "a127a2f35d4ee5b0fcccbc63e313621aecff4f65485171151008106c3dd71e97",
+    "src/TaskBoard.tsx": "ac6ade9386157abbf1ba6b684d351cb5f0e049adb209942da0ad512942a89270",
+    "src/TaskItem.tsx": "002ea3afbefce1e5e93d90ac37c0674b4451eca80bec3f45ee3af831e54ba807",
+    "src/types.ts": "30ed95032b8d42ed41aaed20653f9cdd33ce61d7626df3338c8f1e3625ecc196"
+  }
+}

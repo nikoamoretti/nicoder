@@ -5,6 +5,7 @@ still decide what lands in the user's folder.
 """
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -170,8 +171,14 @@ def implement_prompt(
             "Reply again with fenced files only.\n"
             f"Previous reply:\n{previous[:2000]}\n\n"
         )
-    convo = f"{conversation.strip()}\n\n" if conversation.strip() else ""
-    seen = f"Files you asked to read:\n{observations.strip()}\n\n" if observations.strip() else ""
+    convo_raw = conversation.strip()
+    if len(convo_raw) > 2500:
+        convo_raw = "(earlier turns omitted)\n" + convo_raw[-2200:]
+    convo = f"{convo_raw}\n\n" if convo_raw else ""
+    seen_raw = observations.strip()
+    if len(seen_raw) > 3000:
+        seen_raw = seen_raw[:3000] + "\n(observation truncated; use another read for the rest)"
+    seen = f"Files you asked to read:\n{seen_raw}\n\n" if seen_raw else ""
     return (
         f"{retry}"
         "Implement the user's request now. "
@@ -212,26 +219,53 @@ def implement_prompt(
 
 def local_complete(prompt: str) -> str:
     """One non-streaming chat completion from the owned llama.cpp server."""
+    from dataclasses import replace
+
+    from local_coder.engines.context_budget import (
+        LlamaCppTokenizer,
+        account,
+        policy_for_runtime,
+        resolve_output_limit,
+    )
+
     cfg = load_machine_config()
     try:
         server_start(cfg, wait_s=300)
     except ServerError:
         pass
+    system = (
+        "You change files in Local Coder with write, edit, or read blocks. "
+        "First a short plain-language summary. No plans. No shell."
+    )
+    max_tokens = max(256, int(cfg.max_tokens or 2048))
+    body: dict[str, Any] = {
+        "model": cfg.model_alias,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
+    }
+    policy = policy_for_runtime(n_ctx=int(cfg.n_ctx), output_reserve=max_tokens)
+    requested_out, _out_source = resolve_output_limit(body, policy)
+    policy = replace(policy, output_reserve=requested_out)
+    counter = LlamaCppTokenizer(cfg.endpoint)
+    measured = account(body, counter, policy)
+    if not measured.allowed:
+        label = "estimated" if measured.estimated or counter.labeled == "estimate" else "counted"
+        raise RuntimeError(
+            f"This request does not fit the local model context ({label}: "
+            f"input {measured.input_tokens} + output {policy.output_reserve} + "
+            f"margin {policy.safety_margin} vs n_ctx {policy.n_ctx}). "
+            "The context window was not increased."
+        )
     url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": cfg.model_alias,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You change files in Local Coder with write, edit, or read blocks. "
-                    "First a short plain-language summary. No plans. No shell."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
+        "messages": body["messages"],
         "temperature": 0.2,
-        "max_tokens": max(256, int(cfg.max_tokens or 2048)),
+        "max_tokens": requested_out,
         "stream": False,
     }
     try:
@@ -269,6 +303,7 @@ def complete_files(
     conversation: str = "",
     retry_reason: str | None = None,
     on_event: Callable[[str, str], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[str], str, list[str]]:
     """Ask the model. Apply write/edit only when the preview can compile."""
     generate = complete or local_complete
@@ -276,17 +311,23 @@ def complete_files(
     last_raw = ""
     last_problems: list[str] = []
     for turn in range(2):
+        if cancel is not None and cancel.is_set():
+            return [], last_raw, ["cancelled"]
         prompt = implement_prompt(
             text, inspection, root, previous=previous, conversation=conversation,
             retry_reason=retry_reason, observations=observations,
         )
         raw = generate(prompt)
         last_raw = raw
+        if cancel is not None and cancel.is_set():
+            return [], raw, ["cancelled"]
         parsed = parse_actions(raw)
         if parsed.writes or parsed.edits:
             files, problems = materialize(root, parsed)
             if problems or not files:
                 return [], raw, problems
+            if cancel is not None and cancel.is_set():
+                return [], raw, ["cancelled"]
             written = apply_files(root, files)
             if on_event:
                 for rel in written:

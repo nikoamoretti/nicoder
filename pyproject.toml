@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "local-coder"
 version = "0.4.0"
-description = "Local coding application for a Mac. Default engine: OpenCode plus local llama.cpp."
+description = "Local coding application for a Mac. Default engine: Local Coder apply plus local llama.cpp."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }

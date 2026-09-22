@@ -21,16 +21,18 @@ _SCRIPT_SRC = re.compile(
     r"""<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']""",
     re.I,
 )
+_REL_IMPORT = re.compile(r"""(?:from|import)\s+['"](\.[^'"]+)['"]""")
+_VITE_JSON_MESSAGE = re.compile(r'"message"\s*:\s*"((?:\\.|[^"\\])*)"')
 _PREVIEW_ERROR_MARKERS = (
-    "[plugin:vite:react-babel]",
+    "[plugin:vite:",
     "plugin:vite:react-babel",
-    "[plugin:vite:react-swc]",
     "plugin:vite:react-swc",
-    "plugin:vite:",
     "failed to parse source",
     "internal server error",
-    "vite-error-overlay",
-    "unexpected token",
+)
+_HTML_OVERLAY_MARKERS = (
+    "<vite-error-overlay",
+    "</vite-error-overlay>",
 )
 
 
@@ -100,9 +102,16 @@ def start_preview(project_dir: Path, project_id: str, *, wait_s: int = 45) -> di
     """Start `npm run dev` in the candidate, bound to a stable loopback port."""
     existing = read_preview()
     if existing and _alive(int(existing.get("pid") or 0)):
-        if existing.get("project_id") == project_id and existing.get("dir") == str(project_dir):
-            return {"started": False, **existing}
+        url = str(existing.get("url") or "").strip()
+        same = existing.get("project_id") == project_id and existing.get("dir") == str(project_dir)
+        if same and existing.get("ok") and url:
+            health = check_preview_health(url, project_dir)
+            if health.get("ok"):
+                return {"started": False, **existing, "preview_health": health}
         stop_preview()
+        freed = time.monotonic() + 4
+        while time.monotonic() < freed and _port_open(PREVIEW_HOST, project_port(project_id)):
+            time.sleep(0.2)
     port = project_port(project_id)
     if _port_open(PREVIEW_HOST, port):
         return {
@@ -183,12 +192,26 @@ def _http_ok(url: str) -> bool:
         return False
 
 
-def preview_error_from_response(status: int, body: str) -> str | None:
+def preview_error_from_response(
+    status: int,
+    body: str,
+    *,
+    content_type: str = "",
+    url: str = "",
+) -> str | None:
     """Return an error excerpt when Vite/Babel failed, else None."""
     text = body or ""
     if status >= 400:
         return _error_excerpt(text) or f"HTTP {status}"
+    if _is_vite_internal(url):
+        if _looks_like_html(text, content_type):
+            return "The Vite client script returned HTML, so the page cannot mount."
+        return None
+    if _looks_like_html(text, content_type) and _looks_like_module_url(url):
+        return "A preview module returned HTML instead of JavaScript, so the page cannot mount."
     lowered = text.lower()
+    if any(marker in lowered for marker in _HTML_OVERLAY_MARKERS):
+        return _error_excerpt(text)
     if any(marker in lowered for marker in _PREVIEW_ERROR_MARKERS):
         return _error_excerpt(text)
     return None
@@ -211,9 +234,11 @@ def check_preview_health(
         page = _get(http, url)
         if page is None:
             return {"ok": False, "code": "preview_unreachable", "detail": "The preview did not answer."}
-        error = preview_error_from_response(page.status_code, page.text)
-        if error:
-            return {"ok": False, "code": "vite_overlay", "detail": error}
+        page_error = preview_error_from_response(
+            page.status_code, page.text, content_type=page.headers.get("content-type", ""), url=url,
+        )
+        if page_error:
+            return {"ok": False, "code": "vite_overlay", "detail": page_error}
         targets = _entry_urls(url, page.text, project_dir)
         deadline = time.monotonic() + max(0.0, wait_s)
         while True:
@@ -223,11 +248,22 @@ def check_preview_health(
                 if response is None:
                     failed = {"ok": False, "code": "preview_unreachable", "detail": f"No response from {target}."}
                     break
-                error = preview_error_from_response(response.status_code, response.text)
+                error = preview_error_from_response(
+                    response.status_code,
+                    response.text,
+                    content_type=response.headers.get("content-type", ""),
+                    url=target,
+                )
                 if error:
-                    failed = {"ok": False, "code": "vite_overlay", "detail": error}
+                    code = "vite_client_html" if "cannot mount" in error else "vite_overlay"
+                    failed = {"ok": False, "code": code, "detail": error}
                     break
             if failed is None:
+                if client is None:
+                    html = _headless_dom(url)
+                    mount_error = page_mount_from_html(html) if html else None
+                    if mount_error:
+                        return {"ok": False, "code": "empty_root", "detail": mount_error}
                 return {"ok": True, "code": "ok", "detail": "Preview modules loaded."}
             if time.monotonic() >= deadline:
                 return failed
@@ -250,9 +286,7 @@ def _entry_urls(base: str, html: str, project_dir: Path | None) -> list[str]:
     for match in _SCRIPT_SRC.finditer(html or ""):
         urls.append(urljoin(base, match.group(1)))
     if project_dir is not None:
-        for rel in ("src/main.tsx", "src/main.jsx", "src/App.tsx", "src/App.jsx"):
-            if (project_dir / rel).is_file():
-                urls.append(urljoin(base, "/" + rel))
+        urls.extend(_reachable_src_urls(base, project_dir))
     seen: set[str] = set()
     unique: list[str] = []
     for item in urls:
@@ -261,6 +295,60 @@ def _entry_urls(base: str, html: str, project_dir: Path | None) -> list[str]:
         seen.add(item)
         unique.append(item)
     return unique or [urljoin(base, "/src/App.tsx")]
+
+
+def _reachable_src_urls(base: str, project_dir: Path) -> list[str]:
+    """Entry modules plus relative imports. Unused broken files stay out of this fetch."""
+    stack = [
+        rel for rel in ("src/main.tsx", "src/main.jsx", "src/main.ts", "src/App.tsx", "src/App.jsx")
+        if (project_dir / rel).is_file()
+    ]
+    seen: set[str] = set()
+    urls: list[str] = []
+    while stack and len(seen) < 24:
+        rel = stack.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        urls.append(urljoin(base, "/" + rel))
+        for child in _imported_rels(project_dir, rel):
+            if child not in seen:
+                stack.append(child)
+    return urls
+
+
+def _imported_rels(project_dir: Path, rel: str) -> list[str]:
+    path = project_dir / rel
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    found: list[str] = []
+    base = path.parent
+    root = project_dir.resolve()
+    for spec in _REL_IMPORT.findall(text):
+        dest = (base / spec)
+        resolved: Path | None = None
+        if dest.is_file():
+            resolved = dest
+        else:
+            for suffix in (".tsx", ".ts", ".jsx", ".js"):
+                candidate = Path(str(dest) + suffix)
+                if candidate.is_file():
+                    resolved = candidate
+                    break
+            if resolved is None and dest.is_dir():
+                for index in ("index.tsx", "index.ts", "index.jsx", "index.js"):
+                    if (dest / index).is_file():
+                        resolved = dest / index
+                        break
+        if resolved is None:
+            continue
+        try:
+            found.append(resolved.resolve().relative_to(root).as_posix())
+        except ValueError:
+            continue
+    return found
 
 
 def _get(client: httpx.Client, url: str) -> httpx.Response | None:
@@ -274,8 +362,88 @@ def _get(client: httpx.Client, url: str) -> httpx.Response | None:
 
 
 def _error_excerpt(body: str) -> str:
+    match = _VITE_JSON_MESSAGE.search(body or "")
+    if match:
+        try:
+            raw = bytes(match.group(1), "utf-8").decode("unicode_escape")
+        except UnicodeDecodeError:
+            raw = match.group(1).replace("\\n", "\n")
+        compact = " ".join(raw.split())
+        if compact:
+            return compact[:400]
     compact = " ".join((body or "").split())
     return compact[:400]
+
+
+def _looks_like_html(body: str, content_type: str = "") -> bool:
+    ctype = (content_type or "").lower()
+    if "text/html" in ctype:
+        return True
+    stripped = (body or "").lstrip().lower()
+    return stripped.startswith("<!doctype html") or stripped.startswith("<html")
+
+
+def _is_vite_internal(url: str) -> bool:
+    path = urlparse(url or "").path
+    return (
+        path == "/@vite/client"
+        or path.startswith("/@id/")
+        or path.startswith("/@react-refresh")
+        or "/node_modules/" in path
+        or path.startswith("/@fs/")
+    )
+
+
+def page_mount_from_html(html: str | None) -> str | None:
+    """Return why a rendered page is not mounted, or None when #root has content."""
+    text = html or ""
+    if not text.strip():
+        return "The preview page did not render."
+    lowered = text.lower()
+    if "<vite-error-overlay" in lowered:
+        return _error_excerpt(text) or "The preview showed a Vite error overlay."
+    if re.search(r'<div id=["\']root["\']>\s*</div>', text, re.I):
+        return "The preview page root is empty, so this is not a working application."
+    return None
+
+
+def _headless_dom(url: str) -> str | None:
+    """Render the loopback preview in Chrome. None when Chrome cannot run."""
+    parsed = urlparse(url)
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return None
+    chrome = _chrome_bin()
+    if chrome is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--virtual-time-budget=4000",
+                "--dump-dom",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout or None
+
+
+def _chrome_bin() -> str | None:
+    mac = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if mac.is_file():
+        return str(mac)
+    return _which("google-chrome") or _which("chromium") or _which("chrome")
+
+
+def _looks_like_module_url(url: str) -> bool:
+    path = urlparse(url or "").path.lower()
+    return path.endswith((".tsx", ".ts", ".jsx", ".js", ".mjs"))
 
 
 def _which(name: str) -> str | None:

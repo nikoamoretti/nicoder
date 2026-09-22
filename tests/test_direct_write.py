@@ -256,3 +256,34 @@ def test_complete_files_does_not_write_unparseable_tsx(tmp_path):
     assert problems
     assert "status" in raw
     assert (root / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
+def test_local_complete_refuses_when_request_exceeds_n_ctx(tmp_path, monkeypatch):
+    from local_coder.engines.context_budget import ConservativeEstimator
+    from local_coder.general import direct_write
+    from local_coder.machine import MachineConfig
+
+    monkeypatch.setattr(
+        direct_write,
+        "load_machine_config",
+        lambda: MachineConfig(n_ctx=8192, max_tokens=3072, model_alias="Ternary-Bonsai-2-27B-PQ2_0"),
+    )
+    monkeypatch.setattr(direct_write, "server_start", lambda *_a, **_k: None)
+    def fake_count(self, text: str) -> int:
+        self.labeled = "estimate"
+        return ConservativeEstimator().count(text)
+
+    monkeypatch.setattr(
+        "local_coder.engines.context_budget.LlamaCppTokenizer.count",
+        fake_count,
+    )
+
+    huge = "x" * 20000
+    try:
+        direct_write.local_complete(huge)
+    except RuntimeError as exc:
+        assert "does not fit" in str(exc)
+        assert "8192" in str(exc)
+        assert "not increased" in str(exc)
+    else:
+        raise AssertionError("expected a context refusal")

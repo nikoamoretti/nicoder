@@ -16,12 +16,21 @@ from local_coder.engines.context_budget import (
     account,
     flatten_request,
     gate_completion,
+    policy_for_runtime,
     prepare_chat_request,
     resolve_output_limit,
 )
 from local_coder.engines.model_identity import ModelIdentityError, resolve_model_id, stale_mapping
 from local_coder.engines.observations import ClipPolicy, ObservationStore, clip_text, message_text
 from local_coder.machine import MachineConfig
+
+
+def test_policy_for_runtime_uses_the_served_window():
+    policy = policy_for_runtime(n_ctx=8192, output_reserve=3072)
+    assert policy.n_ctx == 8192
+    assert policy.output_reserve == 3072
+    assert policy.max_input_tokens() == 8192 - 3072 - policy.safety_margin
+    assert policy.n_ctx < 32768
 
 
 def _tool_message(text: str, tool: str = "bash", call_id: str = "call_1") -> dict:

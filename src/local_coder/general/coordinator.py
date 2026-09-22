@@ -18,7 +18,15 @@ from local_coder.engines.opencode_client import OpenCodeError
 from local_coder.engines.opencode_config import data_root
 from local_coder.engines.opencode_pin import pin_record
 from local_coder.engines.opencode_server import client_from_record, read_record, stop_owned
-from local_coder.general.direct_write import complete_files, fallback_explanation, reply_prose
+from local_coder.general.budgets import RequestBudget, budget_for
+from local_coder.general.candidate_check import (
+    check_candidate,
+    check_retry_message,
+    empty_app_reason,
+    run_project_build,
+    write_verification,
+)
+from local_coder.general.direct_write import complete_files, fallback_explanation, local_complete, reply_prose
 from local_coder.general.inspect import classify_request, inspect_project
 from local_coder.general.notebook import update_notebook
 from local_coder.general.preview import check_preview_health, start_preview, stop_preview, write_preview_record
@@ -29,6 +37,7 @@ from local_coder.general.snapshot import (
     copy_snapshot,
     index_tree,
     read_index,
+    sync_source_tree,
     unified_diff,
     write_index,
 )
@@ -40,6 +49,31 @@ from local_coder.persistence import new_episode_id
 from local_coder.server import ServerError, server_status
 
 EventListener = Callable[[dict[str, Any]], None]
+MAX_CHECK_REPAIRS = 8
+
+
+class _GenerationLedger:
+    """Count live completions against the current request budget."""
+
+    def __init__(self, budget: RequestBudget) -> None:
+        self.budget = budget
+        self.started = time.time()
+        self.count = 0
+
+    def remaining_s(self) -> float:
+        return max(0.0, float(self.budget.wall_seconds) - (time.time() - self.started))
+
+    def can_generate(self) -> bool:
+        return self.count < int(self.budget.max_generations) and self.remaining_s() > 8
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "generations": self.count,
+            "elapsed_s": round(time.time() - self.started, 2),
+            "remaining_s": round(self.remaining_s(), 2),
+            "max_generations": self.budget.max_generations,
+            "wall_seconds": self.budget.wall_seconds,
+        }
 
 
 class GeneralError(Exception):
@@ -235,6 +269,7 @@ def run_general_request(
 
         return chat_request(folder, text)
     request_id = request_id or new_episode_id()
+    ledger = _GenerationLedger(budget_for(kind))
     try:
         model = resolve_model_id(model_id)
     except ModelIdentityError as exc:
@@ -248,8 +283,13 @@ def run_general_request(
     cancel = cancel_event or threading.Event()
     if fake_engine is not None:
         fake_engine(engine_cwd, text, cancel)
-        if engine_cwd != candidate:
-            copy_snapshot(engine_cwd, candidate)
+        _publish_candidate(engine_cwd, candidate)
+        if not cancel.is_set():
+            _verify_and_repair(
+                meta, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
+                complete=None, conversation="", start_preview_after=start_preview_after,
+                allow_repair=False,
+            )
     else:
         if fake_complete is None:
             _emit(listener, "model_starting", {})
@@ -266,19 +306,23 @@ def run_general_request(
         from local_coder.general.chat_log import conversation_excerpt
 
         conversation = conversation_excerpt(folder)
+        generate = _bound_complete(fake_complete or local_complete, ledger, cancel)
         written, raw, problems = _apply_direct(
-            engine_cwd, text, inspection, meta, listener, complete=fake_complete,
-            conversation=conversation,
+            engine_cwd, text, inspection, meta, listener, complete=generate,
+            conversation=conversation, cancel=cancel,
         )
-        if not written and not cancel.is_set():
+        if not written and not cancel.is_set() and ledger.can_generate():
             reason = parse_retry_message(problems) if problems else None
             written, raw, problems = _apply_direct(
                 engine_cwd, text, inspection, meta, listener,
-                complete=fake_complete, previous=raw, conversation=conversation,
-                retry_reason=reason,
+                complete=generate, previous=raw, conversation=conversation,
+                retry_reason=reason, cancel=cancel,
             )
         if not written:
-            if problems:
+            if cancel.is_set():
+                meta["model_commentary"] = "Stopped before files were applied."
+                meta["stopped_incomplete"] = True
+            elif problems:
                 meta["model_commentary"] = (
                     "The model wrote files the preview cannot compile, so they were not applied. "
                     + problems[0]
@@ -288,9 +332,17 @@ def run_general_request(
                     "The model was asked twice for files and did not return any."
                 )
             _save_meta(meta)
-        if engine_cwd != candidate:
-            copy_snapshot(engine_cwd, candidate)
-    _maybe_attach_preview(meta, candidate, listener, start_preview_after=start_preview_after)
+        _publish_candidate(engine_cwd, candidate)
+        if written and not cancel.is_set():
+            _verify_and_repair(
+                meta, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
+                complete=generate, conversation=conversation,
+                start_preview_after=start_preview_after, allow_repair=True,
+            )
+        elif start_preview_after:
+            _maybe_attach_preview(meta, candidate, listener, start_preview_after=start_preview_after)
+    meta["generation_ledger"] = ledger.snapshot()
+    _save_meta(meta)
     review = review_payload(meta["project_id"], request_id)
     from local_coder.general.chat_log import append_turn, load_chat
 
@@ -301,6 +353,172 @@ def run_general_request(
     review["turns"] = load_chat(folder)["turns"]
     _emit(listener, "done", {"request_id": request_id})
     return review
+
+
+def _bound_complete(
+    generate: Callable[[str], str],
+    ledger: _GenerationLedger,
+    cancel: threading.Event,
+) -> Callable[[str], str]:
+    """Count each model call against the request budget."""
+
+    def wrapped(prompt: str) -> str:
+        if cancel.is_set():
+            raise RuntimeError("cancelled")
+        if not ledger.can_generate():
+            raise RuntimeError("generation budget exhausted")
+        ledger.count += 1
+        return generate(prompt)
+
+    return wrapped
+
+
+def _verify_and_repair(
+    meta: dict[str, Any],
+    candidate: Path,
+    engine_cwd: Path,
+    text: str,
+    inspection: dict[str, Any],
+    listener: EventListener | None,
+    cancel: threading.Event,
+    ledger: _GenerationLedger,
+    *,
+    complete: Callable[[str], str] | None,
+    conversation: str,
+    start_preview_after: bool,
+    allow_repair: bool,
+) -> None:
+    """Check the candidate and, if needed, ask the model to fix it in this request."""
+    repairs = 0
+    while True:
+        if cancel.is_set():
+            meta["stopped_incomplete"] = True
+            _save_meta(meta)
+            return
+        verification = _record_verification(meta, candidate, listener, start_preview_after)
+        if verification.get("ok"):
+            return
+        if not allow_repair or complete is None:
+            meta["stopped_incomplete"] = True
+            _save_meta(meta)
+            return
+        if repairs >= MAX_CHECK_REPAIRS or not ledger.can_generate() or ledger.remaining_s() < 20:
+            meta["stopped_incomplete"] = True
+            verification["stopped_incomplete"] = True
+            meta["verification"] = verification
+            _save_meta(meta)
+            write_verification(Path(meta["baseline"]).parent, verification)
+            _emit(listener, "budget", {"detail": "Stopped after checking. The original project is unchanged."})
+            return
+        _emit(listener, "activity", {"detail": "Sending the check error back to the model."})
+        written, _raw, problems = _apply_direct(
+            engine_cwd, text, inspection, meta, listener, complete=complete,
+            conversation=conversation, retry_reason=check_retry_message(verification),
+            cancel=cancel,
+        )
+        repairs += 1
+        _publish_candidate(engine_cwd, candidate)
+        if cancel.is_set() or (not written and problems == ["cancelled"]):
+            meta["stopped_incomplete"] = True
+            _save_meta(meta)
+            return
+        if not written:
+            meta["stopped_incomplete"] = True
+            _save_meta(meta)
+            return
+
+
+def _record_verification(
+    meta: dict[str, Any],
+    candidate: Path,
+    listener: EventListener | None,
+    start_preview_after: bool,
+) -> dict[str, Any]:
+    """Run source/build/preview checks and persist evidence."""
+    _emit(listener, "check", {})
+    checks = check_candidate(candidate)
+    files = sorted(compute_delta(_frozen_baseline(Path(meta["baseline"])), index_tree(candidate)).touched())
+    preview_status = "not_run"
+    page_mounted = False
+    health: dict[str, Any] | None = None
+    needs_preview = bool(start_preview_after and (candidate / "package.json").exists() and files)
+    if not checks["source_ok"]:
+        health = {"ok": False, "code": "source_check", "detail": checks.get("detail") or "source check failed"}
+        preview_status = "failed"
+        meta["preview_health"] = health
+        meta["model_claim"] = meta.get("model_commentary")
+        meta["model_commentary"] = _preview_failed_summary(str(health["detail"]), files or ["the candidate"])
+    elif checks.get("empty_page"):
+        health = {"ok": False, "code": "empty_page", "detail": checks["empty_page"]}
+        preview_status = "failed"
+        meta["preview_health"] = health
+        meta["model_claim"] = meta.get("model_commentary")
+        meta["model_commentary"] = _preview_failed_summary(str(checks["empty_page"]), files or ["the candidate"])
+    elif needs_preview:
+        _maybe_attach_preview(meta, candidate, listener, start_preview_after=True)
+        stored = meta.get("preview_health") if isinstance(meta.get("preview_health"), dict) else None
+        health = stored
+        empty = empty_app_reason(candidate)
+        if stored and stored.get("ok") and empty:
+            health = {"ok": False, "code": "empty_page", "detail": empty}
+            meta["preview_health"] = health
+            meta["model_claim"] = meta.get("model_commentary")
+            meta["model_commentary"] = _preview_failed_summary(empty, files or ["the candidate"])
+            stored = health
+        if stored and stored.get("ok"):
+            preview_status = "ok"
+            page_mounted = True
+        elif stored:
+            preview_status = "failed"
+            health = stored
+        if (candidate / "node_modules").is_dir() and not (checks.get("build") or {}).get("ran"):
+            checks["build"] = run_project_build(candidate)
+    if checks.get("build", {}).get("ran") and not checks.get("build", {}).get("ok"):
+        if health is None or health.get("ok"):
+            health = {"ok": False, "code": "build_failed", "detail": checks["build"].get("detail")}
+            preview_status = "failed"
+            meta["preview_health"] = health
+            meta["model_claim"] = meta.get("model_commentary")
+            meta["model_commentary"] = _preview_failed_summary(str(health["detail"]), files or ["the candidate"])
+    build_status = "not_run"
+    if checks.get("build", {}).get("ran"):
+        build_status = "pass" if checks["build"].get("ok") else "fail"
+    ok = bool(
+        checks["source_ok"]
+        and not checks.get("empty_page")
+        and (not needs_preview or page_mounted)
+        and (build_status != "fail")
+    )
+    verification = {
+        "ok": ok,
+        "files_written": bool(files),
+        "build": build_status,
+        "typecheck": "pass" if checks["source_ok"] else "fail",
+        "tests": "not_run",
+        "browser": "not_run",
+        "preview": preview_status,
+        "page_mounted": page_mounted,
+        "behavior_verified": False,
+        "stopped_incomplete": False,
+        "detail": (health or {}).get("detail") or checks.get("detail") or "",
+        "source_problems": checks.get("source_problems") or [],
+        "build_detail": checks.get("build"),
+        "preview_health": health,
+    }
+    meta["verification"] = verification
+    _save_meta(meta)
+    write_verification(Path(meta["baseline"]).parent, verification)
+    return verification
+
+
+def _publish_candidate(engine_cwd: Path, candidate: Path) -> None:
+    """Copy live source onto the review candidate without wiping node_modules."""
+    if engine_cwd.resolve() == candidate.resolve():
+        return
+    if candidate.exists() and (candidate / "node_modules").is_dir():
+        sync_source_tree(engine_cwd, candidate)
+        return
+    copy_snapshot(engine_cwd, candidate)
 
 
 def _save_meta(meta: dict[str, Any]) -> None:
@@ -320,6 +538,7 @@ def _apply_direct(
     previous: str | None = None,
     conversation: str = "",
     retry_reason: str | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[str], str, list[str]]:
     """Write model file bodies onto the working copy."""
     _emit(listener, "activity", {"detail": "Asking the model to write the files now."})
@@ -333,11 +552,14 @@ def _apply_direct(
         written, raw, problems = complete_files(
             engine_cwd, text, inspection, complete=complete, previous=previous,
             conversation=conversation, retry_reason=retry_reason, on_event=on_event,
+            cancel=cancel,
         )
     except (RuntimeError, OSError) as exc:
         _emit(listener, "activity", {"detail": f"The model did not return usable files: {exc}"})
         return [], "", []
     if problems:
+        if "cancelled" in problems:
+            return [], raw, problems
         _emit(listener, "activity", {
             "detail": "The model wrote files the preview cannot compile. They were not applied.",
         })
@@ -475,6 +697,12 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         )
     else:
         summary = "No file changes were recorded. The original project was not modified."
+    stored: dict[str, Any] = {}
+    raw_verification = meta.get("verification")
+    if isinstance(raw_verification, dict):
+        stored = raw_verification
+    if stored.get("preview") in {"ok", "failed", "not_run"}:
+        preview_status = str(stored.get("preview") or preview_status)
     return {
         "kind": "code",
         "engine": "local",
@@ -496,11 +724,15 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         "can_keep": bool(files),
         "can_discard": True,
         "verification": {
-            "build": "not_run",
-            "typecheck": "not_run",
-            "tests": "not_run",
-            "browser": "not_run",
+            "build": stored.get("build") or "not_run",
+            "typecheck": stored.get("typecheck") or "not_run",
+            "tests": stored.get("tests") or "not_run",
+            "browser": stored.get("browser") or "not_run",
             "preview": preview_status,
+            "page_mounted": bool(stored.get("page_mounted")),
+            "behavior_verified": False,
+            "stopped_incomplete": bool(meta.get("stopped_incomplete") or stored.get("stopped_incomplete")),
+            "files_written": bool(files),
         },
         "model_commentary": commentary,
         "accept_requires_confirmation": True,

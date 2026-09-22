@@ -4,11 +4,10 @@ A local coding application for an Apple-silicon Mac. Open the app, start or
 open a project, describe what you want, watch a running preview, then keep or
 discard the result. The original files are not changed until you keep them.
 
-The default engine is OpenCode plus a local llama.cpp model. The older
-Python-only repair loop remains available as a legacy setting. The first
-verified local model (Qwen3.5-4B) can call tools and write files; it has not
-yet completed the required task-board demonstration. See
-[docs/general-coding-verification.md](docs/general-coding-verification.md).
+The default engine is Local Coder’s candidate-only read / write / hash-edit
+loop plus a local llama.cpp model (Bonsai 2 27B when that GGUF is installed).
+OpenCode remains pinned but is not on the ordinary path. The older Python
+FIND/PATCH/CHECK/DONE loop is a legacy setting.
 
 ## Open the Mac app
 

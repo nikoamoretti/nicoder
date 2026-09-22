@@ -168,6 +168,29 @@ def copy_snapshot(source: Path, dest: Path) -> TreeIndex:
     return index_tree(dest)
 
 
+def sync_source_tree(source: Path, dest: Path) -> TreeIndex:
+    """Copy source files onto dest without deleting dest-only dirs such as node_modules."""
+    dest.mkdir(parents=True, exist_ok=True)
+    incoming = {
+        str(full.relative_to(source)).replace("\\", "/"): full
+        for full in iter_source_files(source)
+    }
+    existing = {
+        str(full.relative_to(dest)).replace("\\", "/"): full
+        for full in iter_source_files(dest)
+    }
+    for rel in set(existing) - set(incoming):
+        try:
+            existing[rel].unlink(missing_ok=True)
+        except OSError:
+            continue
+    for rel, full in incoming.items():
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(full, target)
+    return index_tree(dest)
+
+
 def clone_snapshot(source: Path, dest: Path) -> TreeIndex:
     """Duplicate an existing snapshot quickly (hardlinks when the volume allows)."""
     if dest.exists():

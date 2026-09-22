@@ -114,3 +114,21 @@ def test_new_candidate_path_that_exists_in_user_tree_is_conflict(tmp_path):
     _write(user, "fresh.ts", "user\n")
     conflicts = find_conflicts(index_tree(baseline), index_tree(candidate), index_tree(user))
     assert any(row.path == "fresh.ts" for row in conflicts)
+
+
+def test_sync_source_tree_preserves_node_modules(tmp_path):
+    from local_coder.general.snapshot import sync_source_tree
+
+    source = tmp_path / "live"
+    dest = tmp_path / "candidate"
+    _write(source, "src/App.tsx", "updated\n")
+    _write(dest, "src/App.tsx", "old\n")
+    _write(dest, "src/gone.tsx", "remove me\n")
+    node = dest / "node_modules" / "pkg" / "index.js"
+    node.parent.mkdir(parents=True)
+    node.write_text("keep-dep\n", encoding="utf-8")
+    index = sync_source_tree(source, dest)
+    assert (dest / "src/App.tsx").read_text(encoding="utf-8") == "updated\n"
+    assert not (dest / "src/gone.tsx").exists()
+    assert node.read_text(encoding="utf-8") == "keep-dep\n"
+    assert "node_modules/pkg/index.js" not in index.files

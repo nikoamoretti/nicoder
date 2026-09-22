@@ -1,0 +1,47 @@
+[
+  {
+    "request_id": "ep-20260922-073937-604f",
+    "generation_ledger": {
+      "generations": 4,
+      "elapsed_s": 860.78,
+      "remaining_s": 339.22,
+      "max_generations": 120,
+      "wall_seconds": 1200
+    },
+    "stopped_incomplete": true,
+    "preview_code": "vite_overlay",
+    "page_mounted": false,
+    "build": "not_run",
+    "files_written": true,
+    "behavior_verified": false,
+    "detail": "import \"/node_modules/vite/dist/client/env.mjs\"; //#region \\0@oxc-project+runtime@0.99.0/helpers/typeof.js function _typeof(o) { \"@babel/helpers - typeof\"; return _typeof = \"function\" == typeof Symbol && \"symbol\" == typeof Symbol.iterator ? function(o$1) { return typeof o$1; } : "
+  },
+  {
+    "request_id": "ep-20260922-080239-51ee",
+    "generation_ledger": {
+      "generations": 3,
+      "elapsed_s": 767.07,
+      "remaining_s": 432.93,
+      "max_generations": 120,
+      "wall_seconds": 1200
+    },
+    "stopped_incomplete": true,
+    "preview_code": "build_failed",
+    "page_mounted": true,
+    "build": "fail",
+    "files_written": true,
+    "behavior_verified": false,
+    "detail": "> local-coder-app@0.0.0 build\n> tsc -b && vite build\n\nsrc/App.tsx(1,1): error TS6192: All imports in import declaration are unused.\nsrc/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/Ta"
+  },
+  {
+    "request_id": "ep-20260922-081807-faf7",
+    "generation_ledger": null,
+    "stopped_incomplete": false,
+    "preview_code": "vite_overlay",
+    "page_mounted": false,
+    "build": "fail",
+    "files_written": true,
+    "behavior_verified": false,
+    "detail": "<!DOCTYPE html> <html lang=\"en\"> <head> <meta charset=\"UTF-8\" /> <title>Error</title> <script type=\"module\"> const error = {\"message\":\" x The left-hand side of an assignment expression must be a variable or a property access.\\n ,-[/Users/nico-yardlogix/.local/share/local-coder/pr"
+  }
+]
