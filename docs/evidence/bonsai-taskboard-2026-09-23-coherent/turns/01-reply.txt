@@ -1,0 +1,6 @@
+The active target is the named import of `TaskItem` in `src/TaskBoard.tsx`, but `src/TaskItem.tsx` exports it as a default function. I'll change the import to a default import.
+
+```edit src/TaskBoard.tsx
+-b615e4b9
++import TaskItem from "./TaskItem";
+```

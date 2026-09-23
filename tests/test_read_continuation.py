@@ -124,7 +124,9 @@ def test_7d0e_reply_continues_to_an_edit_in_complete_files(tmp_path, monkeypatch
     )
     assert [item.kind for item in outcomes] == ["read", "applied"]
     assert "You asked to read src/App.tsx, src/TaskBoard.tsx, src/TaskItem.tsx, src/types.ts" in prompts[1]
-    assert "Already shown in full, so not repeated: src/TaskItem.tsx" in prompts[1]
+    assert "Already shown in full, so not repeated" not in prompts[1]
+    assert "This request includes" in prompts[1]
+    assert BROKEN_IMPORT in prompts[1] or line_hash(BROKEN_IMPORT) in prompts[1]
     assert f"{line_hash('export const TaskBoard = () => null;')}|" in prompts[1]
     assert written == ["src/TaskItem.tsx"]
 
@@ -188,9 +190,9 @@ def test_recorded_read_continues_to_an_applied_edit_in_complete_files(tmp_path, 
     assert "TS2779" in second and "Cannot find name 'next'" in second
     assert "You asked to read src/types.ts, src/TaskItem.tsx, src/App.tsx" in second
     assert "not applied" not in second
-    assert f"{line_hash('export interface Task {')}|export interface Task {{" in second
+    assert "Already shown in full, so not repeated" not in second
     assert f">{line_hash(item_lines[74])}|{item_lines[74]}" in second
-    assert f">{line_hash(app_lines[290])}|{app_lines[290]}" in second
+    assert "This request includes" in second
     assert all(len(prompt) <= prompt_budget_chars() for prompt in prompts)
     assert fixed in (root / "src" / "TaskItem.tsx").read_text(encoding="utf-8")
 
@@ -309,8 +311,11 @@ def test_repeated_identical_read_stops_only_after_the_first_read_was_served(tmp_
     assert [row["kind"] for row in meta["replies"]] == ["read", "repeat_read", "repeat_read"]
     assert meta["stop_reason"] == "no_progress"
     assert meta["generation_ledger"]["generations"] == 3
-    assert "already shown" in prompts[2]
+    assert "entire repository cannot be included" in prompts[2]
+    assert "Make a focused edit now" not in prompts[2]
     assert len(meta["checks"]) == 1
+    candidate = request_dir(result["project_id"], "req-repeat") / "candidate" / "src" / "TaskItem.tsx"
+    assert BROKEN_IMPORT in candidate.read_text(encoding="utf-8")
 
 
 def test_truncated_repair_reply_gets_feedback_then_can_recover(tmp_path, monkeypatch):

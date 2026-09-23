@@ -1,0 +1,6 @@
+The error is on line 75: `e.dataTransfer?.effectAllowed = "move";` — you can't assign to an optional property. The fix is to use a non-optional access since `dataTransfer` is guaranteed to exist in a `DragEvent` context.
+
+```edit src/TaskItem.tsx
+-a1096563
++e.dataTransfer.effectAllowed = "move";
+```

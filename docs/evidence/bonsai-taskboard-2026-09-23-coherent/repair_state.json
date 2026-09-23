@@ -1,0 +1,124 @@
+{
+  "goal": "Finish this task board so I can add tasks, edit their details, move them between the three columns, search them, and refresh the page without losing anything. Fix the existing errors and keep the interface clear and usable.",
+  "check": "build_failed",
+  "diagnostic": "> local-coder-app@0.0.0 build\n> tsc -b && vite build\n\nsrc/App.tsx(56,10): error TS6133: 'saveTasks' is declared but its value is never read.\nsrc/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.\nsrc/App.tsx(291,64): error TS2304: Cannot find name 'next'.\nsrc/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(2,26): error TS1484: 'Column' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(16,10): error TS6133: 'createTask' is declared but its value is never read.\nsrc/TaskBoard.tsx(62,25): error TS2304: Cannot find name 'useMemo'.\nsrc/TaskBoard.tsx(73,25): error TS2304: Cannot find name 'useMemo'.\nsrc/TaskBoard.tsx(80,7): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, Task[]>'.\nsrc/TaskBoard.tsx(92,9): error TS6133: 'handleStartEdit' is declared but its value is never read.\nsrc/TaskBoard.tsx(202,29): error TS7006: Parameter 'task' implicitly has an 'any' type.\nsrc/TaskBoard.tsx(214,21): error TS2322: Type '(id: string) => void' is not assignable to type '() => void'.\n  Target signature provides too few arguments. Expected 1 or more, but got 0.\nsrc/TaskItem.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskItem.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskItem.tsx(2,16): error TS6133: 'ColumnId' is declared but its value is never read.",
+  "hits": [
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 62,
+      "column": 25,
+      "message": "src/TaskBoard.tsx(62,25): error TS2304: Cannot find name 'useMemo'.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS2304"
+    },
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 73,
+      "column": 25,
+      "message": "src/TaskBoard.tsx(73,25): error TS2304: Cannot find name 'useMemo'.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS2304"
+    },
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 2,
+      "column": 10,
+      "message": "src/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS1484"
+    },
+    {
+      "rel": "src/TaskItem.tsx",
+      "line": 2,
+      "column": 10,
+      "message": "src/TaskItem.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+      "sha256": "546ce820f646dd1065bc0d6d7051a464cdc50ab446472909c2446df5a08d95b8",
+      "code": "TS1484"
+    },
+    {
+      "rel": "src/App.tsx",
+      "line": 291,
+      "column": 50,
+      "message": "src/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.",
+      "sha256": "dd8ea9b03667d85a7364eae2f2840b0f0c57eefa26c267f89f7dd68ed7e99f08",
+      "code": "TS7053"
+    },
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 80,
+      "column": 7,
+      "message": "src/TaskBoard.tsx(80,7): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, Task[]>'.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS7053"
+    },
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 202,
+      "column": 29,
+      "message": "src/TaskBoard.tsx(202,29): error TS7006: Parameter 'task' implicitly has an 'any' type.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS7006"
+    },
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 214,
+      "column": 21,
+      "message": "src/TaskBoard.tsx(214,21): error TS2322: Type '(id: string) => void' is not assignable to type '() => void'.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS2322"
+    },
+    {
+      "rel": "src/App.tsx",
+      "line": 56,
+      "column": 10,
+      "message": "src/App.tsx(56,10): error TS6133: 'saveTasks' is declared but its value is never read.",
+      "sha256": "dd8ea9b03667d85a7364eae2f2840b0f0c57eefa26c267f89f7dd68ed7e99f08",
+      "code": "TS6133"
+    },
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 16,
+      "column": 10,
+      "message": "src/TaskBoard.tsx(16,10): error TS6133: 'createTask' is declared but its value is never read.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS6133"
+    },
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 92,
+      "column": 9,
+      "message": "src/TaskBoard.tsx(92,9): error TS6133: 'handleStartEdit' is declared but its value is never read.",
+      "sha256": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+      "code": "TS6133"
+    }
+  ],
+  "excerpts": [
+    "src/App.tsx (352 lines, sha256 dd8ea9b03667)\nc5385408|import { useState, useMemo } from \"react\";\nd9a7116f|import \"./App.css\";\n\u2026 (282 lines not shown)\nbd14c58d|                        <button\ndafe242a|                          className=\"task-move\"\n3c48ba37|                          onClick={() => {\n0aca3a6e|                            const next = COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length];\n621a1537|                            moveTaskToColumn(task.id, next);\n373fd447|                          }}\n>4f64880b|                          aria-label={`Move to ${COLUMN_LABELS[next]}`}\n34c9c752|                        >\nfb26f50e|                          &#10095;\n05a3a7fc|                        </button>\n\u2026 (58 lines not shown)"
+  ],
+  "source_identity": {
+    "src/TaskBoard.tsx": "f0a35612c0a12e28f3cbaee4058ef02878037be3336afc217b45ddf2e96b11d5",
+    "src/TaskItem.tsx": "546ce820f646dd1065bc0d6d7051a464cdc50ab446472909c2446df5a08d95b8",
+    "src/App.tsx": "dd8ea9b03667d85a7364eae2f2840b0f0c57eefa26c267f89f7dd68ed7e99f08"
+  },
+  "changed_since": "src/TaskItem.tsx changed",
+  "candidate_id": "329d84c64256012a",
+  "stale": false,
+  "active": [
+    {
+      "rel": "src/App.tsx",
+      "line": 291,
+      "column": 50,
+      "message": "src/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.",
+      "sha256": "dd8ea9b03667d85a7364eae2f2840b0f0c57eefa26c267f89f7dd68ed7e99f08",
+      "code": "TS7053"
+    },
+    {
+      "rel": "src/App.tsx",
+      "line": 291,
+      "column": 64,
+      "message": "src/App.tsx(291,64): error TS2304: Cannot find name 'next'.",
+      "sha256": "dd8ea9b03667d85a7364eae2f2840b0f0c57eefa26c267f89f7dd68ed7e99f08",
+      "code": "TS2304"
+    }
+  ]
+}

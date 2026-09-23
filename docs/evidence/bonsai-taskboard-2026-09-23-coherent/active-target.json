@@ -1,0 +1,71 @@
+{
+  "check": {
+    "ok": false,
+    "build": {
+      "ran": true,
+      "ok": false,
+      "code": "build_failed",
+      "detail": "> local-coder-app@0.0.0 build\n> tsc -b && vite build\n\nsrc/App.tsx(56,10): error TS6133: 'saveTasks' is declared but its value is never read.\nsrc/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.\nsrc/App.tsx(291,64): error TS2304: Cannot find name 'next'.\nsrc/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(2,26): error TS1484: 'Column' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(3,10): error TS2614: Module '\"./TaskItem\"' has no exported member 'TaskItem'. Did you mean to use 'import TaskItem from \"./TaskItem\"' instead?\nsrc/TaskBoard.tsx(16,10): error TS6133: 'createTask' is declared but its value is never read.\nsrc/TaskBoard.tsx(62,25): error TS2304: Cannot find name 'useMemo'.\nsrc/TaskBoard.tsx(73,25): error TS2304: Cannot find name 'useMemo'.\nsrc/TaskBoard.tsx(80,7): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, Task[]>'.\nsrc/TaskBoard.tsx(92,9): error TS6133: 'handleStartEdit' is declared but its value is never read.\nsrc/TaskBoard.tsx(202,29): error TS7006: Parameter 'task' implicitly has an 'any' type.\nsrc/TaskItem.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskItem.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskItem.tsx(2,16): error TS6133: 'ColumnId' is declared but its value is never read.\nsrc/TaskItem.tsx(75,9): error TS2779: The left-hand side of an assignment expression may not be an optional property access."
+    },
+    "detail_head": "> local-coder-app@0.0.0 build\n> tsc -b && vite build\n\nsrc/App.tsx(56,10): error TS6133: 'saveTasks' is declared but its value is never read.\nsrc/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.\nsrc/App.tsx(291,64): error TS2304: Cannot find name 'next'.\nsrc/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(2,26): error TS1484: 'Column' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.\nsrc/TaskBoard.tsx(3,10): error TS2614: Module '\"./TaskItem\"' has no exported member 'TaskItem'. Did you mean to use 'import TaskItem from \"./TaskItem\"' instead?\nsrc/TaskBoard.tsx(16,10): error TS6133: 'createTask' is declared but its value is never read.\nsrc/TaskBoard.tsx(62,25): error TS2304: Cannot find name 'useMemo'.\nsrc/TaskBoard.tsx(73,25): error TS2304: Cannot find name 'useMemo'.\nsrc/TaskBoard.tsx(80,7): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, Task[]>'.\nsrc/TaskBoard.tsx(92,9): error TS6133: 'handleStartEdit' is declared but its value is never read.\nsrc/TaskBoard.tsx(202,29): error TS7006: Parameter '"
+  },
+  "active": [
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 3,
+      "code": "TS2614",
+      "message": "src/TaskBoard.tsx(3,10): error TS2614: Module '\"./TaskItem\"' has no exported member 'TaskItem'. Did you mean to use 'import TaskItem from \"./TaskItem\"' instead?"
+    }
+  ],
+  "hit_count": 12,
+  "source_identity": {
+    "src/TaskBoard.tsx": "6cda2e039230a2e59427f22d8fac9591cdda417074564579d10a704d899a239b",
+    "src/TaskItem.tsx": "63d6a6ef285d7943d07811ea378be8e7a0d90e43009f240f3c10a24b214eb7cb",
+    "src/App.tsx": "dd8ea9b03667d85a7364eae2f2840b0f0c57eefa26c267f89f7dd68ed7e99f08"
+  },
+  "candidate_id": "87ed55930126457e",
+  "shown_ranges": {
+    "src/TaskBoard.tsx": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "src/TaskItem.tsx": [
+      1,
+      2,
+      3,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33
+    ]
+  },
+  "prompt_chars": 7834,
+  "prompt_budget_chars": 9916,
+  "fits_budget": true,
+  "n_ctx": 8192,
+  "max_tokens": 3072,
+  "model_alias": "Ternary-Bonsai-2-27B-PQ2_0"
+}

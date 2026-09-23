@@ -63,7 +63,9 @@ def test_unused_noise_does_not_displace_blocking_errors(tmp_path):
     prompt = implement_prompt("Finish the board", {"name": "app"}, tmp_path, repair=state)
     assert "TS2779" in prompt
     assert "effectAllowed" in prompt
-    assert "Cannot find name 'next'" in prompt or "COLUMN_LABELS[next]" in prompt
+    assert "Active repair target" in prompt
+    assert "Cannot find name 'next'" in prompt
+    assert "fix this target only" in prompt
 
 
 def test_late_failing_line_is_in_the_repair_prompt(tmp_path):
@@ -128,9 +130,10 @@ def test_multiple_cited_files_keep_each_failing_line(tmp_path):
         tmp_path,
         repair=state,
     )
-    assert "chrome40" in prompt
     assert "effectAllowed" in prompt
     assert "TS2779" in prompt
+    assert "TS2322" in prompt
+    assert "Remaining diagnostics" in prompt
 
 
 def test_vite_client_is_not_treated_as_project_source():

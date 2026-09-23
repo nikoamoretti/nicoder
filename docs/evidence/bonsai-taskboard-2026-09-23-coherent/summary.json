@@ -1,0 +1,344 @@
+{
+  "outcome": "deadline_cancelled",
+  "ended_inside_wall_budget": false,
+  "elapsed_s": 720.29,
+  "episode_id": "ep-20260923-055219-8ce5",
+  "error": null,
+  "continue_from": "ep-20260923-030726-2ebb",
+  "generation_ledger": {
+    "generations": 4,
+    "elapsed_s": 719.93,
+    "remaining_s": 0.07,
+    "max_generations": 6,
+    "wall_seconds": 720,
+    "longest_generation_s": 318.41,
+    "longest_check_s": 9.93
+  },
+  "stop_reason": "no_progress",
+  "replies": [
+    {
+      "turn": 1,
+      "kind": "applied",
+      "files": [
+        "src/TaskBoard.tsx"
+      ],
+      "reads": [],
+      "problems": [],
+      "completion": {
+        "finish_reason": "stop",
+        "truncated": false,
+        "usage": {
+          "completion_tokens": 78,
+          "prompt_tokens": 1906,
+          "total_tokens": 1984
+        },
+        "timing": {
+          "account_s": 0.173,
+          "account_input_tokens": 2307,
+          "account_counter": "llama.cpp /tokenize",
+          "generation_s": 47.795,
+          "cache_n": 34,
+          "prompt_n": 1872,
+          "prompt_ms": 28093.832,
+          "prompt_per_second": 66.63384332902682,
+          "predicted_n": 78,
+          "predicted_ms": 5373.24,
+          "predicted_per_second": 14.330273726838929
+        },
+        "request_identity": {
+          "id": "chatcmpl-XTjimXt6p7bE53hCX0ERIOO4jGXA4Ewx",
+          "model": "Ternary-Bonsai-2-27B-PQ2_0",
+          "max_tokens": 3072,
+          "n_ctx": 8192
+        }
+      }
+    },
+    {
+      "turn": 2,
+      "kind": "applied",
+      "files": [
+        "src/TaskItem.tsx"
+      ],
+      "reads": [],
+      "problems": [],
+      "completion": {
+        "finish_reason": "stop",
+        "truncated": false,
+        "usage": {
+          "completion_tokens": 90,
+          "prompt_tokens": 1869,
+          "total_tokens": 1959
+        },
+        "timing": {
+          "account_s": 0.149,
+          "account_input_tokens": 2270,
+          "account_counter": "llama.cpp /tokenize",
+          "generation_s": 45.784,
+          "cache_n": 34,
+          "prompt_n": 1835,
+          "prompt_ms": 29881.98,
+          "prompt_per_second": 61.408246709220734,
+          "predicted_n": 90,
+          "predicted_ms": 7542.835,
+          "predicted_per_second": 11.79927706227168
+        },
+        "request_identity": {
+          "id": "chatcmpl-TzMLTv5HLHqHu518ZuVxqfzvh0eP8pyO",
+          "model": "Ternary-Bonsai-2-27B-PQ2_0",
+          "max_tokens": 3072,
+          "n_ctx": 8192
+        }
+      }
+    },
+    {
+      "turn": 3,
+      "kind": "truncated",
+      "files": [],
+      "reads": [],
+      "problems": [
+        "truncated: the model reply was cut off at the output limit and was not applied"
+      ],
+      "completion": {
+        "finish_reason": "length",
+        "truncated": true,
+        "usage": {
+          "completion_tokens": 3072,
+          "prompt_tokens": 1624,
+          "total_tokens": 4696
+        },
+        "timing": {
+          "account_s": 0.139,
+          "account_input_tokens": 2025,
+          "account_counter": "llama.cpp /tokenize",
+          "generation_s": 283.119,
+          "cache_n": 34,
+          "prompt_n": 1590,
+          "prompt_ms": 30700.218,
+          "prompt_per_second": 51.79116317675659,
+          "predicted_n": 3072,
+          "predicted_ms": 247308.894,
+          "predicted_per_second": 12.41766905479752
+        },
+        "request_identity": {
+          "id": "chatcmpl-PnQuUP7lkJbXtbeo7EDrKTQHdDV0XI1H",
+          "model": "Ternary-Bonsai-2-27B-PQ2_0",
+          "max_tokens": 3072,
+          "n_ctx": 8192
+        }
+      }
+    },
+    {
+      "turn": 4,
+      "kind": "truncated",
+      "files": [],
+      "reads": [],
+      "problems": [
+        "truncated: the model reply was cut off at the output limit and was not applied"
+      ],
+      "completion": {
+        "finish_reason": "length",
+        "truncated": true,
+        "usage": {
+          "completion_tokens": 3072,
+          "prompt_tokens": 1617,
+          "total_tokens": 4689
+        },
+        "timing": {
+          "account_s": 0.279,
+          "account_input_tokens": 2018,
+          "account_counter": "llama.cpp /tokenize",
+          "generation_s": 318.113,
+          "cache_n": 34,
+          "prompt_n": 1583,
+          "prompt_ms": 24077.804,
+          "prompt_per_second": 65.74519835779043,
+          "predicted_n": 3072,
+          "predicted_ms": 286298.93,
+          "predicted_per_second": 10.726550741911609
+        },
+        "request_identity": {
+          "id": "chatcmpl-8Epz8rSErjk29VT5C76kidbo2AtvmJ7K",
+          "model": "Ternary-Bonsai-2-27B-PQ2_0",
+          "max_tokens": 3072,
+          "n_ctx": 8192
+        }
+      }
+    }
+  ],
+  "checks": [
+    {
+      "at_s": 7.39,
+      "check_s": 7.313,
+      "ok": false,
+      "build": "fail",
+      "preview": "failed",
+      "page_mounted": true,
+      "preview_url": "http://127.0.0.1:4837/",
+      "preview_dir": "/Users/nico-yardlogix/.local/share/local-coder/projects/task-board-3-c233e27c2678/requests/ep-20260923-055219-8ce5/candidate",
+      "preview_pid": 21134,
+      "errors": [
+        "src/App.tsx(56,10): error TS6133: 'saveTasks' is declared but its value is never read.",
+        "src/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.",
+        "src/App.tsx(291,64): error TS2304: Cannot find name 'next'.",
+        "src/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(2,26): error TS1484: 'Column' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(3,10): error TS2614: Module '\"./TaskItem\"' has no exported member 'TaskItem'. Did you mean to use 'import TaskItem from \"./TaskItem\"' instead?",
+        "src/TaskBoard.tsx(16,10): error TS6133: 'createTask' is declared but its value is never read.",
+        "src/TaskBoard.tsx(62,25): error TS2304: Cannot find name 'useMemo'.",
+        "src/TaskBoard.tsx(73,25): error TS2304: Cannot find name 'useMemo'.",
+        "src/TaskBoard.tsx(80,7): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, Task[]>'.",
+        "src/TaskBoard.tsx(92,9): error TS6133: 'handleStartEdit' is declared but its value is never read.",
+        "src/TaskBoard.tsx(202,29): error TS7006: Parameter 'task' implicitly has an 'any' type.",
+        "src/TaskItem.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskItem.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskItem.tsx(2,16): error TS6133: 'ColumnId' is declared but its value is never read.",
+        "src/TaskItem.tsx(75,9): error TS2779: The left-hand side of an assignment expression may not be an optional property access."
+      ]
+    },
+    {
+      "at_s": 61.71,
+      "check_s": 6.292,
+      "ok": false,
+      "build": "fail",
+      "preview": "failed",
+      "page_mounted": true,
+      "preview_url": "http://127.0.0.1:4837/",
+      "preview_dir": "/Users/nico-yardlogix/.local/share/local-coder/projects/task-board-3-c233e27c2678/requests/ep-20260923-055219-8ce5/candidate",
+      "preview_pid": 21134,
+      "errors": [
+        "src/App.tsx(56,10): error TS6133: 'saveTasks' is declared but its value is never read.",
+        "src/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.",
+        "src/App.tsx(291,64): error TS2304: Cannot find name 'next'.",
+        "src/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(2,26): error TS1484: 'Column' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(16,10): error TS6133: 'createTask' is declared but its value is never read.",
+        "src/TaskBoard.tsx(62,25): error TS2304: Cannot find name 'useMemo'.",
+        "src/TaskBoard.tsx(73,25): error TS2304: Cannot find name 'useMemo'.",
+        "src/TaskBoard.tsx(80,7): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, Task[]>'.",
+        "src/TaskBoard.tsx(92,9): error TS6133: 'handleStartEdit' is declared but its value is never read.",
+        "src/TaskBoard.tsx(202,29): error TS7006: Parameter 'task' implicitly has an 'any' type.",
+        "src/TaskBoard.tsx(214,21): error TS2322: Type '(id: string) => void' is not assignable to type '() => void'.",
+        "  Target signature provides too few arguments. Expected 1 or more, but got 0.",
+        "src/TaskItem.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskItem.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskItem.tsx(2,16): error TS6133: 'ColumnId' is declared but its value is never read.",
+        "src/TaskItem.tsx(75,9): error TS2779: The left-hand side of an assignment expression may not be an optional property access."
+      ]
+    },
+    {
+      "at_s": 118.08,
+      "check_s": 9.928,
+      "ok": false,
+      "build": "fail",
+      "preview": "failed",
+      "page_mounted": true,
+      "preview_url": "http://127.0.0.1:4837/",
+      "preview_dir": "/Users/nico-yardlogix/.local/share/local-coder/projects/task-board-3-c233e27c2678/requests/ep-20260923-055219-8ce5/candidate",
+      "preview_pid": 21134,
+      "errors": [
+        "src/App.tsx(56,10): error TS6133: 'saveTasks' is declared but its value is never read.",
+        "src/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.",
+        "src/App.tsx(291,64): error TS2304: Cannot find name 'next'.",
+        "src/TaskBoard.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(2,26): error TS1484: 'Column' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskBoard.tsx(16,10): error TS6133: 'createTask' is declared but its value is never read.",
+        "src/TaskBoard.tsx(62,25): error TS2304: Cannot find name 'useMemo'.",
+        "src/TaskBoard.tsx(73,25): error TS2304: Cannot find name 'useMemo'.",
+        "src/TaskBoard.tsx(80,7): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, Task[]>'.",
+        "src/TaskBoard.tsx(92,9): error TS6133: 'handleStartEdit' is declared but its value is never read.",
+        "src/TaskBoard.tsx(202,29): error TS7006: Parameter 'task' implicitly has an 'any' type.",
+        "src/TaskBoard.tsx(214,21): error TS2322: Type '(id: string) => void' is not assignable to type '() => void'.",
+        "  Target signature provides too few arguments. Expected 1 or more, but got 0.",
+        "src/TaskItem.tsx(2,10): error TS1484: 'Task' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskItem.tsx(2,16): error TS1484: 'ColumnId' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.",
+        "src/TaskItem.tsx(2,16): error TS6133: 'ColumnId' is declared but its value is never read."
+      ]
+    }
+  ],
+  "timings": [
+    {
+      "check_s": 7.313
+    },
+    {
+      "apply_s": 48.004,
+      "written": [
+        "src/TaskBoard.tsx"
+      ]
+    },
+    {
+      "check_s": 6.292
+    },
+    {
+      "apply_s": 46.295,
+      "written": [
+        "src/TaskItem.tsx"
+      ]
+    },
+    {
+      "check_s": 9.928
+    },
+    {
+      "apply_s": 283.301,
+      "written": []
+    },
+    {
+      "apply_s": 318.498,
+      "written": []
+    }
+  ],
+  "verification": {
+    "build": "fail",
+    "typecheck": "pass",
+    "tests": "not_run",
+    "browser": "not_run",
+    "preview": "failed",
+    "page_mounted": true,
+    "behavior_verified": false,
+    "stopped_incomplete": true,
+    "files_written": true
+  },
+  "preview_after": {
+    "record": {
+      "ok": true,
+      "started": true,
+      "pid": 21134,
+      "url": "http://127.0.0.1:4837/",
+      "port": 4837,
+      "dir": "/Users/nico-yardlogix/.local/share/local-coder/projects/task-board-3-c233e27c2678/requests/ep-20260923-055219-8ce5/candidate",
+      "project_id": "task-board-3-c233e27c2678",
+      "log": "/Users/nico-yardlogix/.local/share/local-coder/logs/preview-task-board-3-c233e27c2678.log"
+    },
+    "pid_alive": true,
+    "/": 200,
+    "/src/App.tsx": 200,
+    "/src/TaskItem.tsx": 200
+  },
+  "user_tree_unchanged": true,
+  "memory_after": {
+    "t": 1790143460.593142,
+    "swapusage": "vm.swapusage: total = 26624.00M  used = 25477.31M  free = 1146.69M  (encrypted)",
+    "memory_pressure": [
+      "System-wide memory free percentage: 56%"
+    ],
+    "vm_stat": [
+      "Mach Virtual Memory Statistics: (page size of 16384 bytes)",
+      "Pages free:                                      894.",
+      "Pages active:                                 275023.",
+      "Pages inactive:                               268373.",
+      "Pages speculative:                              5308.",
+      "Pages throttled:                                   0.",
+      "Pages wired down:                             254319.",
+      "Pages purgeable:                                  25.",
+      "\"Translation faults\":                     5904527840.",
+      "Pages copy-on-write:                       202699304.",
+      "Pages zero filled:                        3013802183.",
+      "Pages reactivated:                        1445303054."
+    ],
+    "llama_ps": "6018  13648 453934608   0.0 04-04:51:09"
+  },
+  "helper_build_id": "20260923-coherent-input",
+  "via": "app_service.AppRuntime.start_request (API, not the Mac window)"
+}

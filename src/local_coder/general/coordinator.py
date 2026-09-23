@@ -45,6 +45,7 @@ from local_coder.general.repair_context import (
     build_repair_state,
     diagnostic_lines,
     error_keys,
+    invalidate_views,
     write_repair_state,
 )
 from local_coder.general.snapshot import (
@@ -591,6 +592,11 @@ def _verify_and_repair(
                 "fingerprint": repair.fingerprint(),
                 "error_count": len(keys),
                 "hits": [{"rel": hit.rel, "line": hit.line} for hit in repair.hits],
+                "active": [
+                    {"rel": hit.rel, "line": hit.line, "code": hit.code, "message": hit.message[:200]}
+                    for hit in repair.active
+                ],
+                "remaining_count": len(diagnostic_lines(repair.diagnostic)),
                 "candidate_id": repair.candidate_id,
             }
             needs_check = False
@@ -624,6 +630,7 @@ def _verify_and_repair(
             _stop(meta, "cancelled")
             return
         if outcome.kind == "applied" and written:
+            invalidate_views(views, written)
             _publish_candidate(engine_cwd, candidate)
             repairs += 1
             stalled = 0
@@ -836,7 +843,7 @@ def _apply_direct(
 _OUTCOME_TEXT = {
     "truncated": "The model reply was cut off at the output limit and was not applied.",
     "rejected": "The model's change did not apply to the current files, so nothing changed.",
-    "repeat_read": "The model asked for lines it was already shown.",
+    "repeat_read": "The model asked for files already accounted for in this request.",
     "read": "Read the requested files for the model.",
     "no_action": "The model replied without file blocks.",
     "budget": "No generation budget left for another model call.",

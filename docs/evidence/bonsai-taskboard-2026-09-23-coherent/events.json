@@ -1,0 +1,196 @@
+[
+  {
+    "t": 1790142739.7720299,
+    "type": "preparing",
+    "data": {
+      "request_id": "ep-20260923-055219-8ce5"
+    },
+    "phrase": "Making a working copy of the project."
+  },
+  {
+    "t": 1790142739.783166,
+    "type": "activity",
+    "data": {
+      "detail": "Working copy is ready."
+    },
+    "phrase": "Working copy is ready."
+  },
+  {
+    "t": 1790142739.79853,
+    "type": "activity",
+    "data": {
+      "detail": "Continuing from ep-20260923-030726-2ebb without restarting the original folder."
+    },
+    "phrase": "Continuing from ep-20260923-030726-2ebb without restarting the original folder."
+  },
+  {
+    "t": 1790142739.7986932,
+    "type": "model_starting",
+    "data": {},
+    "phrase": "Loading the local model. This can take a minute."
+  },
+  {
+    "t": 1790142739.859725,
+    "type": "check",
+    "data": {},
+    "phrase": "Checking the result."
+  },
+  {
+    "t": 1790142739.8678908,
+    "type": "preview",
+    "data": {},
+    "phrase": "Opening a preview."
+  },
+  {
+    "t": 1790142747.179641,
+    "type": "activity",
+    "data": {
+      "detail": "Sending the check error back to the model."
+    },
+    "phrase": "Sending the check error back to the model."
+  },
+  {
+    "t": 1790142747.179682,
+    "type": "activity",
+    "data": {
+      "detail": "Asking the model to write the files now."
+    },
+    "phrase": "Asking the model to write the files now."
+  },
+  {
+    "t": 1790142795.182271,
+    "type": "activity",
+    "data": {
+      "detail": "Edited src/TaskBoard.tsx."
+    },
+    "phrase": "Edited src/TaskBoard.tsx."
+  },
+  {
+    "t": 1790142795.187259,
+    "type": "activity",
+    "data": {
+      "detail": "Wrote src/TaskBoard.tsx."
+    },
+    "phrase": "Wrote src/TaskBoard.tsx."
+  },
+  {
+    "t": 1790142795.203031,
+    "type": "check",
+    "data": {},
+    "phrase": "Checking the result."
+  },
+  {
+    "t": 1790142798.243694,
+    "type": "preview",
+    "data": {},
+    "phrase": "Opening a preview."
+  },
+  {
+    "t": 1790142801.499969,
+    "type": "activity",
+    "data": {
+      "detail": "Sending the check error back to the model."
+    },
+    "phrase": "Sending the check error back to the model."
+  },
+  {
+    "t": 1790142801.5000162,
+    "type": "activity",
+    "data": {
+      "detail": "Asking the model to write the files now."
+    },
+    "phrase": "Asking the model to write the files now."
+  },
+  {
+    "t": 1790142847.7761621,
+    "type": "activity",
+    "data": {
+      "detail": "Edited src/TaskItem.tsx."
+    },
+    "phrase": "Edited src/TaskItem.tsx."
+  },
+  {
+    "t": 1790142847.835114,
+    "type": "activity",
+    "data": {
+      "detail": "Wrote src/TaskItem.tsx."
+    },
+    "phrase": "Wrote src/TaskItem.tsx."
+  },
+  {
+    "t": 1790142847.9331992,
+    "type": "check",
+    "data": {},
+    "phrase": "Checking the result."
+  },
+  {
+    "t": 1790142853.007684,
+    "type": "preview",
+    "data": {},
+    "phrase": "Opening a preview."
+  },
+  {
+    "t": 1790142857.865904,
+    "type": "activity",
+    "data": {
+      "detail": "Sending the check error back to the model."
+    },
+    "phrase": "Sending the check error back to the model."
+  },
+  {
+    "t": 1790142857.8659399,
+    "type": "activity",
+    "data": {
+      "detail": "Asking the model to write the files now."
+    },
+    "phrase": "Asking the model to write the files now."
+  },
+  {
+    "t": 1790143141.1827672,
+    "type": "activity",
+    "data": {
+      "detail": "The model reply was cut off at the output limit and was not applied."
+    },
+    "phrase": "The model reply was cut off at the output limit and was not applied."
+  },
+  {
+    "t": 1790143141.1835918,
+    "type": "activity",
+    "data": {
+      "detail": "Sending the check error back to the model."
+    },
+    "phrase": "Sending the check error back to the model."
+  },
+  {
+    "t": 1790143141.1836128,
+    "type": "activity",
+    "data": {
+      "detail": "Asking the model to write the files now."
+    },
+    "phrase": "Asking the model to write the files now."
+  },
+  {
+    "t": 1790143459.699002,
+    "type": "activity",
+    "data": {
+      "detail": "The model reply was cut off at the output limit and was not applied."
+    },
+    "phrase": "The model reply was cut off at the output limit and was not applied."
+  },
+  {
+    "t": 1790143459.705268,
+    "type": "budget",
+    "data": {
+      "detail": "Stopped: two model replies in a row made no progress. The original project is unchanged."
+    },
+    "phrase": "Reached the time or step limit for this request."
+  },
+  {
+    "t": 1790143459.9536,
+    "type": "done",
+    "data": {
+      "request_id": "ep-20260923-055219-8ce5"
+    },
+    "phrase": "Finished this attempt. Review the result."
+  }
+]

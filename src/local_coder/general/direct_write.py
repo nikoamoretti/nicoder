@@ -108,18 +108,27 @@ class ReplyOutcome:
                 "Local Coder reran the checks; the diagnostic below is the result after that change."
             )
         if self.kind == "read":
-            seen = ""
+            extra = ""
             if self.already_shown:
-                seen = f" Already shown in full, so not repeated: {', '.join(self.already_shown)}."
+                extra = (
+                    f" {', '.join(self.already_shown)} were requested again; they appear in this "
+                    "request only if listed under 'This request includes' below. Historical display "
+                    "is not current visibility."
+                )
             refused = f" Not read: {problems}." if self.problems else ""
             return (
-                f"You asked to read {', '.join(self.reads)}. Local Coder read them; the lines are in "
-                f"the Source section below.{seen}{refused} Nothing was changed yet."
+                f"You asked to read {', '.join(self.reads)}. Local Coder queued those reads. "
+                "The Source section and 'This request includes' list what is actually in THIS "
+                f"request.{extra}{refused} Nothing was changed yet."
             )
         if self.kind == "repeat_read":
+            again = f" Requested again: {', '.join(self.already_shown)}." if self.already_shown else ""
             return (
-                "Your previous reply asked for lines you were already shown, so nothing new was read "
-                "and nothing was changed. Make a focused edit now."
+                "Those reads added no new source to this request."
+                f"{again} See 'This request includes' for the exact ranges currently shown. "
+                "The entire repository cannot be included at once. Name the particular missing "
+                "symbol, section, or dependency for the active diagnostic, or send a focused "
+                "edit. An edit is not required when the needed source is still missing."
             )
         if self.kind == "rejected":
             return f"Your previous reply was not applied, so the candidate did not change: {problems}"
@@ -355,21 +364,30 @@ def build_repair_prompt(
     budget_scale: float = 1.0,
 ) -> tuple[str, dict[str, set[int]]]:
     """Repair prompt within the context budget. Returns the prompt and the source lines it shows."""
-    sample = repair.hits[0].rel if repair.hits else "src/App.tsx"
+    sample = "src/App.tsx"
+    if repair.active:
+        sample = repair.active[0].rel
+    elif repair.hits:
+        sample = repair.hits[0].rel
     previous_block = ""
     if previous and previous_outcome is not None and previous_outcome.kind in {"rejected", "no_action"}:
         previous_block = f"Previous reply (not applied):\n{previous.strip()[:500]}\n\n"
     instructions = (
-        "Fix the current blocking diagnostic. Keep existing behavior and unrelated source. "
+        "Fix the active repair target only. Keep existing behavior and unrelated source. "
+        "Remaining diagnostics stay in runtime; do not try to clear every error in one reply. "
         "Prefer focused hash-edits: one edit block per consecutive span, and several blocks or "
-        "files when the diagnostic needs them. Do not rewrite the application, restyle the page, "
+        "files when this target needs them. Do not rewrite the application, restyle the page, "
         "or remove a feature to silence an error. Your commentary is a proposal until checks run.\n"
+        "Large files are shown in bounded portions, not as complete files. A read returns the next "
+        "unseen part. If something required for THIS target is missing, name that symbol, section, "
+        "or dependency. The entire repository cannot be included at once. An edit is not required "
+        "when the needed source is still missing.\n"
         "Blocks (no bash, no shell; tool_call XML only works for reads):\n"
         f"```edit {sample}\n-a1b2c3d4\n+replacement line\n```\n"
         "- lines give the hash of each current line to replace, in order; + lines are the new text. "
         "To insert, repeat an existing line as both - and +.\n"
         "```read src/types.ts\n```\n"
-        "shows more of a file; read the same file again for its next part.\n"
+        "shows the next bounded part of a file.\n"
         f"```{sample}\nfull file text\n```\n"
         "replaces a whole file.\n\n"
     )
@@ -680,7 +698,11 @@ def _complete_repair(
                 previous = None
                 continue
             kind = "rejected" if refused else "repeat_read"
-            record.append(ReplyOutcome(kind, reads=list(parsed.reads), problems=refused, completion=completion))
+            record.append(
+                ReplyOutcome(
+                    kind, reads=list(parsed.reads), problems=refused, completion=completion, already_shown=seen,
+                )
+            )
             return [], result.text, refused
         record.append(ReplyOutcome("no_action", problems=list(parsed.refused), completion=completion))
         return [], result.text, list(parsed.refused)

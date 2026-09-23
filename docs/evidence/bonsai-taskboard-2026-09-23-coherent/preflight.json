@@ -1,0 +1,119 @@
+{
+  "via": "app_service.AppRuntime.start_request (API, not the Mac window)",
+  "helper": {
+    "version": "0.4.0",
+    "build_id": "20260923-coherent-input",
+    "python": "/Users/nico-yardlogix/.local/share/local-coder-venv/bin/python"
+  },
+  "config": {
+    "model_file": "/Users/nico-yardlogix/Models/Bonsai-demo/models/bonsai2-gguf/27B/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    "model_alias": "Ternary-Bonsai-2-27B-PQ2_0",
+    "endpoint": "http://127.0.0.1:8080",
+    "server_binary": "/Users/nico-yardlogix/Models/Bonsai-demo/bin/mac/llama-server",
+    "quantization": "PQ2_0",
+    "n_ctx": 8192,
+    "max_tokens": 3072,
+    "gen_timeout": 600
+  },
+  "server": {
+    "endpoint": "http://127.0.0.1:8080",
+    "owned": true,
+    "running": true,
+    "healthy": true,
+    "pid": 6018,
+    "model_alias": "Ternary-Bonsai-2-27B-PQ2_0",
+    "note": ""
+  },
+  "continue_from": "ep-20260923-030726-2ebb",
+  "historical_meta_stop": "generation_limit",
+  "historical_tree": {
+    "tsconfig.node.json": "a3cd51230b21da01fc7223ebca80d571f30025f10e1954a0cb9c80aa3c275d0a",
+    "index.html": "2c9bfc608bf3da80560c23dcf1e91629ac5ee96d99f4aef70193fba285593de3",
+    "tsconfig.app.json": "8d072177dd9caa120c74b657684c21f7eedad5cc8b99ad9fc4a85cbfdc5580e1",
+    ".gitignore": "dab45bb8ea66038c7da352fcd514a41339cf7d860aba47b02dc93eb38eb95a79",
+    "package.json": "c897c78ee2d6830168db61bdefb7dce8eb8f6e721ae003ee79a556cddefdebdb",
+    "tsconfig.json": "770b4140bbb581e2dfd9ea9946ffc9c75a1d86ba7d2db5f77c83e37cbdf9d808",
+    "vite.config.ts": "8d663f818463e37c8b43ab7597ff812dc2e890c5e2fe568f4f93a1d7c999244e",
+    "src/App.tsx": "dd8ea9b03667d85a7364eae2f2840b0f0c57eefa26c267f89f7dd68ed7e99f08",
+    "src/main.tsx": "c6713f68e9761117b8e6ec9be2992af70f395b01b4d058d8baac0b6108ecc763",
+    "src/App.css": "0b3d608b2bb0f06653eec3c2468238fa2396d9708889cc462ea9a547bb0b4f78",
+    "src/index.css": "84c4af2b11b4292b3c39fc4b0f7d0b57ae6fe680cdd39979a74722ddde0f5aff",
+    "src/types.ts": "85d53500d043efbad77b8dcebcb49105dd651aa54f772b5f5aa32377bf82d45a",
+    "src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
+    "src/TaskItem.tsx": "63d6a6ef285d7943d07811ea378be8e7a0d90e43009f240f3c10a24b214eb7cb",
+    "src/TaskBoard.css": "7b7341d96ba6aee4cebbac6d6fdbb12d34b68a59e5046ff138fbd927bf2a9e7c",
+    "src/TaskItem.css": "3b245183c65b1d0cd16497dd37d477e6e3fe035c9153602bd62e165d5297c81c",
+    "src/TaskBoard.tsx": "6cda2e039230a2e59427f22d8fac9591cdda417074564579d10a704d899a239b"
+  },
+  "live_matches_historical": true,
+  "user_tree": {
+    "tsconfig.node.json": "a3cd51230b21da01fc7223ebca80d571f30025f10e1954a0cb9c80aa3c275d0a",
+    "index.html": "2c9bfc608bf3da80560c23dcf1e91629ac5ee96d99f4aef70193fba285593de3",
+    "tsconfig.app.json": "8d072177dd9caa120c74b657684c21f7eedad5cc8b99ad9fc4a85cbfdc5580e1",
+    ".gitignore": "dab45bb8ea66038c7da352fcd514a41339cf7d860aba47b02dc93eb38eb95a79",
+    "package.json": "7848b3dfba05a3140bc2613e6a2cf4ee88e0636dbc65ffaaa2389f4f4100f6db",
+    "tsconfig.json": "770b4140bbb581e2dfd9ea9946ffc9c75a1d86ba7d2db5f77c83e37cbdf9d808",
+    "vite.config.ts": "3c39f9605ba0bf0311972f0e9db7384b2babece4f710df79f3448cf5cfdbde98",
+    "src/App.tsx": "a127a2f35d4ee5b0fcccbc63e313621aecff4f65485171151008106c3dd71e97",
+    "src/main.tsx": "c6713f68e9761117b8e6ec9be2992af70f395b01b4d058d8baac0b6108ecc763",
+    "src/App.css": "e6e009741fab343d0e33d748fafe3fea75ab759b90791baab21ff59f90b78dcb",
+    "src/index.css": "062adc116b7b152783a19135a8e24cf0091ef1a6d45886ebeac380e526efc90a",
+    "src/types.ts": "30ed95032b8d42ed41aaed20653f9cdd33ce61d7626df3338c8f1e3625ecc196",
+    "src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
+    "src/TaskItem.tsx": "002ea3afbefce1e5e93d90ac37c0674b4451eca80bec3f45ee3af831e54ba807",
+    "src/TaskBoard.css": "4ef08945300b8d6f353e45fe3374a4ea5a8dee2fd08a0161b5292ede851fce57",
+    "src/TaskItem.css": "3b245183c65b1d0cd16497dd37d477e6e3fe035c9153602bd62e165d5297c81c",
+    "src/TaskBoard.tsx": "ac6ade9386157abbf1ba6b684d351cb5f0e049adb209942da0ad512942a89270"
+  },
+  "preview_before": {
+    "record": {
+      "ok": true,
+      "started": true,
+      "pid": 13052,
+      "url": "http://127.0.0.1:4837/",
+      "port": 4837,
+      "dir": "/Users/nico-yardlogix/.local/share/local-coder/projects/task-board-3-c233e27c2678/requests/ep-20260923-030726-2ebb/candidate",
+      "project_id": "task-board-3-c233e27c2678",
+      "log": "/Users/nico-yardlogix/.local/share/local-coder/logs/preview-task-board-3-c233e27c2678.log"
+    },
+    "pid_alive": true,
+    "/": 200,
+    "/src/App.tsx": 200,
+    "/src/TaskItem.tsx": 500
+  },
+  "memory_before": {
+    "t": 1790142739.652565,
+    "swapusage": "vm.swapusage: total = 23552.00M  used = 22078.00M  free = 1474.00M  (encrypted)",
+    "memory_pressure": [
+      "System-wide memory free percentage: 39%"
+    ],
+    "vm_stat": [
+      "Mach Virtual Memory Statistics: (page size of 16384 bytes)",
+      "Pages free:                                    25448.",
+      "Pages active:                                 184235.",
+      "Pages inactive:                               178688.",
+      "Pages speculative:                              4703.",
+      "Pages throttled:                                   0.",
+      "Pages wired down:                             209749.",
+      "Pages purgeable:                                   2.",
+      "\"Translation faults\":                     5820327007.",
+      "Pages copy-on-write:                       202231782.",
+      "Pages zero filled:                        2963130230.",
+      "Pages reactivated:                        1410203582."
+    ],
+    "llama_ps": "6018   4416 453358208   0.0 04-04:39:08"
+  },
+  "generation_limit": 6,
+  "wall_s": 720,
+  "request": "Finish this task board so I can add tasks, edit their details, move them between the three columns, search them, and refresh the page without losing anything. Fix the existing errors and keep the interface clear and usable.",
+  "active_target": [
+    {
+      "rel": "src/TaskBoard.tsx",
+      "line": 3,
+      "code": "TS2614",
+      "message": "src/TaskBoard.tsx(3,10): error TS2614: Module '\"./TaskItem\"' has no exported member 'TaskItem'. Did you mean to use 'import TaskItem from \"./TaskItem\"' instead?"
+    }
+  ],
+  "prompt_chars": 7834,
+  "fits_budget": true
+}

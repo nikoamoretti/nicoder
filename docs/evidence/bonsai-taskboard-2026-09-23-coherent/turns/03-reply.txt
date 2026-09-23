@@ -1,0 +1,198 @@
+The active errors are on line 291 of `src/App.tsx`:
+1. `error TS7053`: `next` is `any` when indexing `COLUMN_LABELS` (a `Record<ColumnId, string>`).
+2. `error TS2304`: `next` is not defined in the scope of the JSX attribute (it's defined inside the `onClick` handler).
+
+The fix is to compute `next` in the component scope (or at least make it available for the `aria-label`) and ensure it's typed as `ColumnId`.
+
+Looking at the provided snippet:
+```tsx
+<button
+  className="task-move"
+  onClick={() => {
+    const next = COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length];
+    moveTaskToColumn(task.id, next);
+  }}
+  aria-label={`Move to ${COLUMN_LABELS[next]}`} // <--- next is not defined here
+>
+```
+
+I need to move the calculation of `next` out of the `onClick` handler so it can be used in the `aria-label`, and ensure it's typed correctly. Since `COLUMNS` is likely an array of `ColumnId`, the result of the index calculation is a `ColumnId`.
+
+Let's look at the lines to edit.
+Line `0aca3a6e`: `const next = COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length];`
+Line `621a1537`: `moveTaskToColumn(task.id, next);`
+Line `4f64880b`: `aria-label={`Move to ${COLUMN_LABELS[next]}`}`
+
+I will replace the `onClick` block and the `aria-label` line.
+Actually, it's cleaner to define `next` before the button or inside the button's scope if possible, but since `aria-label` is a sibling of `onClick`, `next` must be defined in the scope where the button is rendered.
+
+Let's modify the code to define `next` before the button or use a helper.
+Wait, `task` is available in the scope (it's likely mapped over).
+I can define `const nextColumn = COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length]` before the button.
+
+Let's look at the surrounding context.
+`bd14c58d|                        <button`
+`dafe242a|                          className="task-move"`
+`3c48ba37|                          onClick={() => {`
+`0aca3a6e|                            const next = COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length];`
+`621a1537|                            moveTaskToColumn(task.id, next);`
+`373fd447|                          }}`
+`>4f64880b|                          aria-label={`Move to ${COLUMN_LABELS[next]}`}`
+`34c9c752|                        >`
+
+I will replace lines `3c48ba37` through `4f64880b`.
+I need to define `next` in the outer scope.
+Let's assume `task` is in scope.
+I'll insert a line before the button or modify the structure.
+Actually, I can just define `next` in the `onClick` and also in the outer scope? No, that's redundant.
+Better: Define `const nextColumn = ...` before the `<button>` tag.
+But I don't see the line before `bd14c58d` in the snippet.
+The snippet starts at `bd14c58d`.
+I can replace the `onClick` handler to not define `next` locally, and define `next` in the outer scope.
+But I don't have the line before `bd14c58d` to insert into.
+Wait, I can replace the `onClick` block and the `aria-label` line.
+If I define `next` in the `onClick`, it's not available for `aria-label`.
+I can use a helper function or define it in the outer scope.
+Since I can't see the line before the button, I will modify the `onClick` and `aria-label` lines.
+Actually, I can just define `next` in the outer scope by replacing the `onClick` line with a definition and the handler? No.
+
+Let's look at the error again.
+`src/App.tsx(291,50): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<ColumnId, string>'.`
+`src/App.tsx(291,64): error TS2304: Cannot find name 'next'.`
+
+Line 291 is `aria-label={`Move to ${COLUMN_LABELS[next]}`}`.
+The `next` variable is defined inside the `onClick` arrow function.
+I need to move the definition of `next` to the outer scope.
+I will replace the `onClick` handler and the `aria-label` line.
+I will define `next` in the outer scope.
+Since I don't have the line before the button, I will replace the `onClick` block and the `aria-label` line.
+Wait, I can replace the `onClick` line with a definition of `next` and an empty handler? No.
+
+Let's try to replace the `onClick` block and the `aria-label` line.
+I will define `next` in the outer scope.
+I'll replace lines `3c48ba37` to `4f64880b`.
+New code:
+```tsx
+onClick={() => {
+  const next = COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length];
+  moveTaskToColumn(task.id, next);
+}}
+aria-label={`Move to ${COLUMN_LABELS[COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length]]}`}
+```
+This is ugly but works without changing the outer scope.
+However, the error says `expression of type 'any'`.
+`COLUMNS` is likely `ColumnId[]`.
+`COLUMNS.indexOf(task.column)` returns a number.
+`+ 1` returns a number.
+`% COLUMNS.length` returns a number.
+`COLUMNS[number]` returns `ColumnId`.
+So `COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length]` should be `ColumnId`.
+Why is it `any`?
+Maybe `COLUMNS` is not typed as `ColumnId[]`?
+Or maybe `task.column` is `any`?
+If `task.column` is `any`, `indexOf` might return `any`? No, `indexOf` returns `number`.
+Maybe `COLUMNS` is `any[]`?
+If `COLUMNS` is `any[]`, then `COLUMNS[...]` is `any`.
+Then `COLUMN_LABELS[any]` is `any` (or error if strict).
+The error says `expression of type 'any' can't be used to index type 'Record<ColumnId, string>'`.
+So the index is `any`.
+This implies `COLUMNS[...]` is `any`.
+So `COLUMNS` is likely `any[]` or similar.
+I should type the result.
+`const next: ColumnId = COLUMNS[...]`
+But I can't define it in the outer scope easily.
+I can define it in the `onClick` and use it in `aria-label`? No, scope issue.
+I can use a helper function?
+Or I can just cast it.
+`aria-label={`Move to ${COLUMN_LABELS[COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length] as ColumnId]}`}`
+This might fix the TS7053.
+And it fixes TS2304 because `next` is not used.
+
+Let's check the `onClick` handler.
+`const next = COLUMNS[...]`
+`moveTaskToColumn(task.id, next)`
+If `moveTaskToColumn` expects `ColumnId`, and `next` is `any`, it might be fine.
+But the error is only on line 291.
+So I just need to fix line 291.
+I will replace line `4f64880b`.
+Current: `aria-label={`Move to ${COLUMN_LABELS[next]}`}`
+New: `aria-label={`Move to ${COLUMN_LABELS[COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length] as ColumnId]}`}`
+This removes the dependency on `next` and casts the index to `ColumnId`.
+
+Wait, `COLUMNS` might be imported from `types.ts` or defined in `App.tsx`.
+If `COLUMNS` is `ColumnId[]`, then `COLUMNS[...]` is `ColumnId`.
+Why is it `any`?
+Maybe `COLUMNS` is defined as `const COLUMNS = [...]` without type annotation?
+If `COLUMNS` is `const COLUMNS = ['todo', 'in-progress', 'done']`, it's `string[]`.
+Then `COLUMNS[...]` is `string`.
+`COLUMN_LABELS` is `Record<ColumnId, string>`.
+Indexing `Record<ColumnId, string>` with `string` might be an error if `ColumnId` is a union of specific strings.
+If `ColumnId` is `'todo' | 'in-progress' | 'done'`, and `COLUMNS` is `string[]`, then `COLUMNS[...]` is `string`.
+`string` is not assignable to `ColumnId`.
+So it might be `any` if there's a cast somewhere or if `COLUMNS` is `any[]`.
+Regardless, casting to `ColumnId` should fix the indexing error.
+
+Let's refine the replacement.
+I will replace line `4f64880b`.
+`-4f64880b`
+`+                          aria-label={`Move to ${COLUMN_LABELS[COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length] as ColumnId]}`}`
+
+This should fix both errors on line 291.
+1. `next` is removed, so TS2304 is gone.
+2. The index is cast to `ColumnId`, so TS7053 is gone.
+
+Let's double check if `COLUMNS` and `ColumnId` are in scope.
+`COLUMNS` is used in the `onClick` handler, so it's in scope.
+`ColumnId` is used in the error message `Record<ColumnId, string>`, so it's likely imported or defined.
+If `ColumnId` is not in scope, the cast will fail.
+But the error message mentions `ColumnId`, so it's likely available.
+If `ColumnId` is not in scope, I might need to import it.
+But the prompt says "Fix the active repair target only".
+And "Remaining diagnostics stay in runtime".
+So I should assume `ColumnId` is available or I can use a string literal if I know the type.
+But `ColumnId` is a type, so it should be imported.
+Given the other errors mention `ColumnId` in `TaskBoard.tsx` and `TaskItem.tsx`, it's likely imported in `App.tsx` as well or defined in `types.ts`.
+I will proceed with the cast.
+
+One more thing: `COLUMNS.indexOf(task.column)`.
+If `task.column` is `ColumnId`, `indexOf` works.
+If `task.column` is `any`, `indexOf` works.
+The result is `number`.
+So the index calculation is fine.
+
+I will make the edit.
+
+```edit src/App.tsx
+-4f64880b
++                          aria-label={`Move to ${COLUMN_LABELS[COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length] as ColumnId]}`}
+```
+
+Wait, I should check if `COLUMNS` is an array of `ColumnId`.
+If `COLUMNS` is `ColumnId[]`, then `COLUMNS[...]` is `ColumnId`.
+Then `as ColumnId` is redundant but safe.
+If `COLUMNS` is `string[]`, then `COLUMNS[...]` is `string`.
+Then `as ColumnId` is a cast from `string` to `ColumnId`.
+This is valid if `ColumnId` is a subset of `string`.
+So this should work.
+
+Let's verify the line hash.
+`4f64880b` is the hash of `aria-label={`Move to ${COLUMN_LABELS[next]}`}`.
+I will replace it.
+
+One potential issue: `COLUMNS` might not be in scope if it's defined inside a function or something.
+But it's used in the `onClick` handler on the previous lines, so it's in scope.
+
+I will provide the edit.
+
+```edit src/App.tsx
+-4f64880b
++                          aria-label={`Move to ${COLUMN_LABELS[COLUMNS[(COLUMNS.indexOf(task.column) + 1) % COLUMNS.length] as ColumnId]}`}
+```
+
+Wait, I should check if `ColumnId` is imported.
+The error `TS2304: Cannot find name 'next'` is on line 291.
+The error `TS7053` is on line 291.
+If `ColumnId` was not imported, there would be a `TS2304: Cannot find name 'ColumnId'` error.
+Since there isn't one listed for `ColumnId` in `App.tsx`, it's likely imported.
+The remaining diagnostics list `TaskBoard.tsx` and `TaskItem.tsx` having `TS1484` for `ColumnId`, which implies it's a type that needs to be imported.
+It

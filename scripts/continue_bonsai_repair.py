@@ -13,8 +13,11 @@ import httpx
 
 from local_coder import BUILD_ID, __version__
 from local_coder.app_service import AppRuntime
+from local_coder.general.candidate_check import check_candidate
 from local_coder.general.coordinator import load_meta, project_id_for, request_dir, review_payload
+from local_coder.general.direct_write import build_repair_prompt, prompt_budget_chars
 from local_coder.general.preview import read_preview
+from local_coder.general.repair_context import build_repair_state
 from local_coder.general.snapshot import index_tree
 from local_coder.machine import load_machine_config
 from local_coder.server import server_status
@@ -102,6 +105,34 @@ def main() -> int:
     hist = request_dir(pid, CONTINUE_FROM)
     live = hist.parents[1] / "live" / "candidate"
     hist_tree = tree(hist / "candidate")
+    candidate = hist / "candidate"
+    check = check_candidate(candidate)
+    repair = build_repair_state(REQUEST, check, candidate)
+    prompt, shown = build_repair_prompt(REQUEST, {"name": PROJECT.name}, candidate, repair=repair)
+    budget = prompt_budget_chars()
+    packet = {
+        "check": {
+            "ok": check.get("ok"),
+            "build": check.get("build"),
+            "detail_head": str(check.get("detail") or "")[:1500],
+        },
+        "active": [
+            {"rel": hit.rel, "line": hit.line, "code": hit.code, "message": hit.message}
+            for hit in repair.active
+        ],
+        "hit_count": len(repair.hits),
+        "source_identity": repair.source_identity,
+        "candidate_id": repair.candidate_id,
+        "shown_ranges": {rel: sorted(lines) for rel, lines in shown.items()},
+        "prompt_chars": len(prompt),
+        "prompt_budget_chars": budget,
+        "fits_budget": len(prompt) <= budget,
+        "n_ctx": int(cfg.n_ctx),
+        "max_tokens": int(cfg.max_tokens),
+        "model_alias": cfg.model_alias,
+    }
+    (EVIDENCE / "coherent-input.txt").write_text(prompt, encoding="utf-8")
+    write_json(EVIDENCE / "active-target.json", packet)
     preflight = {
         "via": "app_service.AppRuntime.start_request (API, not the Mac window)",
         "helper": {"version": __version__, "build_id": BUILD_ID, "python": sys.executable},
@@ -110,13 +141,16 @@ def main() -> int:
         "continue_from": CONTINUE_FROM,
         "historical_meta_stop": load_meta(pid, CONTINUE_FROM).get("stop_reason"),
         "historical_tree": hist_tree,
-        "live_matches_historical": tree(live) == hist_tree,
+        "live_matches_historical": tree(live) == hist_tree if live.is_dir() else False,
         "user_tree": tree(PROJECT),
         "preview_before": preview_probe(read_preview() or {}),
         "memory_before": memory_snapshot(status.get("pid")),
         "generation_limit": MAX_GENS,
         "wall_s": WALL_S,
         "request": REQUEST,
+        "active_target": packet["active"],
+        "prompt_chars": packet["prompt_chars"],
+        "fits_budget": packet["fits_budget"],
     }
     write_json(EVIDENCE / "preflight.json", preflight)
     if not (status.get("healthy") and status.get("owned")):
