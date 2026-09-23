@@ -25,6 +25,10 @@ _ROOT_NAMES = {
 }
 _READ_LIMIT = 8000
 _HASH_LINES = 80
+_TOOL_READ = re.compile(
+    r"<function\s*=\s*read>\s*(?P<path>[^\s<]+)\s*</function>",
+    re.I,
+)
 
 
 class EditError(ValueError):
@@ -46,12 +50,27 @@ def line_hash(line: str) -> str:
     return hashlib.sha256(line.encode("utf-8")).hexdigest()[:8]
 
 
-def format_hashed(text: str, *, limit: int = _HASH_LINES) -> str:
+def format_hashed(
+    text: str,
+    *,
+    limit: int = _HASH_LINES,
+    start_line: int = 1,
+    mark_line: int | None = None,
+) -> str:
     """Prefix each line with its hash so the model can edit without line numbers."""
     lines = text.splitlines()
-    rows = [f"{line_hash(line)}|{line}" for line in lines[:limit]]
-    if len(lines) > limit:
-        rows.append("…")
+    start = max(0, int(start_line) - 1)
+    window = lines[start : start + limit]
+    rows: list[str] = []
+    if start > 0:
+        rows.append(f"… ({start} lines above)")
+    for offset, line in enumerate(window):
+        number = start + offset + 1
+        prefix = ">" if mark_line == number else ""
+        rows.append(f"{prefix}{line_hash(line)}|{line}")
+    leftover = len(lines) - start - len(window)
+    if leftover > 0:
+        rows.append(f"… ({leftover} lines below)")
     return "\n".join(rows) + ("\n" if rows else "")
 
 
@@ -121,6 +140,12 @@ def parse_actions(text: str) -> ParsedTurn:
             continue
         if rel:
             parsed.writes[rel] = body
+    if not parsed.reads and not parsed.writes and not parsed.edits:
+        for match in _TOOL_READ.finditer(cleaned):
+            rel = safe_rel(match.group("path"))
+            if rel and rel not in seen_read:
+                parsed.reads.append(rel)
+                seen_read.add(rel)
     return parsed
 
 
@@ -139,22 +164,35 @@ def apply_edit_text(current: str, patch: str) -> str:
     return "\n".join(updated) + "\n"
 
 
-def read_files(root: Path, rels: list[str]) -> str:
-    """Return hashed contents for safe candidate paths. Missing paths are skipped."""
+def read_files(
+    root: Path,
+    rels: list[str],
+    *,
+    around: dict[str, int] | None = None,
+) -> str:
+    """Return hashed contents for safe candidate paths. Missing paths are named."""
     chunks: list[str] = []
+    focus = around or {}
     for rel in rels:
         safe = safe_rel(rel)
         if not safe:
             continue
         path = root / safe
         if not path.is_file():
+            chunks.append(f"{rel}: file is missing from the candidate")
             continue
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
+            chunks.append(f"{safe}: file could not be read")
             continue
-        if len(text) > _READ_LIMIT:
-            text = text[:_READ_LIMIT] + "\n…\n"
+        mark = focus.get(safe)
+        if mark:
+            start = max(1, int(mark) - 24)
+            chunks.append(
+                f"{safe}\n{format_hashed(text, start_line=start, limit=49, mark_line=int(mark))}"
+            )
+            continue
         chunks.append(f"{safe}\n{format_hashed(text)}")
     return "\n".join(chunks)
 

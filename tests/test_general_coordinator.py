@@ -15,6 +15,7 @@ from local_coder.general.coordinator import (
     review_payload,
     run_general_request,
 )
+from local_coder.general.direct_write import CompletionResult
 
 
 def test_has_file_changes_detects_new_source(tmp_path):
@@ -492,6 +493,100 @@ def test_repeated_check_failures_stop_inside_budget(tmp_path):
     assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
 
 
+def test_continue_from_existing_candidate_starts_in_repair(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCAL_CODER_CONFIG_DIR", str(tmp_path / "config"))
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>original</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    first_body = (
+        'import { missing } from "./gone";\n'
+        "export default function App(){return <h1>Kept work</h1>}\n"
+    )
+
+    def first_complete(_prompt: str) -> str:
+        return f"```src/App.tsx\n{first_body}```\n"
+
+    first = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-hist",
+        fake_complete=first_complete,
+        start_preview_after=False,
+        generation_limit=1,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    hist = request_dir(first["project_id"], "req-hist") / "candidate" / "src" / "App.tsx"
+    assert "Kept work" in hist.read_text(encoding="utf-8")
+    prompts: list[str] = []
+
+    def second_complete(prompt: str) -> str:
+        prompts.append(prompt)
+        return (
+            "```src/App.tsx\n"
+            "export default function App(){return <h1>Repaired</h1>}\n"
+            "```\n"
+        )
+
+    second = run_general_request(
+        user,
+        "Fix the current blocking compiler error. Preserve existing behavior.",
+        request_id="req-cont",
+        fake_complete=second_complete,
+        start_preview_after=False,
+        generation_limit=2,
+        continue_from="req-hist",
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert prompts
+    assert "look finished" not in prompts[0]
+    assert "Also write src/App.css" not in prompts[0]
+    assert "cannot resolve import" in prompts[0] or "./gone" in prompts[0]
+    assert "Kept work" in prompts[0]
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+    cont = request_dir(second["project_id"], "req-cont")
+    assert json.loads((cont / "continuation.json").read_text(encoding="utf-8"))["continued_from"] == "req-hist"
+    assert "Repaired" in (cont / "candidate" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+
+def test_truncated_reply_does_not_apply_or_retry_as_parse_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCAL_CODER_CONFIG_DIR", str(tmp_path / "config"))
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+
+    def complete(prompt: str) -> CompletionResult:
+        prompts.append(prompt)
+        return CompletionResult(
+            text="```src/App.tsx\nexport default function App(){return <h1>Partial</h1>}\n```\n",
+            finish_reason="length",
+            truncated=True,
+            request_identity={"id": "chatcmpl-trunc", "model": "Ternary-Bonsai-2-27B-PQ2_0"},
+        )
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-trunc",
+        fake_complete=complete,
+        start_preview_after=False,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert len(prompts) == 1
+    candidate = request_dir(result["project_id"], "req-trunc") / "candidate" / "src" / "App.tsx"
+    assert "Partial" not in candidate.read_text(encoding="utf-8")
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+    raw = (request_dir(result["project_id"], "req-trunc") / "last_reply.txt").read_text(encoding="utf-8")
+    assert "Partial" in raw
+    assert "cut off" in str(result.get("model_commentary") or "").lower() or result.get("stopped_incomplete")
+
+
 def test_cancel_drops_late_model_output(tmp_path):
     import threading
 
@@ -594,4 +689,112 @@ def test_build_failure_is_sent_back_for_repair(tmp_path, monkeypatch):
     candidate = request_dir(result["project_id"], "req-build") / "candidate" / "src" / "App.tsx"
     assert "Board" in candidate.read_text(encoding="utf-8")
     assert result["verification"]["build"] == "pass"
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
+def test_empty_repair_reply_is_retried_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCAL_CODER_CONFIG_DIR", str(tmp_path / "config"))
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+
+    def complete(prompt: str) -> str:
+        prompts.append(prompt)
+        if "cannot resolve import" in prompt and "tool_call XML" in prompt:
+            return "```src/App.tsx\nexport default function App(){return <h1>Board</h1>}\n```\n"
+        if "cannot resolve import" in prompt:
+            return "I'll inspect the files first.\n"
+        return (
+            "```src/App.tsx\n"
+            'import { missing } from "./gone";\n'
+            "export default function App(){return <h1>Broken</h1>}\n"
+            "```\n"
+        )
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-empty-retry",
+        fake_complete=complete,
+        start_preview_after=False,
+        generation_limit=4,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert any("tool_call XML" in item for item in prompts)
+    candidate = request_dir(result["project_id"], "req-empty-retry") / "candidate" / "src" / "App.tsx"
+    assert "Board" in candidate.read_text(encoding="utf-8")
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
+def test_same_diagnostic_stops_after_two_unsuccessful_repairs(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCAL_CODER_CONFIG_DIR", str(tmp_path / "config"))
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+
+    def complete(prompt: str) -> str:
+        prompts.append(prompt)
+        return (
+            "```src/App.tsx\n"
+            'import { missing } from "./gone";\n'
+            "export default function App(){return <h1>Broken</h1>}\n"
+            "```\n"
+        )
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-same-diag",
+        fake_complete=complete,
+        start_preview_after=False,
+        generation_limit=6,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    assert 2 <= len(prompts) <= 4
+    assert result["verification"]["stopped_incomplete"] is True
+    assert result["verification"]["ok"] is not True if "ok" in result["verification"] else True
+    assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original
+
+
+def test_changed_candidate_is_rechecked_before_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCAL_CODER_CONFIG_DIR", str(tmp_path / "config"))
+    user = tmp_path / "app"
+    user.mkdir()
+    (user / "src").mkdir()
+    original = "export default function App(){return <p>hi</p>}\n"
+    (user / "src" / "App.tsx").write_text(original, encoding="utf-8")
+    prompts: list[str] = []
+
+    def complete(prompt: str) -> str:
+        prompts.append(prompt)
+        if any("cannot resolve import" in item for item in prompts) and "cannot resolve import" in prompt:
+            return "```src/App.tsx\nexport default function App(){return <h1>Board</h1>}\n```\n"
+        return (
+            "```src/App.tsx\n"
+            'import { missing } from "./gone";\n'
+            "export default function App(){return <h1>Broken</h1>}\n"
+            "```\n"
+        )
+
+    result = run_general_request(
+        user,
+        "Finish the board",
+        request_id="req-recheck",
+        fake_complete=complete,
+        start_preview_after=False,
+        model_id="Qwen3.5-4B-Q4_K_M",
+    )
+    candidate = request_dir(result["project_id"], "req-recheck") / "candidate" / "src" / "App.tsx"
+    assert "Board" in candidate.read_text(encoding="utf-8")
+    assert "gone" not in candidate.read_text(encoding="utf-8")
+    assert result["verification"]["typecheck"] == "pass"
     assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original

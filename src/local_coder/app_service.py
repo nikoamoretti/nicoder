@@ -1025,7 +1025,8 @@ class AppRuntime:
 
     def start_request(self, repo: str, request: str, profile_name: str = DEFAULT_PROFILE,
                       execution: str | None = None, engine: str | None = None,
-                      kind: str = "create") -> dict[str, Any]:
+                      kind: str = "create", generation_limit: int | None = None,
+                      continue_from: str | None = None) -> dict[str, Any]:
         """Start a request on a worker thread and return immediately."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -1046,6 +1047,8 @@ class AppRuntime:
                     "episode_id": episode,
                     "engine": chosen,
                     "kind": kind,
+                    "generation_limit": generation_limit,
+                    "continue_from": continue_from,
                 },
                 name="local-coder-episode",
                 daemon=True,
@@ -1085,6 +1088,8 @@ class AppRuntime:
                 kind=str(kwargs.get("kind") or "create"),
                 listener=self._emit,
                 cancel_event=self.cancel_event,
+                generation_limit=kwargs.get("generation_limit"),
+                continue_from=kwargs.get("continue_from"),
             )
         except AppError as exc:
             self.last_error = exc.detail

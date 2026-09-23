@@ -46,6 +46,20 @@ oops
     assert any("bash" in item or "shell" in item for item in parsed.refused)
 
 
+def test_parse_actions_treats_tool_call_xml_as_a_read():
+    raw = """I'll inspect the failing file.
+
+<tool_call>
+<function=read>
+src/TaskItem.tsx
+</function>
+</tool_call>
+"""
+    parsed = parse_actions(raw)
+    assert parsed.reads == ["src/TaskItem.tsx"]
+    assert parsed.writes == {}
+
+
 def test_parse_file_blocks_does_not_treat_read_or_edit_as_writes():
     raw = """
 ```read src/App.tsx
@@ -92,6 +106,26 @@ def test_read_files_returns_hashed_candidate_contents(tmp_path):
     assert line_hash("export const blue = '#00f'") in text
     assert "#00f" in text
     assert "secret" not in text
+    assert "missing" in text
+
+
+def test_format_hashed_marks_and_windows_a_late_line():
+    body = "\n".join(f"const n{index} = {index};" for index in range(1, 201))
+    text = format_hashed(body, start_line=170, limit=21, mark_line=180)
+    assert f">{line_hash('const n180 = 180;')}|const n180 = 180;" in text
+    assert "const n1 = 1;" not in text
+    assert "169 lines above" in text
+
+
+def test_read_files_windows_around_a_failing_line(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    body = "\n".join(f"const n{index} = {index};" for index in range(1, 201)) + "\n"
+    (src / "Late.tsx").write_text(body, encoding="utf-8")
+    text = read_files(tmp_path, ["src/Late.tsx"], around={"src/Late.tsx": 180})
+    assert "const n180 = 180;" in text
+    assert f">{line_hash('const n180 = 180;')}|" in text
+    assert "const n1 = 1;" not in text
 
 
 def test_format_hashed_prefixes_each_line():

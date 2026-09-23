@@ -1,0 +1,49 @@
+{
+  "request_id": "ep-20260923-005611-9efd",
+  "continued_from": "ep-20260922-081807-faf7",
+  "helper": {"version": "0.4.0", "build_id": "20260922-repair-context"},
+  "app_binary": {"version": "0.4.0", "rebuilt": false},
+  "model": "Ternary-Bonsai-2-27B-PQ2_0",
+  "n_ctx": 8192,
+  "max_tokens": 3072,
+  "generation_limit": 6,
+  "generations": 1,
+  "elapsed_s": 83.64,
+  "timings": {
+    "check_s": 11.184,
+    "account_s": 0.185,
+    "generation_s": 71.522,
+    "prompt_ms": 56624.173,
+    "predicted_ms": 5617.718,
+    "prompt_tokens": 3369,
+    "completion_tokens": 72,
+    "finish_reason": "stop",
+    "truncated": false,
+    "apply": "not_applied",
+    "predicted_per_second": null
+  },
+  "request_identity": {
+    "id": "chatcmpl-8lqNkC3SQGr0dumwtR69N2WhvG3M3Fae",
+    "model": "Ternary-Bonsai-2-27B-PQ2_0"
+  },
+  "verification": {
+    "build": "fail",
+    "preview": "failed",
+    "page_mounted": true,
+    "behavior_verified": false,
+    "stopped_incomplete": true
+  },
+  "model_reply_kind": "foreign_tool_call_xml_reads",
+  "files_applied": [],
+  "user_folder_unchanged": true,
+  "browser": {
+    "url": "http://127.0.0.1:4837/",
+    "served_dir": "ep-20260923-005611-9efd/candidate",
+    "empty_board_mounted": true,
+    "add_task": "page_unmounted_empty_root",
+    "edit": "untested",
+    "move": "untested",
+    "search": "untested",
+    "refresh": "untested"
+  }
+}
