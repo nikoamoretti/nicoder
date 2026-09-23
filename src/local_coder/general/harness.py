@@ -26,7 +26,8 @@ _ROOT_NAMES = {
 _READ_LIMIT = 8000
 _HASH_LINES = 80
 _TOOL_READ = re.compile(
-    r"<function\s*=\s*read>\s*(?P<path>[^\s<]+)\s*</function>",
+    r"<function\s*=\s*read\b\s*(?:>\s*)?(?:<parameter\s*=\s*\w+\s*>\s*)?(?:path\s*=\s*)?[\"']?"
+    r"(?P<path>[^\s<>\"']+)[\"']?\s*(?:>\s*)?(?:</parameter>\s*)?</function>",
     re.I,
 )
 
@@ -72,6 +73,37 @@ def format_hashed(
     if leftover > 0:
         rows.append(f"… ({leftover} lines below)")
     return "\n".join(rows) + ("\n" if rows else "")
+
+
+def format_lines(text: str, show: set[int], *, marks: set[int] | None = None) -> str:
+    """Hashed lines for 1-based line numbers. Gaps are labeled so nothing looks contiguous."""
+    lines = text.splitlines()
+    total = len(lines)
+    marked = marks or set()
+    rows: list[str] = []
+    prev = 0
+    for number in sorted(n for n in show if 1 <= n <= total):
+        if number - prev > 1:
+            rows.append(f"… ({number - prev - 1} lines not shown)")
+        line = lines[number - 1]
+        rows.append(f"{'>' if number in marked else ''}{line_hash(line)}|{line}")
+        prev = number
+    if rows and prev < total:
+        rows.append(f"… ({total - prev} lines not shown)")
+    return "\n".join(rows) + ("\n" if rows else "")
+
+
+def contained_file(root: Path, rel: str) -> Path | None:
+    """Candidate path for rel, or None when unsafe or a symlink resolves outside root."""
+    safe = safe_rel(rel)
+    if not safe:
+        return None
+    path = root / safe
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return path
 
 
 def safe_rel(rel: str) -> str | None:
@@ -156,9 +188,18 @@ def apply_edit_text(current: str, patch: str) -> str:
         raise EditError("edit has no line hashes")
     lines = current.splitlines()
     hashed = [line_hash(line) for line in lines]
-    start = _find_span(hashed, hashes)
-    if start < 0:
+    spans = _find_spans(hashed, hashes)
+    if not spans:
+        if all(item in hashed for item in hashes):
+            raise EditError(
+                "the - lines are not consecutive in the current file; use one edit block per consecutive span"
+            )
         raise EditError("edit hash does not match the current file")
+    if len(spans) > 1:
+        raise EditError(
+            f"edit hashes match {len(spans)} places in the file; include a neighboring line so the span is unique"
+        )
+    start = spans[0]
     end = start + len(hashes)
     updated = lines[:start] + additions + lines[end:]
     return "\n".join(updated) + "\n"
@@ -177,7 +218,10 @@ def read_files(
         safe = safe_rel(rel)
         if not safe:
             continue
-        path = root / safe
+        path = contained_file(root, safe)
+        if path is None:
+            chunks.append(f"{safe}: refused, the path resolves outside the candidate")
+            continue
         if not path.is_file():
             chunks.append(f"{rel}: file is missing from the candidate")
             continue
@@ -204,20 +248,30 @@ def materialize(root: Path, parsed: ParsedTurn) -> tuple[dict[str, str], list[st
     for rel, patch in parsed.edits:
         if rel in parsed.writes:
             continue
-        path = root / rel
-        if not path.is_file():
-            problems.append(f"{rel}: edit target does not exist")
+        path = contained_file(root, rel)
+        if path is None:
+            problems.append(f"{rel}: edit target resolves outside the candidate")
             continue
-        try:
-            current = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            problems.append(f"{rel}: {exc}")
-            continue
+        if rel in files:
+            current = files[rel]
+        else:
+            if not path.is_file():
+                problems.append(f"{rel}: edit target does not exist")
+                continue
+            try:
+                current = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                problems.append(f"{rel}: {exc}")
+                continue
         try:
             files[rel] = apply_edit_text(current, patch)
         except EditError as exc:
             problems.append(f"{rel}: {exc}")
-    files.update(parsed.writes)
+    for rel, body in parsed.writes.items():
+        if contained_file(root, rel) is None:
+            problems.append(f"{rel}: write target resolves outside the candidate")
+            continue
+        files[rel] = body
     for rel, body in files.items():
         problems.extend(scan_text(rel, body))
     return files, problems
@@ -254,7 +308,9 @@ def _parse_patch(patch: str) -> tuple[list[str], list[str]]:
     additions: list[str] = []
     for raw in patch.splitlines():
         if raw.startswith("-"):
-            token = raw[1:].strip().split()[0] if raw[1:].strip() else ""
+            body = raw[1:].strip()
+            token = body.split()[0] if body else ""
+            token = token.lstrip(">").split("|", 1)[0]
             if _HASH.fullmatch(token):
                 hashes.append(token)
             continue
@@ -263,11 +319,11 @@ def _parse_patch(patch: str) -> tuple[list[str], list[str]]:
     return hashes, additions
 
 
-def _find_span(hashed: list[str], needle: list[str]) -> int:
+def _find_spans(hashed: list[str], needle: list[str]) -> list[int]:
     size = len(needle)
     if size == 0 or size > len(hashed):
-        return -1
-    for index in range(0, len(hashed) - size + 1):
-        if hashed[index : index + size] == needle:
-            return index
-    return -1
+        return []
+    return [
+        index for index in range(0, len(hashed) - size + 1)
+        if hashed[index : index + size] == needle
+    ]

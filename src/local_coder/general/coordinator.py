@@ -10,6 +10,7 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,15 @@ from local_coder.engines.opencode_server import client_from_record, read_record,
 from local_coder.general.budgets import RequestBudget, budget_for
 from local_coder.general.candidate_check import (
     check_candidate,
-    check_retry_message,
     empty_app_reason,
     run_project_build,
     write_verification,
 )
 from local_coder.general.direct_write import (
+    BudgetExhausted,
     CompletionResult,
+    PromptTooLarge,
+    ReplyOutcome,
     complete_files,
     fallback_explanation,
     local_complete,
@@ -37,8 +40,11 @@ from local_coder.general.inspect import classify_request, inspect_project
 from local_coder.general.notebook import update_notebook
 from local_coder.general.preview import check_preview_health, start_preview, stop_preview, write_preview_record
 from local_coder.general.repair_context import (
+    FileView,
     RepairState,
     build_repair_state,
+    diagnostic_lines,
+    error_keys,
     write_repair_state,
 )
 from local_coder.general.snapshot import (
@@ -66,19 +72,44 @@ MAX_CHECK_REPAIRS = 8
 class _GenerationLedger:
     """Count live completions against the current request budget."""
 
-    def __init__(self, budget: RequestBudget, generation_limit: int | None = None) -> None:
+    def __init__(
+        self,
+        budget: RequestBudget,
+        generation_limit: int | None = None,
+        wall_seconds: int | None = None,
+    ) -> None:
         self.budget = budget
         self.started = time.time()
         self.count = 0
         self.max_generations = (
             int(generation_limit) if generation_limit is not None else int(budget.max_generations)
         )
+        self.wall_seconds = int(wall_seconds) if wall_seconds is not None else int(budget.wall_seconds)
+        self.longest_generation_s = 0.0
+        self.longest_check_s = 0.0
 
     def remaining_s(self) -> float:
-        return max(0.0, float(self.budget.wall_seconds) - (time.time() - self.started))
+        return max(0.0, float(self.wall_seconds) - (time.time() - self.started))
+
+    def reserve_s(self) -> float:
+        """Time one more model call plus its check is expected to need."""
+        return max(8.0, self.longest_generation_s + self.longest_check_s)
 
     def can_generate(self) -> bool:
-        return self.count < self.max_generations and self.remaining_s() > 8
+        return self.count < self.max_generations and self.remaining_s() > self.reserve_s()
+
+    def stop_reason(self) -> str:
+        if self.count >= self.max_generations:
+            return "generation_limit"
+        if self.remaining_s() <= self.reserve_s():
+            return "wall_budget"
+        return ""
+
+    def note_generation(self, seconds: float) -> None:
+        self.longest_generation_s = max(self.longest_generation_s, seconds)
+
+    def note_check(self, seconds: float) -> None:
+        self.longest_check_s = max(self.longest_check_s, seconds)
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -86,7 +117,9 @@ class _GenerationLedger:
             "elapsed_s": round(time.time() - self.started, 2),
             "remaining_s": round(self.remaining_s(), 2),
             "max_generations": self.max_generations,
-            "wall_seconds": self.budget.wall_seconds,
+            "wall_seconds": self.wall_seconds,
+            "longest_generation_s": round(self.longest_generation_s, 2),
+            "longest_check_s": round(self.longest_check_s, 2),
         }
 
 
@@ -229,6 +262,11 @@ def prepare_recovery_workspace(historical_root: Path | str, request_id: str) -> 
     return meta
 
 
+def _tree_hashes(root: Path) -> dict[str, str]:
+    """Content identity of every snapshotted source file (node_modules and build output excluded)."""
+    return {rel: entry.sha256 for rel, entry in index_tree(root).files.items()}
+
+
 def _src_hashes(root: Path) -> dict[str, str]:
     """SHA-256 of candidate web sources. Used to protect continuation identity."""
     hashes: dict[str, str] = {}
@@ -256,26 +294,30 @@ def _align_continuation(meta: dict[str, Any], continue_from: str) -> None:
         )
     hist_cand = hist / "candidate"
     live = Path(meta.get("engine_cwd") or meta["candidate"])
-    baseline = Path(meta["baseline"])
-    hist_hashes = _src_hashes(hist_cand)
-    live_hashes = _src_hashes(live) if live.is_dir() else {}
-    user_hashes = _src_hashes(baseline)
+    candidate = Path(meta["candidate"])
+    hist_tree = _tree_hashes(hist_cand)
+    live_before = _tree_hashes(live) if live.is_dir() else {}
     restored = False
-    if hist_hashes and live_hashes == user_hashes and hist_hashes != user_hashes:
+    if hist_tree != live_before:
         copy_snapshot(hist_cand, live)
         restored = True
-    elif hist_hashes and not live_hashes:
-        copy_snapshot(hist_cand, live)
-        restored = True
-    _publish_candidate(live, Path(meta["candidate"]))
+    if _tree_hashes(live) != hist_tree:
+        raise GeneralError(f"cannot continue: working copy does not match {continue_from}", code="evidence")
+    _publish_candidate(live, candidate)
+    candidate_tree = _tree_hashes(candidate)
+    if candidate_tree != hist_tree:
+        raise GeneralError(f"cannot continue: candidate does not match {continue_from}", code="evidence")
+    hist_hashes = _src_hashes(hist_cand)
     after_hashes = _src_hashes(live)
     record: dict[str, Any] = {
         "continued_from": continue_from,
         "historical_hashes": hist_hashes,
-        "live_hashes_before": live_hashes,
+        "historical_tree": hist_tree,
+        "live_hashes_before": live_before,
         "restored_live_from_historical": restored,
         "live_hashes_after": after_hashes,
-        "candidate_hashes": _src_hashes(Path(meta["candidate"])),
+        "candidate_hashes": _src_hashes(candidate),
+        "candidate_tree_matches": True,
     }
     request_root = Path(meta["baseline"]).parent
     (request_root / "continuation.json").write_text(
@@ -332,6 +374,7 @@ def run_general_request(
     start_preview_after: bool = True,
     generation_limit: int | None = None,
     continue_from: str | None = None,
+    wall_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Snapshot, ask the model for files, apply them, then review."""
     folder = Path(user_path).expanduser().resolve()
@@ -348,7 +391,7 @@ def run_general_request(
 
         return chat_request(folder, text)
     request_id = request_id or new_episode_id()
-    ledger = _GenerationLedger(budget_for(kind), generation_limit=generation_limit)
+    ledger = _GenerationLedger(budget_for(kind), generation_limit=generation_limit, wall_seconds=wall_seconds)
     try:
         model = resolve_model_id(model_id)
     except ModelIdentityError as exc:
@@ -402,14 +445,14 @@ def run_general_request(
                     start_preview_after=start_preview_after, allow_repair=True,
                 )
         else:
-            written, raw, problems = _apply_direct(
+            written, raw, problems, _outcome = _apply_direct(
                 engine_cwd, text, inspection, meta, listener, complete=generate,
                 conversation=conversation, cancel=cancel,
             )
             truncated = any(item.startswith("truncated") for item in problems)
             if not written and not cancel.is_set() and ledger.can_generate() and not truncated:
                 reason = parse_retry_message(problems) if problems else None
-                written, raw, problems = _apply_direct(
+                written, raw, problems, _outcome = _apply_direct(
                     engine_cwd, text, inspection, meta, listener,
                     complete=generate, previous=raw, conversation=conversation,
                     retry_reason=reason, cancel=cancel,
@@ -470,11 +513,27 @@ def _bound_complete(
         if cancel.is_set():
             raise RuntimeError("cancelled")
         if not ledger.can_generate():
-            raise RuntimeError("generation budget exhausted")
+            raise BudgetExhausted(ledger.stop_reason() or "generation budget exhausted")
         ledger.count += 1
-        return generate(prompt)
+        started = time.perf_counter()
+        try:
+            return generate(prompt)
+        except PromptTooLarge:
+            ledger.count -= 1
+            raise
+        finally:
+            ledger.note_generation(time.perf_counter() - started)
 
     return wrapped
+
+
+_STOP_TEXT = {
+    "same_diagnostic": "Stopped: the same diagnostic survived two applied repairs.",
+    "no_progress": "Stopped: two model replies in a row made no progress.",
+    "max_repairs": "Stopped after the repair limit.",
+    "generation_limit": "Stopped at the generation limit.",
+    "wall_budget": "Stopped: not enough time left for another model call and check.",
+}
 
 
 def _verify_and_repair(
@@ -495,88 +554,114 @@ def _verify_and_repair(
     """Check the candidate and, if needed, ask the model to fix it in this request."""
     repairs = 0
     same = 0
-    empty = 0
-    last_fp = ""
+    stalled = 0
+    last_keys: frozenset[str] | None = None
+    last_outcome: ReplyOutcome | None = None
     last_raw = ""
+    views: dict[str, FileView] = {}
     previous_repair: RepairState | None = None
+    repair: RepairState | None = None
+    verification: dict[str, Any] = {}
+    needs_check = True
     while True:
         if cancel.is_set():
-            meta["stopped_incomplete"] = True
-            _save_meta(meta)
+            _stop(meta, "cancelled")
             return
-        check_started = time.perf_counter()
-        verification = _record_verification(meta, candidate, listener, start_preview_after)
-        meta.setdefault("timings", []).append({
-            "check_s": round(time.perf_counter() - check_started, 3),
-        })
-        if verification.get("ok"):
-            meta.pop("repair_state", None)
-            _save_meta(meta)
-            return
-        repair = build_repair_state(text, verification, candidate, previous=previous_repair)
-        previous_repair = repair
-        write_repair_state(Path(meta["baseline"]).parent, repair)
-        meta["repair_state"] = {
-            "check": repair.check,
-            "fingerprint": repair.fingerprint(),
-            "hits": [{"rel": hit.rel, "line": hit.line} for hit in repair.hits],
-            "candidate_id": repair.candidate_id,
-        }
-        fp = repair.fingerprint()
-        if last_fp and fp == last_fp:
-            same += 1
-        else:
-            same = 0
-            last_fp = fp
-        if not allow_repair or complete is None:
-            meta["stopped_incomplete"] = True
-            _save_meta(meta)
-            return
-        if (
-            same >= 2
-            or repairs >= MAX_CHECK_REPAIRS
-            or not ledger.can_generate()
-            or ledger.remaining_s() < 20
-        ):
-            meta["stopped_incomplete"] = True
-            verification["stopped_incomplete"] = True
-            meta["verification"] = verification
-            _save_meta(meta)
-            write_verification(Path(meta["baseline"]).parent, verification)
-            _emit(listener, "budget", {"detail": "Stopped after checking. The original project is unchanged."})
-            return
-        _emit(listener, "activity", {"detail": "Sending the check error back to the model."})
-        reason = check_retry_message(verification)
-        if last_raw:
-            reason = (
-                "Your last reply had no write or edit blocks. "
-                "Use fenced write, edit, or read blocks only. "
-                "Do not use tool_call XML.\n" + reason
-            )
-        written, last_raw, problems = _apply_direct(
-            engine_cwd, text, inspection, meta, listener, complete=complete,
-            conversation=conversation, previous=last_raw or None, retry_reason=reason,
-            repair=repair, cancel=cancel,
-        )
-        _publish_candidate(engine_cwd, candidate)
-        if cancel.is_set() or (not written and problems == ["cancelled"]):
-            meta["stopped_incomplete"] = True
-            _save_meta(meta)
-            return
-        if any(item.startswith("truncated") for item in problems):
-            meta["stopped_incomplete"] = True
-            meta["truncated"] = True
-            _save_meta(meta)
-            return
-        if not written:
-            empty += 1
-            if empty >= 2 or not ledger.can_generate():
-                meta["stopped_incomplete"] = True
+        if needs_check or repair is None:
+            check_started = time.perf_counter()
+            verification = _record_verification(meta, candidate, listener, start_preview_after)
+            check_s = round(time.perf_counter() - check_started, 3)
+            ledger.note_check(check_s)
+            meta.setdefault("timings", []).append({"check_s": check_s})
+            _record_check(meta, verification, check_s)
+            if verification.get("ok"):
+                meta.pop("repair_state", None)
+                meta["stop_reason"] = "checks_passed"
                 _save_meta(meta)
                 return
+            repair = build_repair_state(text, verification, candidate, previous=previous_repair)
+            previous_repair = repair
+            write_repair_state(Path(meta["baseline"]).parent, repair)
+            keys = error_keys(repair)
+            if last_outcome is not None and last_outcome.kind == "applied":
+                same = same + 1 if keys == last_keys else 0
+            last_keys = keys
+            meta["repair_state"] = {
+                "check": repair.check,
+                "fingerprint": repair.fingerprint(),
+                "error_count": len(keys),
+                "hits": [{"rel": hit.rel, "line": hit.line} for hit in repair.hits],
+                "candidate_id": repair.candidate_id,
+            }
+            needs_check = False
+        if not allow_repair or complete is None:
+            _stop(meta, "not_repaired")
+            return
+        reason = ""
+        if same >= 2:
+            reason = "same_diagnostic"
+        elif stalled >= 2:
+            reason = "no_progress"
+        elif repairs >= MAX_CHECK_REPAIRS:
+            reason = "max_repairs"
+        elif not ledger.can_generate():
+            reason = ledger.stop_reason() or "generation_limit"
+        if reason:
+            verification["stopped_incomplete"] = True
+            meta["verification"] = verification
+            write_verification(Path(meta["baseline"]).parent, verification)
+            _stop(meta, reason)
+            _emit(listener, "budget", {"detail": f"{_STOP_TEXT[reason]} The original project is unchanged."})
+            return
+        _emit(listener, "activity", {"detail": "Sending the check error back to the model."})
+        written, last_raw, _problems, outcome = _apply_direct(
+            engine_cwd, text, inspection, meta, listener, complete=complete,
+            conversation=conversation, previous=last_raw or None,
+            repair=repair, cancel=cancel, views=views, previous_outcome=last_outcome,
+        )
+        last_outcome = outcome
+        if cancel.is_set() or outcome.kind == "cancelled":
+            _stop(meta, "cancelled")
+            return
+        if outcome.kind == "applied" and written:
+            _publish_candidate(engine_cwd, candidate)
+            repairs += 1
+            stalled = 0
+            needs_check = True
             continue
-        empty = 0
-        repairs += 1
+        if outcome.kind == "budget":
+            reason = ledger.stop_reason() or "generation_limit"
+            _stop(meta, reason)
+            _emit(listener, "budget", {"detail": f"{_STOP_TEXT[reason]} The original project is unchanged."})
+            return
+        if outcome.kind != "read":
+            stalled += 1
+
+
+def _stop(meta: dict[str, Any], reason: str) -> None:
+    meta["stopped_incomplete"] = True
+    meta["stop_reason"] = reason
+    _save_meta(meta)
+
+
+def _record_check(meta: dict[str, Any], verification: dict[str, Any], check_s: float) -> None:
+    """Keep every check, not only the last one, with the preview it looked at."""
+    from local_coder.general.preview import read_preview
+
+    preview = read_preview() or {}
+    meta.setdefault("checks", []).append({
+        "at_s": round(time.time() - float(meta.get("created_ts") or time.time()), 2),
+        "check_s": check_s,
+        "ok": verification.get("ok"),
+        "build": verification.get("build"),
+        "preview": verification.get("preview"),
+        "page_mounted": verification.get("page_mounted"),
+        "preview_url": preview.get("url"),
+        "preview_dir": preview.get("dir"),
+        "preview_pid": preview.get("pid"),
+        "errors": diagnostic_lines(str(verification.get("detail") or ""))[:40],
+    })
+    _save_meta(meta)
 
 
 def _record_verification(
@@ -696,51 +781,88 @@ def _apply_direct(
     retry_reason: str | None = None,
     repair: RepairState | None = None,
     cancel: threading.Event | None = None,
-) -> tuple[list[str], str, list[str]]:
-    """Write model file bodies onto the working copy."""
+    views: dict[str, FileView] | None = None,
+    previous_outcome: ReplyOutcome | None = None,
+) -> tuple[list[str], str, list[str], ReplyOutcome]:
+    """Write model file bodies onto the working copy and record what happened to each reply."""
     _emit(listener, "activity", {"detail": "Asking the model to write the files now."})
     apply_started = time.perf_counter()
-    try:
-        def on_event(kind: str, detail: str) -> None:
-            if kind == "read":
-                _emit(listener, "activity", {"detail": f"Reading {detail}."})
-            elif kind == "edit":
-                _emit(listener, "activity", {"detail": f"Edited {detail}."})
-            elif kind == "completion":
-                meta.setdefault("completions", []).append(detail)
+    request_root = Path(meta["baseline"]).parent
+    outcomes: list[ReplyOutcome] = []
+    turns: list[int] = []
 
+    def on_event(kind: str, detail: str) -> None:
+        if kind == "read":
+            _emit(listener, "activity", {"detail": f"Reading {detail}."})
+        elif kind == "edit":
+            _emit(listener, "activity", {"detail": f"Edited {detail}."})
+        elif kind == "completion":
+            meta.setdefault("completions", []).append(detail)
+        elif kind == "prompt":
+            turns.append(_write_turn(request_root, meta, "prompt", detail, advance=True))
+        elif kind == "reply":
+            _write_turn(request_root, meta, "reply", detail, advance=False)
+
+    try:
         written, raw, problems = complete_files(
             engine_cwd, text, inspection, complete=complete, previous=previous,
             conversation=conversation, retry_reason=retry_reason, repair=repair,
-            on_event=on_event, cancel=cancel,
+            on_event=on_event, cancel=cancel, outcomes=outcomes, views=views,
+            previous_outcome=previous_outcome,
         )
-        _write_last_reply(Path(meta["baseline"]).parent, raw)
-        meta.setdefault("timings", []).append({
-            "apply_s": round(time.perf_counter() - apply_started, 3),
-            "written": written,
-        })
     except (RuntimeError, OSError) as exc:
-        _emit(listener, "activity", {"detail": f"The model did not return usable files: {exc}"})
-        return [], "", []
-    if problems:
-        if "cancelled" in problems:
-            return [], raw, problems
-        if any(item.startswith("truncated") for item in problems):
-            _emit(listener, "activity", {
-                "detail": "The model reply was cut off at the output limit and was not applied.",
-            })
-            return [], raw, problems
-        _emit(listener, "activity", {
-            "detail": "The model wrote files the preview cannot compile. They were not applied.",
-        })
-        return [], raw, problems
-    if not written:
-        _emit(listener, "activity", {"detail": "The model replied without file blocks."})
-        return [], raw, []
-    meta["model_commentary"] = reply_prose(raw) or fallback_explanation(written)
+        failed = ReplyOutcome("error", problems=[str(exc)])
+        _record_replies(meta, [failed], turns)
+        _save_meta(meta)
+        _emit(listener, "activity", {"detail": f"The model call failed: {exc}"})
+        return [], "", [str(exc)], failed
+    _write_last_reply(request_root, raw)
+    _record_replies(meta, outcomes, turns)
+    meta.setdefault("timings", []).append({
+        "apply_s": round(time.perf_counter() - apply_started, 3),
+        "written": written,
+    })
+    outcome = outcomes[-1] if outcomes else ReplyOutcome("no_action")
+    if outcome.kind == "applied" and written:
+        meta["model_commentary"] = reply_prose(raw) or fallback_explanation(written)
+        _save_meta(meta)
+        _emit(listener, "activity", {"detail": f"Wrote {written[0]}."})
+        return written, raw, [], outcome
     _save_meta(meta)
-    _emit(listener, "activity", {"detail": f"Wrote {written[0]}."})
-    return written, raw, []
+    _emit(listener, "activity", {"detail": _OUTCOME_TEXT.get(outcome.kind, "The model reply was not applied.")})
+    return [], raw, problems, outcome
+
+
+_OUTCOME_TEXT = {
+    "truncated": "The model reply was cut off at the output limit and was not applied.",
+    "rejected": "The model's change did not apply to the current files, so nothing changed.",
+    "repeat_read": "The model asked for lines it was already shown.",
+    "read": "Read the requested files for the model.",
+    "no_action": "The model replied without file blocks.",
+    "budget": "No generation budget left for another model call.",
+    "cancelled": "Stopped before files were applied.",
+    "error": "The model call failed.",
+}
+
+
+def _write_turn(request_root: Path, meta: dict[str, Any], kind: str, text: str, *, advance: bool) -> int:
+    """Store each prompt and raw reply of this request under turns/, numbered by model call."""
+    if advance:
+        meta["turn_seq"] = int(meta.get("turn_seq") or 0) + 1
+    seq = int(meta.get("turn_seq") or 0)
+    folder = request_root / "turns"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{seq:02d}-{kind}.txt").write_text(text or "", encoding="utf-8")
+    return seq
+
+
+def _record_replies(meta: dict[str, Any], outcomes: list[ReplyOutcome], turns: list[int]) -> None:
+    pending = list(turns)
+    rows = meta.setdefault("replies", [])
+    for outcome in outcomes:
+        row = asdict(outcome)
+        row["turn"] = pending.pop(0) if outcome.completion and pending else None
+        rows.append(row)
 
 
 def _preview_failed_summary(detail: str, files: list[str]) -> str:

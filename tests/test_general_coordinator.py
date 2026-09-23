@@ -704,7 +704,7 @@ def test_empty_repair_reply_is_retried_once(tmp_path, monkeypatch):
 
     def complete(prompt: str) -> str:
         prompts.append(prompt)
-        if "cannot resolve import" in prompt and "tool_call XML" in prompt:
+        if "cannot resolve import" in prompt and "had no edit, write, or read block" in prompt:
             return "```src/App.tsx\nexport default function App(){return <h1>Board</h1>}\n```\n"
         if "cannot resolve import" in prompt:
             return "I'll inspect the files first.\n"
@@ -724,7 +724,8 @@ def test_empty_repair_reply_is_retried_once(tmp_path, monkeypatch):
         generation_limit=4,
         model_id="Qwen3.5-4B-Q4_K_M",
     )
-    assert any("tool_call XML" in item for item in prompts)
+    assert any("had no edit, write, or read block" in item for item in prompts)
+    assert not any("Your previous reply was applied" in item for item in prompts[1:3])
     candidate = request_dir(result["project_id"], "req-empty-retry") / "candidate" / "src" / "App.tsx"
     assert "Board" in candidate.read_text(encoding="utf-8")
     assert (user / "src" / "App.tsx").read_text(encoding="utf-8") == original

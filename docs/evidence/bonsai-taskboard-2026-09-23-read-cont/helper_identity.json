@@ -1,0 +1,58 @@
+{
+  "python": "~/.local/share/local-coder-venv/bin/python",
+  "version": "0.4.0",
+  "build_id": "20260923-read-continuation-2",
+  "dist_version": "0.4.0",
+  "direct_url": {
+    "dir_info": {},
+    "url": "file://~/projects/local-coder-16gb"
+  },
+  "modules": {
+    "local_coder": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/__init__.py",
+      "sha256": "d71d0bed1889c1927d5989d64fe1e13033056e7d10371f9f32e688ddbad3a165",
+      "matches_checkout": true
+    },
+    "local_coder.app_service": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/app_service.py",
+      "sha256": "6cfefda2886874e2eda064625361301add0967a3a7248f6c30002c20b2cd54a1",
+      "matches_checkout": true
+    },
+    "local_coder.app_rpc": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/app_rpc.py",
+      "sha256": "2c561f3350278197aeefcf4a4f44d2fefa8636ea108c3e0d5b929fc1c97f7612",
+      "matches_checkout": true
+    },
+    "local_coder.general.coordinator": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/general/coordinator.py",
+      "sha256": "d2a1ffdc894c11079d5e3f2701e77135610f08a52483f3c8f46a63da6195c432",
+      "matches_checkout": true
+    },
+    "local_coder.general.direct_write": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/general/direct_write.py",
+      "sha256": "a9f6dc56ff44d43102e69a1c33a1585b0186273112ea21eb6a9aa7544cfa0577",
+      "matches_checkout": true
+    },
+    "local_coder.general.harness": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/general/harness.py",
+      "sha256": "79ab8fe0df6bd2c2af403774583ace9c47b2acca793998195dd72ed426acd889",
+      "matches_checkout": true
+    },
+    "local_coder.general.repair_context": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/general/repair_context.py",
+      "sha256": "95dd9abc969888c548bfe99b0417cae82bd1bfed18987b0b4cfc0ecd01ed97a0",
+      "matches_checkout": true
+    },
+    "local_coder.general.candidate_check": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/general/candidate_check.py",
+      "sha256": "4ddd5250184daf54ef5c37c9edc37811f7e2a6c84dfd4261e918165f551ca4f5",
+      "matches_checkout": true
+    },
+    "local_coder.general.preview": {
+      "imported_from": "~/.local/share/local-coder-venv/lib/python3.12/site-packages/local_coder/general/preview.py",
+      "sha256": "c942132e85d6b174eeab4f0e518e629b49851b9a562733af8418cb705017a02f",
+      "matches_checkout": true
+    }
+  },
+  "all_match": true
+}

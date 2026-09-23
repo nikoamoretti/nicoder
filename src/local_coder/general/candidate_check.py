@@ -83,7 +83,7 @@ def run_project_build(root: Path, *, timeout: int = 180) -> dict[str, Any]:
         )
     except subprocess.TimeoutExpired:
         return {"ran": True, "ok": False, "code": "build_timeout", "detail": f"npm run build exceeded {timeout}s."}
-    detail = ((proc.stderr or "") + "\n" + (proc.stdout or ""))[-2000:]
+    detail = ((proc.stderr or "") + "\n" + (proc.stdout or ""))[-8000:]
     if proc.returncode != 0:
         return {"ran": True, "ok": False, "code": "build_failed", "detail": detail.strip() or "npm run build failed"}
     return {"ran": True, "ok": True, "code": "ok", "detail": "npm run build passed"}
@@ -106,7 +106,7 @@ def check_candidate(root: Path) -> dict[str, Any]:
         "source_problems": source_problems[:20],
         "empty_page": empty,
         "build": build,
-        "detail": "\n".join(detail_parts)[:2500],
+        "detail": "\n".join(detail_parts)[:8000],
     }
 
 

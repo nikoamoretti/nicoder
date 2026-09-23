@@ -1,4 +1,4 @@
-"""Structured repair state: keep the current diagnostic and its source window."""
+"""Structured repair state: keep the current diagnostic and its source in view."""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from local_coder.general.harness import format_hashed, safe_rel
+from local_coder.general.harness import contained_file, format_lines, safe_rel
 
 _TS_HIT = re.compile(
     r"(?P<path>(?:[A-Za-z]:)?[^:\n]+?\.(?:tsx|ts|jsx|js))(?:\((?P<line>\d+),(?P<col>\d+)\)|(?::(?P<line2>\d+)(?::(?P<col2>\d+))?))",
@@ -22,14 +22,24 @@ _PLUGIN_PATH = re.compile(
 _NAMED_FILE = re.compile(
     r"(?P<path>(?:src|electron|public)/[A-Za-z0-9_./-]+\.(?:tsx|ts|jsx|js))",
 )
-_WINDOW = 16
-_IMPORT_HEAD = 12
 _WEAK_ERROR = re.compile(
-    r"TS6133|declared but its value is never read|is declared but never used",
+    r"TS6133|TS6192|declared but its value is never read|is declared but never used"
+    r"|All imports in import declaration are unused",
     re.I,
 )
-_EXCERPT_BUDGET = 4500
-_DIAG_BUDGET = 1800
+_TSC_LINE = re.compile(r"\(\d+,\d+\): error TS\d+")
+_LOCATION = re.compile(r"\(\d+,\d+\)|:\d+:\d+")
+_DECL = re.compile(
+    r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b"
+    r"|^\s*(?:export\s+)?(?:const|let)\s+\w+\s*(?::[^=]+)?=\s*(?:async\s*)?"
+    r"(?:\([^)]*\)\s*(?::[^=]+)?=>|function\b|use(?:Callback|Memo)\b)"
+    r"|^\s*(?:export\s+)?(?:interface|type|class|enum)\s+\w+"
+)
+_ERROR_RADIUS = 3
+_READ_CHUNK = 100
+_HEAD_MAX = 12
+_NAMED_LINES = 24
+_DIAG_BUDGET = 2400
 
 
 @dataclass
@@ -63,6 +73,15 @@ class RepairState:
         for rel, digest in sorted(self.source_identity.items()):
             parts.append(f"{rel}:{digest[:16]}")
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass
+class FileView:
+    """Lines of one candidate file the model asked for or was shown, for one content identity."""
+
+    sha256: str
+    requested: set[int] = field(default_factory=set)
+    shown: set[int] = field(default_factory=set)
 
 
 def parse_diagnostic_hits(detail: str) -> list[SourceHit]:
@@ -106,32 +125,27 @@ def build_repair_state(
             hits.extend(parse_diagnostic_hits(str(item)))
     hits = _prioritize_hits(hits)
     identity: dict[str, str] = {}
-    excerpts: list[str] = []
     for hit in hits:
-        digest, excerpt = _excerpt_for(root, hit)
+        digest = _file_sha(root / hit.rel) if contained_file(root, hit.rel) else None
         hit.sha256 = digest
         if digest:
             identity[hit.rel] = digest
-        excerpts.append(excerpt)
     changed = ""
-    stale = False
-    if previous is not None:
-        changed = _identity_delta(previous.source_identity, identity)
-        if previous.source_identity and previous.source_identity != identity:
-            stale = False
-            changed = changed or "cited source changed since the previous check"
-    candidate_id = _tree_identity(root, list(identity))
-    return RepairState(
+    if previous is not None and previous.source_identity and previous.source_identity != identity:
+        changed = _identity_delta(previous.source_identity, identity) or "cited source changed since the previous check"
+    state = RepairState(
         goal=goal.strip(),
         check=check,
         diagnostic=diagnostic,
         hits=hits,
-        excerpts=excerpts,
         source_identity=identity,
         changed_since=changed,
-        candidate_id=candidate_id,
-        stale=stale,
+        candidate_id=_tree_identity(root, list(identity)),
+        stale=False,
     )
+    rendered, _shown = render_source(state, root, None, budget=12_000)
+    state.excerpts = [rendered] if rendered else []
+    return state
 
 
 def refresh_identity(state: RepairState, root: Path) -> RepairState:
@@ -159,13 +173,234 @@ def refresh_identity(state: RepairState, root: Path) -> RepairState:
     )
 
 
-def repair_prompt_sections(state: RepairState) -> str:
-    """Render the diagnostic and its source. Drops unrelated text before the error."""
-    lines = [
-        "Current blocking check: " + state.check,
-        "Exact diagnostic:",
-        _trim_diagnostic(state.diagnostic) or "(no diagnostic text)",
-    ]
+def error_keys(state: RepairState) -> frozenset[str]:
+    """Diagnostic identity without line numbers, so shifted lines are not new errors."""
+    keys = {_LOCATION.sub("", _compact(line)) for line in diagnostic_lines(state.diagnostic)}
+    return frozenset(keys or {state.check})
+
+
+def diagnostic_lines(detail: str) -> list[str]:
+    """Error lines of a diagnostic. npm banners and truncated headers are dropped for tsc output."""
+    lines = [line.rstrip() for line in (detail or "").splitlines() if line.strip()]
+    if not any(_TSC_LINE.search(line) for line in lines):
+        return lines
+    kept: list[str] = []
+    continuation = False
+    for line in lines:
+        if _TSC_LINE.search(line):
+            kept.append(line)
+            continuation = True
+        elif continuation and line.startswith((" ", "\t")):
+            kept.append(line)
+        else:
+            continuation = False
+    return kept
+
+
+def diagnostic_text(state: RepairState, budget: int = _DIAG_BUDGET) -> str:
+    """Exact diagnostic lines within budget. Unused-name errors are dropped before real ones."""
+    lines = diagnostic_lines(state.diagnostic)
+    text = "\n".join(lines)
+    if len(text) <= budget:
+        return text
+    order = [i for i, line in enumerate(lines) if not _WEAK_ERROR.search(line)]
+    order += [i for i, line in enumerate(lines) if _WEAK_ERROR.search(line)]
+    kept: set[int] = set()
+    used = 0
+    for index in order:
+        cost = len(lines[index]) + 1
+        if used + cost > budget and kept:
+            continue
+        kept.add(index)
+        used += cost
+    dropped = len(lines) - len(kept)
+    body = "\n".join(lines[i] for i in sorted(kept))
+    if dropped:
+        body += f"\n({dropped} more error lines not shown)"
+    return body
+
+
+def error_lines(state: RepairState) -> dict[str, list[int]]:
+    """Cited lines per file, in hit priority. Files cited without a line map to []."""
+    marks: dict[str, list[int]] = {}
+    for hit in state.hits:
+        lines = marks.setdefault(hit.rel, [])
+        if hit.line and hit.line not in lines:
+            lines.append(hit.line)
+    return marks
+
+
+def serve_read(views: dict[str, FileView], root: Path, rel: str) -> tuple[str, int]:
+    """Queue the next bounded chunk of a candidate file. Returns (status, new line count)."""
+    path = contained_file(root, rel)
+    if path is None:
+        return "refused", 0
+    if not path.is_file():
+        return "missing", 0
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unreadable", 0
+    digest = _sha(text)
+    view = views.get(rel)
+    if view is None or view.sha256 != digest:
+        view = FileView(sha256=digest)
+        views[rel] = view
+    total = len(text.splitlines())
+    unseen = [number for number in range(1, total + 1) if number not in view.shown]
+    if not unseen:
+        return "seen", 0
+    chunk = set(unseen[:_READ_CHUNK])
+    view.requested |= chunk
+    return "read", len(chunk)
+
+
+def note_shown(views: dict[str, FileView], root: Path, shown: dict[str, set[int]]) -> None:
+    """Record which lines actually reached the prompt, so the next read continues after them."""
+    for rel, lines in shown.items():
+        if not lines:
+            continue
+        digest = _file_sha(root / rel)
+        if not digest:
+            continue
+        view = views.get(rel)
+        if view is None or view.sha256 != digest:
+            view = FileView(sha256=digest)
+            views[rel] = view
+        view.shown |= lines
+
+
+def render_source(
+    state: RepairState,
+    root: Path,
+    views: dict[str, FileView] | None,
+    *,
+    budget: int,
+) -> tuple[str, dict[str, set[int]]]:
+    """Cited source and requested reads within budget. Error lines are the last thing dropped."""
+    views = views or {}
+    marks = error_lines(state)
+    weak = _weak_lines(state)
+    order = list(marks) + [rel for rel in views if rel not in marks]
+    texts: dict[str, str] = {}
+    notes: dict[str, str] = {}
+    missing: list[str] = []
+    for rel in order:
+        path = contained_file(root, rel)
+        if path is None:
+            notes[rel] = f"{rel}: refused, the path resolves outside the candidate"
+            continue
+        if not path.is_file():
+            missing.append(rel)
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            notes[rel] = f"{rel}: file could not be read"
+            continue
+        recorded = state.source_identity.get(rel)
+        if state.stale and recorded and recorded != _sha(text):
+            notes[rel] = f"{rel}: source changed after the check; this error is not current until rechecked"
+            continue
+        texts[rel] = text
+    selection: dict[str, set[int]] = {rel: set() for rel in texts}
+    layers = _layers(marks, weak, views, texts, order)
+
+    def render() -> str:
+        rows: list[str] = []
+        for rel in order:
+            if rel in notes:
+                rows.append(notes[rel])
+                continue
+            if rel not in texts:
+                continue
+            text = texts[rel]
+            view = views.get(rel)
+            pending: set[int] = set()
+            if view and view.sha256 == _sha(text):
+                pending = (view.requested - view.shown) - selection.get(rel, set())
+            note = f"{len(pending)} requested lines of {rel} did not fit; read it again to see them"
+            if not selection.get(rel):
+                if pending:
+                    rows.append(f"({note})")
+                continue
+            total = len(text.splitlines())
+            rows.append(f"{rel} ({total} lines, sha256 {_sha(text)[:12]})")
+            rows.append(format_lines(text, selection[rel], marks=set(marks.get(rel, []))).rstrip("\n"))
+            if pending:
+                rows.append(f"({note})")
+        if missing:
+            listed = ", ".join(missing[:8]) + (f", and {len(missing) - 8} more" if len(missing) > 8 else "")
+            rows.append(f"Cited files missing from the candidate: {listed}")
+        return "\n".join(rows)
+
+    def fits_whole(rel: str, lines: set[int]) -> None:
+        before = set(selection[rel])
+        selection[rel] = before | lines
+        if len(render()) > budget:
+            selection[rel] = before
+
+    def fill_round_robin(group: list[tuple[str, set[int]]]) -> None:
+        queues = {rel: sorted(lines - selection[rel]) for rel, lines in group}
+        blocked: set[str] = set()
+        while any(queues[rel] for rel in queues if rel not in blocked):
+            for rel in list(queues):
+                if rel in blocked or not queues[rel]:
+                    continue
+                chunk, queues[rel] = queues[rel][:10], queues[rel][10:]
+                before = set(selection[rel])
+                selection[rel] = before | set(chunk)
+                if len(render()) > budget:
+                    selection[rel] = before
+                    blocked.add(rel)
+
+    index = 0
+    while index < len(layers):
+        rel, lines, mode = layers[index]
+        if mode == "mandatory":
+            selection[rel] |= lines
+            index += 1
+            continue
+        if mode == "partial":
+            group: list[tuple[str, set[int]]] = []
+            while index < len(layers) and layers[index][2] == "partial":
+                group.append((layers[index][0], layers[index][1]))
+                index += 1
+            fill_round_robin(group)
+            continue
+        fits_whole(rel, lines)
+        index += 1
+    return render(), {rel: lines for rel, lines in selection.items() if lines}
+
+
+def repair_prompt_sections(
+    state: RepairState,
+    root: Path | None = None,
+    views: dict[str, FileView] | None = None,
+    *,
+    budget: int = 9000,
+    status: str = "",
+) -> str:
+    """Render the check, status, diagnostic, and source for a repair prompt."""
+    text, _shown = render_repair_sections(state, root, views, budget=budget, status=status)
+    return text
+
+
+def render_repair_sections(
+    state: RepairState,
+    root: Path | None,
+    views: dict[str, FileView] | None,
+    *,
+    budget: int,
+    status: str = "",
+) -> tuple[str, dict[str, set[int]]]:
+    """Header, exact diagnostic, and source within budget. Returns rendered text and shown lines."""
+    head = [f"Current blocking check: {state.check}"]
+    if status:
+        head.append(status)
+    diag_budget = min(_DIAG_BUDGET, max(600, budget // 3))
+    head.append("Exact diagnostic:")
+    head.append(diagnostic_text(state, diag_budget) or "(no diagnostic text)")
     if state.hits:
         loc = state.hits[0]
         where = loc.rel
@@ -173,22 +408,23 @@ def repair_prompt_sections(state: RepairState) -> str:
             where += f":{loc.line}"
             if loc.column:
                 where += f":{loc.column}"
-        lines.append(f"Source location: {where}")
-        if loc.sha256:
-            lines.append(f"Source identity {loc.rel}: {loc.sha256}")
+        head.append(f"First source location: {where}")
     if state.candidate_id:
-        lines.append(f"Candidate identity: {state.candidate_id}")
+        head.append(f"Candidate identity: {state.candidate_id}")
     if state.changed_since:
-        lines.append("Since the previous check: " + state.changed_since)
+        head.append("Since the previous check: " + state.changed_since)
     if state.stale:
-        lines.append(
-            "This diagnostic is stale. The cited source changed after the check. "
-            "Do not treat it as current."
+        head.append(
+            "This diagnostic is stale. The cited source changed after the check. Do not treat it as current."
         )
-    if state.excerpts:
-        lines.append("Relevant source (hash|line). Do not drop the failing line:")
-        lines.extend(_budget_excerpts(state))
-    return "\n".join(lines) + "\n"
+    head.append("Source (hash|line; > marks an error line; … marks lines not shown):")
+    header = "\n".join(head) + "\n"
+    shown: dict[str, set[int]] = {}
+    if root is None:
+        body = "\n".join(state.excerpts)
+    else:
+        body, shown = render_source(state, root, views, budget=max(800, budget - len(header)))
+    return header + body + "\n", shown
 
 
 def write_repair_state(request_root: Path, state: RepairState) -> None:
@@ -197,6 +433,96 @@ def write_repair_state(request_root: Path, state: RepairState) -> None:
     (request_root / "repair_state.json").write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8",
     )
+
+
+def _layers(
+    marks: dict[str, list[int]],
+    weak: dict[str, set[int]],
+    views: dict[str, FileView],
+    texts: dict[str, str],
+    order: list[str],
+) -> list[tuple[str, set[int], str]]:
+    """Priority order: error lines, fresh reads, error context, unused-name context, reads already seen."""
+    layers: list[tuple[str, set[int], str]] = []
+    current = {
+        rel: view for rel, view in views.items()
+        if rel in texts and view.sha256 == _sha(texts[rel]) and view.requested
+    }
+    for rel, lines in marks.items():
+        if rel not in texts:
+            continue
+        total = len(texts[rel].splitlines())
+        chosen: set[int] = set()
+        if not lines:
+            chosen |= set(range(1, min(total, _NAMED_LINES) + 1))
+        for mark in lines:
+            chosen |= _window(mark, 0 if mark in weak.get(rel, set()) else 1, total)
+        layers.append((rel, chosen, "mandatory"))
+    for rel in order:
+        if rel in current and current[rel].requested - current[rel].shown:
+            layers.append((rel, current[rel].requested - current[rel].shown, "partial"))
+    for rel, lines in marks.items():
+        if rel not in texts:
+            continue
+        source = texts[rel].splitlines()
+        chosen = set(_head(source))
+        for mark in lines:
+            if mark in weak.get(rel, set()):
+                continue
+            chosen |= _window(mark, _ERROR_RADIUS, len(source))
+            chosen |= _decl_lines(source, mark)
+        layers.append((rel, chosen, "whole"))
+    for rel, lines in marks.items():
+        if rel not in texts:
+            continue
+        source = texts[rel].splitlines()
+        chosen = set()
+        for mark in lines:
+            if mark not in weak.get(rel, set()):
+                continue
+            chosen |= _window(mark, 2, len(source))
+            chosen |= _decl_lines(source, mark)
+        if chosen:
+            layers.append((rel, chosen, "whole"))
+    for rel in order:
+        if rel in current and current[rel].requested & current[rel].shown:
+            layers.append((rel, current[rel].requested & current[rel].shown, "partial"))
+    return layers
+
+
+def _window(mark: int, radius: int, total: int) -> set[int]:
+    return {number for number in range(mark - radius, mark + radius + 1) if 1 <= number <= total}
+
+
+def _head(lines: list[str]) -> list[int]:
+    head: list[int] = []
+    for number, line in enumerate(lines[:_HEAD_MAX], start=1):
+        stripped = line.strip()
+        if stripped.startswith(("import ", "import{", "//", "/*", "*")) or not stripped:
+            head.append(number)
+            continue
+        break
+    while head and not lines[head[-1] - 1].strip():
+        head.pop()
+    return head
+
+
+def _decl_lines(lines: list[str], mark: int) -> set[int]:
+    for number in range(min(mark, len(lines)), 0, -1):
+        if _DECL.search(lines[number - 1]):
+            return {n for n in (number, number + 1) if n <= len(lines)}
+    return set()
+
+
+def _weak_lines(state: RepairState) -> dict[str, set[int]]:
+    weak: dict[str, set[int]] = {}
+    strong: dict[str, set[int]] = {}
+    for hit in state.hits:
+        if not hit.line:
+            continue
+        bucket = weak if _WEAK_ERROR.search(hit.message) else strong
+        bucket.setdefault(hit.rel, set()).add(hit.line)
+    return {rel: lines - strong.get(rel, set()) for rel, lines in weak.items()}
 
 
 def _add_hit(
@@ -241,26 +567,8 @@ def _project_rel(raw: str) -> str | None:
     return safe_rel(text)
 
 
-def _excerpt_for(root: Path, hit: SourceHit) -> tuple[str | None, str]:
-    path = root / hit.rel
-    if not path.is_file():
-        return None, f"{hit.rel}: file is missing from the candidate"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None, f"{hit.rel}: file could not be read"
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    chunks = [f"{hit.rel} sha256={digest}"]
-    if hit.line:
-        start = max(1, hit.line - _WINDOW)
-        chunks.append(format_hashed(text, start_line=start, limit=_WINDOW * 2 + 1, mark_line=hit.line))
-        if start > 1:
-            head = min(_IMPORT_HEAD, start - 1)
-            chunks.append("Leading imports/types:")
-            chunks.append(format_hashed(text, start_line=1, limit=head))
-    else:
-        chunks.append(format_hashed(text, start_line=1, limit=_WINDOW * 2))
-    return digest, "\n".join(chunks)
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _file_sha(path: Path) -> str | None:
@@ -298,65 +606,3 @@ def _compact(text: str) -> str:
 
 def _prioritize_hits(hits: list[SourceHit]) -> list[SourceHit]:
     return sorted(hits, key=lambda hit: (1 if _WEAK_ERROR.search(hit.message) else 0, hit.rel, hit.line or 0))
-
-
-def _trim_diagnostic(text: str) -> str:
-    raw = (text or "").strip()
-    if len(raw) <= _DIAG_BUDGET:
-        return raw
-    lines = [line for line in raw.splitlines() if line.strip()]
-    important = [line for line in lines if "error" in line.lower() and not _WEAK_ERROR.search(line)]
-    weak = [line for line in lines if line not in important]
-    kept: list[str] = []
-    for line in important + weak:
-        nxt = "\n".join(kept + [line])
-        if len(nxt) > _DIAG_BUDGET:
-            if not kept:
-                return line[:_DIAG_BUDGET]
-            break
-        kept.append(line)
-    return "\n".join(kept)
-
-
-def _budget_excerpts(state: RepairState) -> list[str]:
-    if not state.excerpts:
-        return []
-    if sum(len(item) for item in state.excerpts) <= _EXCERPT_BUDGET:
-        return state.excerpts
-    pairs = list(zip(state.hits, state.excerpts, strict=True)) if len(state.hits) == len(state.excerpts) else [
-        (None, item) for item in state.excerpts
-    ]
-    blocking = [
-        excerpt for hit, excerpt in pairs
-        if hit is None or not _WEAK_ERROR.search(hit.message)
-    ]
-    weak = [
-        excerpt for hit, excerpt in pairs
-        if hit is not None and _WEAK_ERROR.search(hit.message)
-    ]
-    chosen = list(blocking or state.excerpts[:1])
-    used = sum(len(item) for item in chosen)
-    for excerpt in weak:
-        if used + len(excerpt) <= _EXCERPT_BUDGET:
-            chosen.append(excerpt)
-            used += len(excerpt)
-    if used <= _EXCERPT_BUDGET:
-        return chosen
-    return [_keep_marked_line(excerpt, _EXCERPT_BUDGET // max(1, len(chosen))) for excerpt in chosen]
-
-
-def _keep_marked_line(excerpt: str, limit: int) -> str:
-    if len(excerpt) <= limit:
-        return excerpt
-    mark = excerpt.find("\n>")
-    if mark < 0:
-        mark = excerpt.find(">")
-    if mark < 0:
-        return excerpt[:limit]
-    start = max(0, mark - max(200, limit // 3))
-    end = min(len(excerpt), start + limit)
-    if ">" not in excerpt[start:end]:
-        start = max(0, mark)
-        end = min(len(excerpt), start + limit)
-    prefix = "…\n" if start else ""
-    return prefix + excerpt[start:end]

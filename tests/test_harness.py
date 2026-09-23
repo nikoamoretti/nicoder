@@ -46,6 +46,57 @@ oops
     assert any("bash" in item or "shell" in item for item in parsed.refused)
 
 
+def test_two_edits_to_one_file_both_apply(tmp_path):
+    from local_coder.general.harness import materialize
+
+    root = tmp_path
+    (root / "src").mkdir()
+    (root / "src" / "App.tsx").write_text("import a from 'a';\nconst x = 1;\nconst y = 2;\n", encoding="utf-8")
+    raw = (
+        f"```edit src/App.tsx\n-{line_hash('const x = 1;')}\n+const x = 10;\n```\n"
+        f"```edit src/App.tsx\n-{line_hash('const y = 2;')}\n+const y = 20;\n```\n"
+    )
+    files, problems = materialize(root, parse_actions(raw))
+    assert problems == []
+    assert files["src/App.tsx"] == "import a from 'a';\nconst x = 10;\nconst y = 20;\n"
+
+
+def test_ambiguous_or_scattered_hash_spans_are_rejected_with_a_reason():
+    current = "}\nconst a = 1;\n}\nconst b = 2;\n"
+    with pytest.raises(EditError, match="match 2 places"):
+        apply_edit_text(current, f"-{line_hash('}')}\n+}}\n")
+    with pytest.raises(EditError, match="not consecutive"):
+        apply_edit_text(current, f"-{line_hash('const a = 1;')}\n-{line_hash('const b = 2;')}\n+x\n")
+
+
+def test_hash_tokens_tolerate_marker_and_pasted_line_text():
+    current = "const a = 1;\nconst b = 2;\n"
+    marked = apply_edit_text(current, f"->{line_hash('const a = 1;')}\n+const a = 3;\n")
+    assert marked.startswith("const a = 3;\n")
+    pasted = apply_edit_text(current, f"-{line_hash('const b = 2;')}|const b = 2;\n+const b = 4;\n")
+    assert pasted.endswith("const b = 4;\n")
+
+
+def test_parameter_style_xml_read_is_a_read():
+    raw = "<tool_call>\n<function=read>\n<parameter=path>\nsrc/App.tsx\n</parameter>\n</function>\n</tool_call>"
+    assert parse_actions(raw).reads == ["src/App.tsx"]
+
+
+def test_edit_through_symlink_out_of_the_candidate_is_refused(tmp_path):
+    from local_coder.general.harness import materialize
+
+    outside = tmp_path / "outside.ts"
+    outside.write_text("export const secret = 1;\n", encoding="utf-8")
+    root = tmp_path / "candidate"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "link.ts").symlink_to(outside)
+    raw = f"```edit src/link.ts\n-{line_hash('export const secret = 1;')}\n+export const secret = 2;\n```\n"
+    files, problems = materialize(root, parse_actions(raw))
+    assert files == {}
+    assert "outside the candidate" in problems[0]
+    assert outside.read_text(encoding="utf-8") == "export const secret = 1;\n"
+
+
 def test_parse_actions_treats_tool_call_xml_as_a_read():
     raw = """I'll inspect the failing file.
 

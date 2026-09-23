@@ -104,9 +104,10 @@ def test_unicode_failing_line_is_kept(tmp_path):
         encoding="utf-8",
     )
     state = _state(tmp_path, "src/Board.tsx(22,1): error TS2304: Cannot find name 'café'")
-    text = repair_prompt_sections(state)
-    assert "café" in text
-    assert "看板" in text or "Leading imports" in text
+    text = repair_prompt_sections(state, tmp_path)
+    label = 'const label = "café";'
+    assert f">{line_hash(label)}|{label}" in text
+    assert "src/Board.tsx (22 lines" in text
 
 
 def test_multiple_cited_files_keep_each_failing_line(tmp_path):
