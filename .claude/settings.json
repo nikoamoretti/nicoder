@@ -26,5 +26,18 @@
       "mcp__Vercel__get_auth_token",
       "mcp__Vercel__get_project_token"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/finish-the-job.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }
