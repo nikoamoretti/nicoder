@@ -833,6 +833,14 @@ final class AppModel: ObservableObject {
         case "settings":
             settingsTab = argument.isEmpty ? "models" : argument
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        case "demo-run" where ProcessInfo.processInfo.environment["LOCAL_CODER_UI_DEMO"] != nil:
+            // A test copy only (its own config): shows the live run with no engine call.
+            chatTurns = [ChatTurn(id: "demo", role: "user", text: "Show the working indicator")]
+            currentPrompt = "Show the working indicator"
+            traceStart = Date()
+            trace = [TraceStep(tool: "list", detail: "Looking in ~/projects", target: "~/projects", ok: true,
+                               started: Date())]
+            running = true
         default: break
         }
     }

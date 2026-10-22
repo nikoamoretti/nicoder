@@ -155,10 +155,11 @@ private struct ThinkingRow: View {
     let label: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
+            // The walker overhangs the 22 pt rail so the timeline line still meets his head.
             Rail(first: first, last: true, icon: AnyView(
-                HomininSpinner(size: 20)
-                    .frame(width: 22, height: 22)
+                HomininSpinner(size: 50)
+                    .frame(width: 22, height: 50)
             ))
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 HStack(alignment: .firstTextBaseline) {
@@ -171,7 +172,7 @@ private struct ThinkingRow: View {
                         .contentTransition(.numericText())
                 }
                 .font(.callout)
-                .padding(.top, 8)
+                .padding(.leading, 12)
             }
         }
         .fixedSize(horizontal: false, vertical: true)

@@ -198,19 +198,19 @@ MainActor.assumeIsolated {
     capture(main, "11b-live-run-without-messages")
 
     // 2c. The working indicator's walk cycle: eight poses large, then at its real size.
-    let sheet = show(VStack(alignment: .leading, spacing: 8) {
+    let sheet = show(VStack(alignment: .leading, spacing: 10) {
         HStack(spacing: 0) {
             ForEach(0..<8, id: \.self) { frame in
-                HomininFrame(phase: 2 * .pi * Double(frame) / 8).frame(width: 100, height: 80)
+                HomininFrame(phase: 2 * .pi * Double(frame) / 8).frame(width: 130, height: 130)
             }
         }
-        HStack(spacing: 18) {
+        HStack(spacing: 14) {
             ForEach(0..<8, id: \.self) { frame in
-                HomininFrame(phase: 2 * .pi * Double(frame) / 8).frame(width: 20, height: 20)
+                HomininFrame(phase: 2 * .pi * Double(frame) / 8).frame(width: 50, height: 50)
             }
             Text("Writing").foregroundStyle(.secondary)
         }
-    }.padding(12).background(Color(nsColor: .windowBackgroundColor)), size: CGSize(width: 840, height: 150))
+    }.padding(12).background(Color(nsColor: .windowBackgroundColor)), size: CGSize(width: 1080, height: 230))
     capture(sheet, "16-walk-cycle")
     sheet.orderOut(nil)
 
