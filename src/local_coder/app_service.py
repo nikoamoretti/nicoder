@@ -603,8 +603,9 @@ def apply_speed_defaults() -> Any:
             entry = entry_by_id(str(row.get("id") or ""))
             break
     updates: dict[str, Any] = {}
-    if entry is not None and cfg.n_ctx > entry.n_ctx:
-        updates["n_ctx"] = entry.n_ctx
+    if entry is not None:
+        if cfg.n_ctx > entry.n_ctx:
+            updates["n_ctx"] = entry.n_ctx
     elif cfg.n_ctx >= 32768:
         alias = cfg.model_alias.lower()
         updates["n_ctx"] = 8192 if "4b" in alias else 16384

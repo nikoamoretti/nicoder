@@ -436,7 +436,8 @@ def run_general_request(
             except ModelIdentityError as exc:
                 raise GeneralError(exc.detail, code=exc.code) from exc
         meta["model_id"] = model
-        meta["engine"] = cfg.provider if is_hosted(cfg) else "local"
+        meta["engine"] = "local"
+        meta["provider"] = cfg.provider
         (Path(meta["baseline"]).parent / "meta.json").write_text(
             json.dumps(meta, indent=2) + "\n", encoding="utf-8",
         )
@@ -1025,6 +1026,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "complete": False,
             "engine": "local",
             "model_id": meta.get("model_id"),
+            "provider": meta.get("provider") or "local",
             "pin": meta.get("pin") or pin_record(),
         },
         "can_keep": bool(files),

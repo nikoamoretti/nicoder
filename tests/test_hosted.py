@@ -261,6 +261,15 @@ def test_switching_back_to_a_local_model_restores_the_loopback_endpoint(tmp_path
     assert Path(cfg.model_file) == gguf
 
 
+def test_helper_startup_keeps_the_hosted_context_window(monkeypatch):
+    from local_coder import app_service
+
+    machine.write_machine_config(_hosted_cfg())
+    monkeypatch.setattr(app_service, "stop_owned_server", lambda: {"ok": True, "stopped": False})
+    assert app_service.ensure_machine_config()["config"]["n_ctx"] == 65536
+    assert machine.load_machine_config().n_ctx == 65536
+
+
 def test_hosted_model_needs_no_local_server(monkeypatch):
     from local_coder import app_service, server
     from local_coder.general.coordinator import ensure_model_server
