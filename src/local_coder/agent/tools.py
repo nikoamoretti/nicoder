@@ -210,8 +210,10 @@ class ToolBox:
         run_tmp: Path,
         cancel: threading.Event | None = None,
         allow_open_project: bool = False,
+        allow_find_project: bool = True,
     ) -> None:
         self.policy = policy
+        self.allow_find_project = allow_find_project
         self.cwd = Path(os.path.realpath(cwd))
         self.run_tmp = run_tmp
         self.cancel = cancel
@@ -226,7 +228,7 @@ class ToolBox:
     @property
     def names(self) -> list[str]:
         """Tool names offered to the model, in a stable order."""
-        names = ["find_project", "list", "glob", "grep", "read"]
+        names = (["find_project"] if self.allow_find_project else []) + ["list", "glob", "grep", "read"]
         if self.policy.can_write:
             names += ["write", "edit"]
         names.append("bash")

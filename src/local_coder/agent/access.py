@@ -102,24 +102,24 @@ class AccessPolicy:
 
     `workdir` is None for a read-only conversation. `project` is the user's
     original folder; with a workdir, paths inside it are redirected to the
-    working copy.
+    working copy. `limit_to` narrows reads to one folder (delegated tasks).
     """
 
     home: Path
     workdir: Path | None = None
     project: Path | None = None
+    limit_to: Path | None = None
     home_real: Path = field(init=False)
     workdir_real: Path | None = field(init=False)
     project_real: Path | None = field(init=False)
+    limit_real: Path | None = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "home_real", Path(os.path.realpath(self.home)))
-        object.__setattr__(
-            self, "workdir_real", Path(os.path.realpath(self.workdir)) if self.workdir else None,
-        )
-        object.__setattr__(
-            self, "project_real", Path(os.path.realpath(self.project)) if self.project else None,
-        )
+        for name in ("workdir", "project", "limit_to"):
+            value = getattr(self, name)
+            target = "limit_real" if name == "limit_to" else f"{name}_real"
+            object.__setattr__(self, target, Path(os.path.realpath(value)) if value else None)
 
     @property
     def can_write(self) -> bool:
@@ -155,6 +155,8 @@ class AccessPolicy:
         inside_work = self.workdir_real is not None and _under(path, self.workdir_real)
         if not inside_home and not inside_work:
             return f"{self.show(path)} is outside the home folder, so it is off limits."
+        if self.limit_real is not None and not inside_work and not _under(path, self.limit_real):
+            return f"{self.show(path)} is outside {self.show(self.limit_real)}, the folder this task is limited to."
         if inside_home:
             rel = path.relative_to(self.home_real).as_posix()
             allowed = any(rel == item or rel.startswith(item + "/") for item in ALLOWED_INSIDE_DENIED)

@@ -82,6 +82,14 @@
   web apps, failures go back to the agent (two rounds), other projects record
   `local_checks: not_run`. Transcripts: `agent_transcript.json` per request,
   `~/.local/share/local-coder/agent-runs/` for questions.
+- `src/local_coder/mcp_server.py` + `agent/delegate.py` — delegation for other
+  agents (Nico, 2026-10-22: "claude is very expensive"). A stdio MCP server,
+  registered at user scope in Claude Code as `local-coder` (timeout 20 min,
+  alwaysLoad), exposes `nemotron_explore` (read-only, limited to the given
+  project) and `nemotron_draft_change` / `nemotron_apply_draft` /
+  `nemotron_discard_draft` (a private copy under `drafts/`; apply refuses on
+  conflicts). Always uses the hosted Nemotron entry, whatever the app selected.
+  Standard library JSON-RPC only; keep it that way.
 - `macos/` — SwiftUI Local Coder.app. Do not add a web backend.
 
 ## Coding conventions
