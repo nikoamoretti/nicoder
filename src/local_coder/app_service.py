@@ -25,7 +25,7 @@ from .catalog import entry_by_id, list_models
 from .config import CONFIG_FILENAME, EXAMPLE_TOML, RepoConfig, load_config
 from .controller import Controller, git_is_dirty, git_revision
 from .execution.isolated import IsolatedBackend, IsolationUnavailable
-from .hosted import HostedError, find_api_key, hosted_chat, provider_name
+from .hosted import HostedError, find_api_key, hosted_chat, provider_place
 from .hostenv import apply_host_path
 from .machine import (
     DEFAULT_ENDPOINT,
@@ -432,7 +432,7 @@ def _agent_chat(
     cancel: threading.Event | None,
 ) -> dict[str, Any]:
     """A question answered by the agent with read-only tools across the home folder."""
-    from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
+    from local_coder.agent.runner import context_chars_for, hosted_tool_chat, prepare_model, run_ask
     from local_coder.general.chat_log import append_turn, recent_messages
 
     cfg = load_machine_config()
@@ -441,6 +441,11 @@ def _agent_chat(
         if listener is not None:
             listener({"type": "activity", "data": {"detail": detail}, "phrase": detail})
 
+    try:
+        prepare_model(cfg, activity)
+    except HostedError as exc:
+        return {"kind": "chat", "summary": str(exc), "hits": [], "model_commentary": str(exc), "status": "error",
+                "files_read": [], "open_project": None}
     asked = run_ask(
         f"{question}\n\n({extra})" if extra else question,
         project=repo,
@@ -704,7 +709,9 @@ def select_model(model_id: str) -> dict[str, Any]:
         raise AppError(f"Unknown model: {model_id}", code="unknown_model")
     current = load_machine_config()
     if entry.provider != "local":
-        if not find_api_key(entry.api_key_name)[0]:
+        if entry.provider == "cloudrun" and not entry.endpoint:
+            raise AppError("Your GPU is not set up yet (local-coder gpu setup).", code="missing_gpu")
+        if entry.provider != "cloudrun" and not find_api_key(entry.api_key_name)[0]:
             raise AppError(
                 f"{entry.name} needs the {entry.api_key_name} key, and it is not on this Mac.",
                 code="missing_key",
@@ -734,6 +741,8 @@ def select_model(model_id: str) -> dict[str, Any]:
         "gen_timeout": entry.gen_timeout,
         "provider": entry.provider,
         "api_key_name": entry.api_key_name,
+        "temperature": entry.temperature,
+        "top_p": entry.top_p,
     })
     write_machine_config(cfg)
     return {
@@ -761,7 +770,7 @@ def readiness() -> dict[str, Any]:
         rows.append({
             "name": "model server",
             "ok": True,
-            "detail": f"not needed: {cfg.model_alias} runs on {provider_name(cfg)}'s servers",
+            "detail": f"not needed: {cfg.model_alias} runs on {provider_place(cfg)}",
         })
     else:
         rows.append({

@@ -41,6 +41,8 @@ class MachineConfig(BaseModel):
     gen_timeout: int = 300
     provider: str = "local"
     api_key_name: str = ""
+    temperature: float = 0.0
+    top_p: float = 0.0
 
 
 def is_hosted(cfg: MachineConfig) -> bool:
@@ -111,6 +113,8 @@ def write_machine_config(cfg: MachineConfig) -> Path:
         f"gen_timeout = {cfg.gen_timeout}",
         f'provider = "{cfg.provider}"',
         f'api_key_name = "{cfg.api_key_name}"',
+        f"temperature = {float(cfg.temperature)}",
+        f"top_p = {float(cfg.top_p)}",
         "",
     ]
     tmp = path.with_suffix(".toml.tmp")
@@ -124,12 +128,13 @@ def machine_status(cfg: MachineConfig) -> list[tuple[str, bool, str]]:
     import shutil
 
     if is_hosted(cfg):
-        from .hosted import find_api_key, provider_name
+        from .hosted import credential_status, provider_place
 
-        key, where = find_api_key(cfg.api_key_name)
+        ok, where = credential_status(cfg)
+        label = "gcloud sign-in" if cfg.provider == "cloudrun" else "API key"
         return [
-            ("model", True, f"{cfg.model_alias} on {provider_name(cfg)}'s servers (nothing loads on this Mac)"),
-            ("API key", bool(key), where),
+            ("model", True, f"{cfg.model_alias} on {provider_place(cfg)} (nothing loads on this Mac)"),
+            (label, ok, where),
             ("endpoint", True, cfg.endpoint),
         ]
     rows: list[tuple[str, bool, str]] = []

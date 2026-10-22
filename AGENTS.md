@@ -90,6 +90,21 @@
   `nemotron_discard_draft` (a private copy under `drafts/`; apply refuses on
   conflicts). Always uses the hosted Nemotron entry, whatever the app selected.
   Standard library JSON-RPC only; keep it that way.
+- `src/local_coder/gpu/` — Nico's own cloud GPU (2026-10-22: "download all the
+  local models I want and then have 1 gpu I rent ... pick and choose"). Lives in
+  Veil's Google Cloud project `faceblur-private-20260901`, `us-central1`:
+  bucket `local-coder-models-332930293289-us-central1` (models.json + one
+  folder per model + this package's GPU code under `.local-coder/`), Cloud Run
+  service `local-coder-gpu` (vLLM image via the `dockerhub` Artifact Registry
+  remote repo, 1× RTX PRO 6000 96 GB, 20 vCPU/80 GiB, min 0/max 1 instances,
+  private: callers use a gcloud identity token), Cloud Run job
+  `local-coder-fetch` (CPU; streams Hugging Face files into the bucket).
+  `swapper.py` (stdlib) runs in the container: one model at a time, swaps on
+  demand, SSE keep-alive while loading, `/lc/load` progress. Picker entries
+  `gpu:<id>` come from the cached models.json (never wake the GPU); the app
+  warms the GPU before an agent run. CLI: `local-coder gpu setup|add|list|
+  remove|warm|status|spend`. About $3.19/hour while an instance is up,
+  nothing when idle (scales to zero ~15 min after the last request).
 - `macos/` — SwiftUI Local Coder.app. Do not add a web backend.
 
 ## Coding conventions

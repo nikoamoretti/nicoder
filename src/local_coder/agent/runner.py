@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from local_coder.hosted import hosted_chat
+from local_coder.hosted import hosted_chat, warm_up
 from local_coder.machine import MachineConfig, is_hosted
 
 from .access import AccessPolicy
@@ -45,15 +45,36 @@ def hosted_tool_chat(cfg: MachineConfig) -> ChatFn:
         body: dict[str, Any] = {
             "model": cfg.model_alias,
             "messages": messages,
-            "temperature": 0.3,
+            "temperature": cfg.temperature or 0.3,
             "max_tokens": max_tokens,
         }
+        if cfg.top_p:
+            body["top_p"] = cfg.top_p
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
         return hosted_chat(cfg, body, thinking=True)
 
     return chat
+
+
+def prepare_model(cfg: MachineConfig, on_activity: Callable[[str], None] | None = None) -> None:
+    """Wake your GPU and load the model before the first agent step (does nothing for other providers)."""
+    if cfg.provider != "cloudrun":
+        return
+    name = cfg.model_alias
+    say = on_activity or (lambda _text: None)
+    say(f"Starting your GPU and loading {name}. If it was asleep this takes a few minutes.")
+    last = [0.0]
+
+    def progress(seconds: float) -> None:
+        if seconds - last[0] >= 20:
+            last[0] = seconds
+            say(f"Still loading {name} ({int(seconds)} s).")
+
+    took = warm_up(cfg, progress)
+    if took > 5:
+        say(f"{name} is ready ({int(took)} s).")
 
 
 def context_chars_for(cfg: MachineConfig) -> int:

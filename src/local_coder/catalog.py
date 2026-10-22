@@ -33,6 +33,8 @@ class CatalogEntry(BaseModel):
     provider: str = "local"
     endpoint: str = ""
     api_key_name: str = ""
+    temperature: float = 0.0
+    top_p: float = 0.0
 
 
 def _home() -> Path:
@@ -101,6 +103,45 @@ def known_entries(home: Path | None = None) -> list[CatalogEntry]:
     ]
 
 
+def gpu_entries() -> list[CatalogEntry]:
+    """Models in your GPU library (from the last-seen models.json; never wakes the GPU)."""
+    from .gpu.cloud import cached_library, load_config
+
+    cfg = load_config()
+    if cfg is None:
+        return []
+    hourly = cfg.get("hourly_usd")
+    rows: list[CatalogEntry] = []
+    for row in cached_library().get("models", []):
+        rows.append(CatalogEntry(
+            id=f"gpu:{row['id']}",
+            name=f"{row.get('name') or row['id']} — your GPU",
+            model_file="",
+            model_alias=str(row["id"]),
+            server_binary="",
+            n_ctx=int(row.get("context") or 32768),
+            quantization="gpu",
+            note=(
+                f"Runs on your Google Cloud GPU (about ${hourly}/hour while it is on; it switches off by itself "
+                "after about 15 idle minutes). The first request after a pause takes a few minutes to start it."
+            ),
+            max_tokens=min(int(row.get("max_tokens") or 8192), 32768),
+            gen_timeout=900,
+            provider="cloudrun",
+            endpoint=str(cfg["url"]),
+            temperature=float(row.get("temperature") or 0.0),
+            top_p=float(row.get("top_p") or 0.0),
+        ))
+    return rows
+
+
+def hosted_ready(entry: CatalogEntry) -> bool:
+    """Whether a hosted entry can be used now (no network call)."""
+    if entry.provider == "cloudrun":
+        return bool(entry.endpoint)
+    return bool(find_api_key(entry.api_key_name)[0])
+
+
 def _binary_ok(server_binary: str) -> bool:
     if shutil.which(server_binary):
         return True
@@ -118,9 +159,9 @@ def list_models(cfg: MachineConfig | None = None, *, home: Path | None = None) -
             current_file = current.model_file
     selected = ""
     rows: list[dict] = []
-    for entry in known_entries(home):
+    for entry in [*known_entries(home), *gpu_entries()]:
         if entry.provider != "local":
-            available = bool(find_api_key(entry.api_key_name)[0])
+            available = hosted_ready(entry)
             is_selected = current.provider == entry.provider and current.model_alias == entry.model_alias
         else:
             path = Path(entry.model_file)
@@ -144,7 +185,7 @@ def list_models(cfg: MachineConfig | None = None, *, home: Path | None = None) -
 
 def entry_by_id(model_id: str, *, home: Path | None = None) -> CatalogEntry | None:
     """Look up one catalog id."""
-    for entry in known_entries(home):
+    for entry in [*known_entries(home), *gpu_entries()]:
         if entry.id == model_id:
             return entry
     return None

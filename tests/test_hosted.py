@@ -178,7 +178,7 @@ def test_refused_key_is_not_retried_and_never_echoed(monkeypatch):
 
 def test_missing_key_stops_before_any_request(monkeypatch):
     calls = _install_client(monkeypatch)
-    with pytest.raises(hosted.HostedError, match="NVIDIA key was not found"):
+    with pytest.raises(hosted.HostedError, match="NVIDIA credential was not found"):
         hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
     assert calls == []
 

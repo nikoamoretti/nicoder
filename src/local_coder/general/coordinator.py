@@ -62,7 +62,7 @@ from local_coder.general.snapshot import (
 from local_coder.general.source_check import parse_retry_message
 from local_coder.general.starter import copy_starter
 from local_coder.general.toolchain import ensure_ts_preview
-from local_coder.hosted import provider_name
+from local_coder.hosted import provider_place
 from local_coder.machine import is_hosted, load_machine_config
 from local_coder.persistence import new_episode_id
 from local_coder.server import ServerError, server_status
@@ -437,7 +437,14 @@ def run_general_request(
 
         cfg = load_machine_config()
         if agent_chat is None:
-            _emit(listener, "activity", {"detail": f"Using {model} on {provider_name(cfg)}'s servers."})
+            from local_coder.agent.runner import prepare_model
+            from local_coder.hosted import HostedError
+
+            _emit(listener, "activity", {"detail": f"Using {model} on {provider_place(cfg)}."})
+            try:
+                prepare_model(cfg, lambda detail: _emit(listener, "activity", {"detail": detail}))
+            except HostedError as exc:
+                raise GeneralError(str(exc), code="gpu") from exc
         meta["model_id"] = model
         meta["engine"] = "agent"
         meta["provider"] = cfg.provider
@@ -453,7 +460,7 @@ def run_general_request(
         cfg = load_machine_config()
         if fake_complete is None:
             if is_hosted(cfg):
-                _emit(listener, "activity", {"detail": f"Using {model} on {provider_name(cfg)}'s servers."})
+                _emit(listener, "activity", {"detail": f"Using {model} on {provider_place(cfg)}."})
             else:
                 _emit(listener, "model_starting", {})
             ensure_model_server()

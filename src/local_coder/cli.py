@@ -697,7 +697,88 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("app-rpc", help="JSON-lines helper for Local Coder.app (not a network service)")
     p.set_defaults(func=_cmd_app_rpc)
+
+    p = sub.add_parser("gpu", help="your Google Cloud GPU: setup, model library, status, spend")
+    gpu_sub = p.add_subparsers(dest="gpu_command", required=True)
+    g = gpu_sub.add_parser("setup", help="create or update the bucket, GPU service and download job")
+    g.add_argument("--project")
+    g.add_argument("--region")
+    g.add_argument("--gpu", help="nvidia-rtx-pro-6000 (96 GB, default) or nvidia-l4 (24 GB)")
+    g.add_argument("--cpu", type=int)
+    g.add_argument("--memory-gib", type=int)
+    g = gpu_sub.add_parser("add", help="copy a Hugging Face model into your library")
+    g.add_argument("repo", help="e.g. Qwen/Qwen3.8-27B-FP8")
+    g.add_argument("--id")
+    g.add_argument("--name")
+    g.add_argument("--preset")
+    g.add_argument("--include", action="append", default=[])
+    gpu_sub.add_parser("list", help="models in your library")
+    g = gpu_sub.add_parser("remove", help="delete a model from your library")
+    g.add_argument("model_id")
+    g = gpu_sub.add_parser("warm", help="start the GPU and load a model now")
+    g.add_argument("model_id")
+    g = gpu_sub.add_parser("spend", help="estimated GPU cost")
+    g.add_argument("--days", type=int, default=7)
+    gpu_sub.add_parser("status", help="settings, price and library")
+    p.set_defaults(func=_cmd_gpu)
     return parser
+
+
+def _cmd_gpu(args) -> int:
+    """Drive the Google Cloud GPU (setup, library, warm-up, spend)."""
+    from .gpu import cloud
+    from .gpu.manifest import find
+
+    try:
+        if args.gpu_command == "setup":
+            saved = cloud.setup(project=args.project, region=args.region, gpu=args.gpu, cpu=args.cpu,
+                                memory_gib=args.memory_gib)
+            print(f"GPU service: {saved['url']}")
+            print(f"Model bucket: gs://{saved['bucket']}")
+            print(f"Price while on: about ${saved['hourly_usd']}/hour ({saved['gpu']}); off when idle.")
+            return 0
+        if args.gpu_command == "add":
+            entry = cloud.add_model(args.repo, model_id=args.id, name=args.name, preset=args.preset,
+                                    include=args.include)
+            print(f"Added {entry['id']} ({entry['name']}, {int(entry.get('size_bytes', 0)) / 1e9:.1f} GB).")
+            return 0
+        if args.gpu_command in {"list", "status"}:
+            cfg = cloud.require()
+            library = cloud.refresh_library(cfg)
+            if args.gpu_command == "status":
+                print(f"Service {cfg['service']} in {cfg['project']}/{cfg['region']}: {cfg['url']}")
+                print(f"GPU {cfg['gpu']}, about ${cfg['hourly_usd']}/hour while on, off when idle.")
+            for row in library["models"]:
+                size = int(row.get("size_bytes", 0)) / 1e9
+                print(f"{row['id']:32} {size:6.1f} GB  {row.get('name', '')}  ({row.get('repo', '')})")
+            if not library["models"]:
+                print("The library is empty. Add one: local-coder gpu add Qwen/Qwen3.8-27B-FP8")
+            return 0
+        if args.gpu_command == "remove":
+            gone = cloud.remove_model(args.model_id)
+            print(f"Removed {gone['id']} and its files.")
+            return 0
+        if args.gpu_command == "warm":
+            from .hosted import warm_up
+            from .machine import MachineConfig
+
+            cfg = cloud.require()
+            if find(cloud.refresh_library(cfg), args.model_id) is None:
+                print(f"{args.model_id} is not in the library.")
+                return 1
+            target = MachineConfig(provider="cloudrun", endpoint=str(cfg["url"]), model_alias=args.model_id)
+            took = warm_up(target, lambda seconds: print(f"  loading… {int(seconds)} s", flush=True))
+            print(f"{args.model_id} is ready ({took} s).")
+            return 0
+        if args.gpu_command == "spend":
+            report = cloud.spend(days=args.days)
+            print(f"Last {report['days']} days: {report['gpu_hours']} GPU hours, about ${report['estimated_usd']} "
+                  f"(at ${report['hourly_usd']}/hour).")
+            return 0
+    except cloud.GpuError as exc:
+        print(str(exc))
+        return 1
+    return 2
 
 
 def _cmd_app_rpc(_args) -> int:

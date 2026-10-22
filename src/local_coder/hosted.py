@@ -1,10 +1,11 @@
-"""Hosted chat models (NVIDIA's API) behind llama.cpp's non-streaming reply shape.
+"""Hosted chat models (NVIDIA's API, or your own Cloud Run GPU) behind llama.cpp's reply shape.
 
-Used only when the machine config selects a hosted provider. The API key is
-read at request time from the environment or the macOS Keychain item that the
-`key` tool writes (`key:<NAME>`, created by /usr/bin/security, so reading it
-never shows a password prompt). The key never reaches config, logs, events,
-artifacts, or error text.
+Used only when the machine config selects a hosted provider. For NVIDIA the API
+key is read at request time from the environment or the macOS Keychain item
+that the `key` tool writes (`key:<NAME>`, created by /usr/bin/security, so
+reading it never shows a password prompt). For the Cloud Run GPU ("cloudrun")
+the credential is a short-lived identity token from the signed-in gcloud. No
+credential ever reaches config, logs, events, artifacts, or error text.
 
 Replies are streamed so a long generation keeps the connection alive, then
 folded into one completion dict (text, reasoning and tool calls). NVIDIA's
@@ -26,7 +27,10 @@ from .machine import MachineConfig
 
 KEYCHAIN_PREFIX = "key:"
 _SECURITY = "/usr/bin/security"
-_PROVIDER_NAMES = {"nvidia": "NVIDIA"}
+_PROVIDER_NAMES = {"nvidia": "NVIDIA", "cloudrun": "your GPU"}
+_PROVIDER_PLACES = {"nvidia": "NVIDIA's servers", "cloudrun": "your Google Cloud GPU"}
+_TOKEN_TTL_S = 45 * 60
+_token_cache: dict[str, tuple[str, float]] = {}
 _RETRY_STATUS = frozenset({500, 502, 503, 504})
 _READ_TIMEOUT_S = 120.0
 _ATTEMPTS = 3
@@ -53,6 +57,44 @@ class _Busy(HostedError):
 def provider_name(cfg: MachineConfig) -> str:
     """Display name of the hosted provider."""
     return _PROVIDER_NAMES.get(cfg.provider, cfg.provider)
+
+
+def provider_place(cfg: MachineConfig) -> str:
+    """Where the model runs, for sentences like "Using X on <place>"."""
+    return _PROVIDER_PLACES.get(cfg.provider, f"{provider_name(cfg)}'s servers")
+
+
+def gcloud_identity_token() -> tuple[str, str]:
+    """A Cloud Run identity token from the signed-in gcloud (cached ~45 minutes)."""
+    cached = _token_cache.get("gcloud")
+    if cached and time.monotonic() - cached[1] < _TOKEN_TTL_S:
+        return cached[0], "gcloud identity token"
+    import shutil
+
+    binary = shutil.which("gcloud") or "/opt/homebrew/bin/gcloud"
+    try:
+        proc = subprocess.run([binary, "auth", "print-identity-token", "--quiet"], capture_output=True, text=True,
+                              timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return "", "gcloud is not installed or did not answer"
+    token = proc.stdout.strip()
+    if proc.returncode != 0 or not token:
+        return "", "gcloud is not signed in (run: gcloud auth login)"
+    _token_cache["gcloud"] = (token, time.monotonic())
+    return token, "gcloud identity token"
+
+
+def credential(cfg: MachineConfig) -> tuple[str, str]:
+    """The bearer credential for this provider and where it came from ('' when missing)."""
+    if cfg.provider == "cloudrun":
+        return gcloud_identity_token()
+    return find_api_key(cfg.api_key_name)
+
+
+def credential_status(cfg: MachineConfig) -> tuple[bool, str]:
+    """Whether the credential is available, without printing it."""
+    value, where = credential(cfg)
+    return bool(value), where
 
 
 def read_keychain(service: str) -> str:
@@ -82,9 +124,9 @@ def find_api_key(name: str) -> tuple[str, str]:
 
 def hosted_chat(cfg: MachineConfig, body: dict[str, Any], *, thinking: bool) -> dict[str, Any]:
     """One chat completion from the hosted provider, shaped like a non-streaming llama.cpp reply."""
-    key, where = find_api_key(cfg.api_key_name)
+    key, where = credential(cfg)
     if not key:
-        raise HostedError(f"The {provider_name(cfg)} key was not found: {where}.")
+        raise HostedError(f"The {provider_name(cfg)} credential was not found: {where}.")
     payload = {
         **body,
         "stream": True,
@@ -157,8 +199,8 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
                     usage = event["usage"]
                 for choice in event.get("choices") or []:
                     delta = choice.get("delta") or {}
-                    if delta.get("reasoning_content"):
-                        reasoning.append(str(delta["reasoning_content"]))
+                    if delta.get("reasoning_content") or delta.get("reasoning"):
+                        reasoning.append(str(delta.get("reasoning_content") or delta.get("reasoning")))
                     if delta.get("content"):
                         content.append(str(delta["content"]))
                     _fold_tool_calls(tool_calls, delta.get("tool_calls"))
@@ -184,6 +226,52 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
         "usage": usage,
         "timings": {"first_token_s": first_token_s, "stream_s": round(time.perf_counter() - started, 3)},
     }
+
+
+def warm_up(
+    cfg: MachineConfig,
+    on_progress: Any = None,
+    *,
+    timeout_s: float = 1500.0,
+) -> float:
+    """Wake the Cloud Run GPU and load the selected model; returns the seconds it took.
+
+    No-op for other providers. The GPU's /lc/load streams progress events until the
+    model is ready, so a cold start (instance start plus model load) does not look
+    like a dead connection.
+    """
+    if cfg.provider != "cloudrun":
+        return 0.0
+    token, where = credential(cfg)
+    if not token:
+        raise HostedError(f"Your GPU cannot be reached: {where}.")
+    started = time.monotonic()
+    url = f"{cfg.endpoint.rstrip('/')}/lc/load"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(timeout_s, connect=60.0), trust_env=False, follow_redirects=False,
+        ) as client, client.stream("POST", url, json={"model": cfg.model_alias}, headers=headers) as response:
+            if response.status_code != 200:
+                raise HostedError(f"Your GPU refused the request (HTTP {response.status_code}: "
+                                  f"{_error_detail(response) or 'no detail'}).")
+            for line in response.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    event = json.loads(line[5:])
+                except ValueError:
+                    continue
+                status = event.get("status")
+                if status == "ready":
+                    return round(time.monotonic() - started, 1)
+                if status == "failed":
+                    raise HostedError(f"Your GPU could not load {cfg.model_alias}: {event.get('detail')}")
+                if on_progress is not None:
+                    on_progress(time.monotonic() - started)
+    except (httpx.HTTPError, OSError) as exc:
+        raise HostedError(f"Your GPU did not answer: {type(exc).__name__}: {exc}") from exc
+    raise HostedError("Your GPU closed the connection before the model was ready.")
 
 
 def _fold_tool_calls(slots: dict[int, dict[str, Any]], deltas: Any) -> None:
