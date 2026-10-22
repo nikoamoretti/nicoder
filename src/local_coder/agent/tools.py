@@ -66,11 +66,12 @@ _BRACES = re.compile(r"\{([^{}]*)\}")
 
 @dataclass
 class ToolResult:
-    """Text for the model and one activity line for the user."""
+    """Text for the model, one activity line for the user, and what the step touched."""
 
     text: str
     activity: str
     ok: bool = True
+    target: str = ""
 
 
 def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -423,7 +424,8 @@ class ToolBox:
         lines = [f"{index}. {text}" for index, (_, text) in enumerate(ranked[:PROJECT_RESULTS], start=1)]
         header = f"{len(ranked)} project(s) match “{query}”"
         body = "\n" + "\n".join(lines) if lines else "\nNo project matched. Try other words, or grep under ~/projects."
-        return ToolResult(f"{header}{body}{self._cut_note()}", f"Looking for projects matching “{_short(query, 40)}”")
+        return ToolResult(f"{header}{body}{self._cut_note()}", f"Looking for projects matching “{_short(query, 40)}”",
+                          target=query)
 
     def _project_candidates(self) -> list[Path]:
         home = self.policy.home_real
@@ -568,6 +570,7 @@ class ToolBox:
         return ToolResult(
             f"{self._show(path)} ({len(folders)} folders, {len(files)} files):\n{body}{more}",
             f"Looking in {self._show(path)}",
+            target=self._show(path),
         )
 
     def _tool_glob(self, args: dict[str, Any]) -> ToolResult:
@@ -594,6 +597,7 @@ class ToolBox:
         return ToolResult(
             f"{header}{body}{more}{self._cut_note()}",
             f"Finding {pattern} in {self._show(root)}",
+            target=f"{pattern} in {self._show(root)}",
         )
 
     def _tool_grep(self, args: dict[str, Any]) -> ToolResult:
@@ -641,6 +645,7 @@ class ToolBox:
         return ToolResult(
             f"{header}{body}{self._cut_note()}",
             f"Searching {where} for “{_short(pattern, 40)}”",
+            target=f"“{_short(pattern, 40)}” in {where}",
         )
 
     def _tool_read(self, args: dict[str, Any]) -> ToolResult:
@@ -676,7 +681,7 @@ class ToolBox:
             body = "\n".join(rows)
             if last < len(lines):
                 body += f"\n(Lines {offset}–{last} of {len(lines)}. Read on with offset={last + 1}.)"
-        return ToolResult(f"{shown}:\n{body}", f"Reading {shown}")
+        return ToolResult(f"{shown}:\n{body}", f"Reading {shown}", target=shown)
 
     def _tool_write(self, args: dict[str, Any]) -> ToolResult:
         path = self.policy.writable(str(args["path"]), self.cwd)
@@ -692,6 +697,7 @@ class ToolBox:
         verb = "Replaced" if existed else "Created"
         return ToolResult(
             f"{verb} {self._show(path)} ({len(content.splitlines())} lines).", f"Writing {self._show(path)}",
+            target=self._show(path),
         )
 
     def _tool_edit(self, args: dict[str, Any]) -> ToolResult:
@@ -722,7 +728,8 @@ class ToolBox:
         path.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1), encoding="utf-8")
         self._note_change(path)
         done = count if replace_all else 1
-        return ToolResult(f"Edited {shown} ({done} replacement{'s' if done != 1 else ''}).", f"Editing {shown}")
+        return ToolResult(f"Edited {shown} ({done} replacement{'s' if done != 1 else ''}).", f"Editing {shown}",
+                          target=shown)
 
     def _tool_bash(self, args: dict[str, Any]) -> ToolResult:
         command = str(args["command"]).strip()
@@ -763,6 +770,7 @@ class ToolBox:
             f"$ {command}\n{output}\n[{status}, {result.seconds} s]",
             f"Running {_short(command, 70)}",
             ok=result.exit_code == 0,
+            target=_short(command, 120),
         )
 
     def _tool_open_project(self, args: dict[str, Any]) -> ToolResult:
@@ -782,4 +790,5 @@ class ToolBox:
             f"Opened {shown} as the current project. Local Coder shows it to the user after your answer; "
             "their next requests apply to it.",
             f"Opening {shown}",
+            target=shown,
         )

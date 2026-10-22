@@ -1,9 +1,11 @@
-"""Models Local Coder can switch between: installed local files plus one hosted model.
+"""Models Local Coder can switch between: installed local files plus hosted models.
 
 Local entries are a discovery list of files already on the Mac; this never
 downloads weights. Bonsai 2 must use the PrismML llama-server; the Qwen files
-use the ordinary llama.cpp binary on PATH. The hosted entry runs on NVIDIA's
-servers and is available when its API key is on this Mac.
+use the ordinary llama.cpp binary on PATH. Nemotron runs on NVIDIA's servers.
+OrcaRouter models (`orca:<model id>`) come from OrcaRouter's cached model list:
+the menu shows the selected and recently used ones, and any other can be picked
+from the full list. Hosted entries are available when their API key is on this Mac.
 """
 from __future__ import annotations
 
@@ -35,6 +37,7 @@ class CatalogEntry(BaseModel):
     api_key_name: str = ""
     temperature: float = 0.0
     top_p: float = 0.0
+    reasoning_switch: bool = False
 
 
 def _home() -> Path:
@@ -49,7 +52,7 @@ def known_entries(home: Path | None = None) -> list[CatalogEntry]:
     return [
         CatalogEntry(
             id="nemotron35-super",
-            name="Nemotron 3.5 Super 120B — NVIDIA cloud",
+            name="Nemotron 3.5 Super 120B",
             model_file="",
             model_alias="nvidia/nemotron-3.5-super-vl-120b-a12b",
             server_binary="",
@@ -64,10 +67,11 @@ def known_entries(home: Path | None = None) -> list[CatalogEntry]:
             provider="nvidia",
             endpoint="https://integrate.api.nvidia.com",
             api_key_name="NVIDIA_API_KEY",
+            reasoning_switch=True,
         ),
         CatalogEntry(
             id="bonsai2-27b",
-            name="Bonsai 2 27B — preferred",
+            name="Bonsai 2 27B",
             model_file=str(
                 bonsai_dir / "models" / "bonsai2-gguf" / "27B" / "Ternary-Bonsai-2-27B-PQ2_0.gguf"
             ),
@@ -81,7 +85,7 @@ def known_entries(home: Path | None = None) -> list[CatalogEntry]:
         ),
         CatalogEntry(
             id="qwen35-9b",
-            name="Qwen 3.5 9B — faster fallback",
+            name="Qwen 3.5 9B",
             model_file=str(qwen_dir / "Qwen_Qwen3.5-9B-Q4_K_M.gguf"),
             model_alias="Qwen3.5-9B-Q4_K_M",
             server_binary="llama-server",
@@ -91,7 +95,7 @@ def known_entries(home: Path | None = None) -> list[CatalogEntry]:
         ),
         CatalogEntry(
             id="qwen35-4b",
-            name="Qwen 3.5 4B — fastest fallback",
+            name="Qwen 3.5 4B",
             model_file=str(qwen_dir / "Qwen_Qwen3.5-4B-Q4_K_M.gguf"),
             model_alias="Qwen3.5-4B-Q4_K_M",
             server_binary="llama-server",
@@ -103,43 +107,69 @@ def known_entries(home: Path | None = None) -> list[CatalogEntry]:
     ]
 
 
-def gpu_entries() -> list[CatalogEntry]:
-    """Models in your GPU library (from the last-seen models.json; never wakes the GPU)."""
-    from .gpu.cloud import cached_library, load_config
+ORCA_PREFIX = "orca:"
+_ORCA_CONTEXT_CAP = 131072
+_ORCA_OUTPUT_CAP = 16384
 
-    cfg = load_config()
-    if cfg is None:
-        return []
-    hourly = cfg.get("hourly_usd")
-    rows: list[CatalogEntry] = []
-    for row in cached_library().get("models", []):
-        rows.append(CatalogEntry(
-            id=f"gpu:{row['id']}",
-            name=f"{row.get('name') or row['id']} — your GPU",
-            model_file="",
-            model_alias=str(row["id"]),
-            server_binary="",
-            n_ctx=int(row.get("context") or 32768),
-            quantization="gpu",
-            note=(
-                f"Runs on your Google Cloud GPU (about ${hourly}/hour while it is on; it switches off by itself "
-                "after about 15 idle minutes). The first request after a pause takes a few minutes to start it."
-            ),
-            max_tokens=min(int(row.get("max_tokens") or 8192), 32768),
-            gen_timeout=900,
-            provider="cloudrun",
-            endpoint=str(cfg["url"]),
-            temperature=float(row.get("temperature") or 0.0),
-            top_p=float(row.get("top_p") or 0.0),
-        ))
-    return rows
+
+def orca_entry(model_id: str) -> CatalogEntry:
+    """A catalog entry for one OrcaRouter model (facts from the cached list when it has them)."""
+    from . import orcarouter
+
+    row = orcarouter.find_model(model_id) or {}
+    name = str(row.get("name") or model_id.split("/", 1)[-1])
+    provider = str(row.get("provider") or model_id.split("/", 1)[0])
+    description = str(row.get("description") or "").strip()
+    note = (f"{description} " if description else "") + (
+        f"Runs through OrcaRouter: what it reads is sent to OrcaRouter and {provider}. "
+        f"{orcarouter.price_label(row)} per million tokens." if row else
+        "Runs through OrcaRouter: what it reads is sent to OrcaRouter and the model's provider."
+    )
+    return CatalogEntry(
+        id=f"{ORCA_PREFIX}{model_id}",
+        name=name,
+        model_file="",
+        model_alias=model_id,
+        server_binary="",
+        n_ctx=min(int(row.get("context") or _ORCA_CONTEXT_CAP), _ORCA_CONTEXT_CAP),
+        quantization="hosted",
+        note=note.replace(" Free per million tokens.", " Free."),
+        max_tokens=min(int(row.get("max_output") or _ORCA_OUTPUT_CAP), _ORCA_OUTPUT_CAP),
+        gen_timeout=600,
+        provider="orcarouter",
+        endpoint=orcarouter.API,
+        api_key_name=orcarouter.KEY_NAME,
+        reasoning_switch=bool(row.get("reasoning_switch")) or orcarouter.has_reasoning_switch(model_id, None),
+    )
+
+
+def orca_entries(current: MachineConfig) -> list[CatalogEntry]:
+    """OrcaRouter models for the menu: the selected one, recent ones, else a suggested few."""
+    from . import orcarouter
+
+    selected = current.model_alias if current.provider == "orcarouter" else ""
+    return [orca_entry(model_id) for model_id in orcarouter.menu_models(selected)]
 
 
 def hosted_ready(entry: CatalogEntry) -> bool:
     """Whether a hosted entry can be used now (no network call)."""
-    if entry.provider == "cloudrun":
-        return bool(entry.endpoint)
     return bool(find_api_key(entry.api_key_name)[0])
+
+
+GROUPS = {"local": "On This Mac", "nvidia": "NVIDIA Cloud", "orcarouter": "OrcaRouter"}
+
+
+def subtitle(entry: CatalogEntry) -> str:
+    """One short line under the model name in the picker."""
+    if entry.provider == "orcarouter":
+        from . import orcarouter
+
+        row = orcarouter.find_model(entry.model_alias) or {}
+        return orcarouter.price_label(row) if row else "OrcaRouter"
+    if entry.provider == "nvidia":
+        return "Free, hosted by NVIDIA"
+    return {"bonsai2-27b": "Best local quality, slow", "qwen35-9b": "Faster, lighter",
+            "qwen35-4b": "Fastest, weakest"}.get(entry.id, "Runs on this Mac")
 
 
 def _binary_ok(server_binary: str) -> bool:
@@ -159,7 +189,7 @@ def list_models(cfg: MachineConfig | None = None, *, home: Path | None = None) -
             current_file = current.model_file
     selected = ""
     rows: list[dict] = []
-    for entry in [*known_entries(home), *gpu_entries()]:
+    for entry in [*known_entries(home), *orca_entries(current)]:
         if entry.provider != "local":
             available = hosted_ready(entry)
             is_selected = current.provider == entry.provider and current.model_alias == entry.model_alias
@@ -174,7 +204,14 @@ def list_models(cfg: MachineConfig | None = None, *, home: Path | None = None) -
             **entry.model_dump(),
             "available": available,
             "selected": is_selected,
+            "group": GROUPS.get(entry.provider, entry.provider),
+            "subtitle": subtitle(entry),
         })
+        if entry.provider == "orcarouter":
+            from . import orcarouter
+
+            facts = orcarouter.find_model(entry.model_alias) or {}
+            rows[-1].update({key: facts.get(key) for key in ("free", "intelligence", "context", "speed")})
     return {
         "models": rows,
         "selected": selected,
@@ -184,8 +221,10 @@ def list_models(cfg: MachineConfig | None = None, *, home: Path | None = None) -
 
 
 def entry_by_id(model_id: str, *, home: Path | None = None) -> CatalogEntry | None:
-    """Look up one catalog id."""
-    for entry in [*known_entries(home), *gpu_entries()]:
+    """Look up one catalog id (any OrcaRouter model id works with the orca: prefix)."""
+    if model_id.startswith(ORCA_PREFIX) and "/" in model_id:
+        return orca_entry(model_id.removeprefix(ORCA_PREFIX))
+    for entry in known_entries(home):
         if entry.id == model_id:
             return entry
     return None

@@ -43,6 +43,8 @@ class MachineConfig(BaseModel):
     api_key_name: str = ""
     temperature: float = 0.0
     top_p: float = 0.0
+    reasoning: str = "on"
+    reasoning_switch: bool = False
 
 
 def is_hosted(cfg: MachineConfig) -> bool:
@@ -115,6 +117,8 @@ def write_machine_config(cfg: MachineConfig) -> Path:
         f'api_key_name = "{cfg.api_key_name}"',
         f"temperature = {float(cfg.temperature)}",
         f"top_p = {float(cfg.top_p)}",
+        f'reasoning = "{cfg.reasoning}"',
+        f"reasoning_switch = {'true' if cfg.reasoning_switch else 'false'}",
         "",
     ]
     tmp = path.with_suffix(".toml.tmp")
@@ -131,10 +135,9 @@ def machine_status(cfg: MachineConfig) -> list[tuple[str, bool, str]]:
         from .hosted import credential_status, provider_place
 
         ok, where = credential_status(cfg)
-        label = "gcloud sign-in" if cfg.provider == "cloudrun" else "API key"
         return [
             ("model", True, f"{cfg.model_alias} on {provider_place(cfg)} (nothing loads on this Mac)"),
-            (label, ok, where),
+            ("API key", ok, where),
             ("endpoint", True, cfg.endpoint),
         ]
     rows: list[tuple[str, bool, str]] = []

@@ -135,14 +135,17 @@ class AgentSession:
         context_chars: int = 200_000,
         on_activity: Callable[[str], None] | None = None,
         cancel: threading.Event | None = None,
+        on_step: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.chat = chat
         self.toolbox = toolbox
         self.context_chars = context_chars
         self.on_activity = on_activity
+        self.on_step = on_step
         self.cancel = cancel
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         self.calls_log: list[dict[str, Any]] = []
+        self.cost_usd: float | None = None
         for row in history or []:
             role = str(row.get("role") or "")
             content = str(row.get("content") or "").strip()
@@ -152,9 +155,12 @@ class AgentSession:
     def _cancelled(self) -> bool:
         return self.cancel is not None and self.cancel.is_set()
 
-    def _activity(self, text: str) -> None:
+    def _activity(self, text: str, step: dict[str, Any] | None = None) -> None:
+        """Report progress: a text line, and for apps a structured step (tool, target, ok)."""
         if text and self.on_activity is not None:
             self.on_activity(text)
+        if self.on_step is not None and (text or step):
+            self.on_step({"detail": text, **(step or {})})
 
     def ask(
         self,
@@ -212,7 +218,7 @@ class AgentSession:
                 self.messages.append({"role": "user", "content": _NUDGE})
                 continue
             if content:
-                self._activity(_first_line(content))
+                self._activity(_first_line(content), {"tool": "note"})
             for call in tool_calls:
                 name = call["function"]["name"]
                 if self._cancelled():
@@ -220,7 +226,7 @@ class AgentSession:
                 else:
                     outcome = self.toolbox.call(name, call["function"]["arguments"])
                     calls += 1
-                    self._activity(outcome.activity)
+                    self._activity(outcome.activity, {"tool": name, "target": outcome.target, "ok": outcome.ok})
                     result_text = outcome.text
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "name": name, "content": result_text},
@@ -240,6 +246,10 @@ class AgentSession:
                 "first_token_s": (timings or {}).get("first_token_s"),
                 "attempts": (timings or {}).get("attempts"),
             })
+            cost = (usage or {}).get("cost_usd")
+            if isinstance(cost, (int, float)):
+                row["cost_usd"] = cost
+                self.cost_usd = round((self.cost_usd or 0.0) + float(cost), 6)
         if error:
             row["error"] = error[:300]
         self.calls_log.append(row)
@@ -249,9 +259,11 @@ class AgentSession:
         self.messages.append({"role": "user", "content": _WRAP_UP})
         self._compact()
         content = ""
+        started = time.monotonic()
         try:
-            message = _message(self.chat(self.messages, self.toolbox.schemas()))
-            content = strip_think(str(message.get("content") or "")).strip()
+            reply = self.chat(self.messages, self.toolbox.schemas())
+            self._log_call(started, reply)
+            content = strip_think(str(_message(reply).get("content") or "")).strip()
         except Exception:  # noqa: BLE001 — the limit text below is the answer then
             content = ""
         self.messages.append({"role": "assistant", "content": content})

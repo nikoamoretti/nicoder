@@ -1,13 +1,14 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "LocalCoder",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     targets: [
         .executableTarget(
             name: "LocalCoder",
-            path: "Sources"
+            path: "Sources",
+            swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]
 )

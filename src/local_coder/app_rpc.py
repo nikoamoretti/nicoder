@@ -10,9 +10,11 @@ One response object per stdout line:
 Unsolicited progress during a run or a question:
   {"id": null, "event": "progress", "payload": {...}}
 
-`chat_request` runs on its own thread, so `cancel` and other calls are served
-while a question is being answered; its response arrives when it is done.
-The helper binds only stdin/stdout. It does not open a network port.
+`chat_request` and `orca_sign_in` run on their own threads, so `cancel` and
+other calls are served meanwhile; their responses arrive when they are done.
+The helper binds only stdin/stdout. Its one network listener is the loopback
+callback `orca_sign_in` opens on 127.0.0.1 while the browser sign-in waits.
+An OrcaRouter key passed to `orca_save_key` is never echoed or logged.
 """
 from __future__ import annotations
 
@@ -41,10 +43,16 @@ from .app_service import (
     load_prefs,
     load_project_chat,
     open_docker_desktop,
+    orca_models,
+    orca_remove_key,
+    orca_save_key,
+    orca_sign_in,
+    orca_status,
     readiness,
     remember_project,
     save_prefs,
     select_model,
+    set_reasoning,
     snapshot,
     start_chat,
     stop_owned_server,
@@ -69,7 +77,9 @@ class RpcServer:
         self.runtime = runtime or AppRuntime()
         self.out = out or sys.stdout
         self.chat_cancel = threading.Event()
+        self.sign_in_cancel = threading.Event()
         self._chat_thread: threading.Thread | None = None
+        self._sign_in_thread: threading.Thread | None = None
         self._write_lock = threading.Lock()
         self.runtime.subscribe(self._on_event)
 
@@ -89,6 +99,19 @@ class RpcServer:
             target=lambda: self._write(self.dispatch(message)), name="local-coder-chat", daemon=True,
         )
         self._chat_thread = thread
+        thread.start()
+        return thread
+
+    def start_sign_in_thread(self, message: dict[str, Any]) -> threading.Thread | None:
+        """Wait for the browser sign-in off the read loop (it can take minutes)."""
+        if self._sign_in_thread is not None and self._sign_in_thread.is_alive():
+            self._write(_err(message.get("id"), "busy", "A sign-in is already waiting in the browser."))
+            return None
+        self.sign_in_cancel.clear()
+        thread = threading.Thread(
+            target=lambda: self._write(self.dispatch(message)), name="local-coder-sign-in", daemon=True,
+        )
+        self._sign_in_thread = thread
         thread.start()
         return thread
 
@@ -141,6 +164,8 @@ class RpcServer:
             return list_models()
         if method == "select_model":
             return select_model(str(params.get("id") or ""))
+        if method == "set_reasoning":
+            return set_reasoning(str(params.get("mode") or ""))
         if method == "ensure_machine":
             return ensure_machine_config()
         if method == "ensure_server":
@@ -164,6 +189,19 @@ class RpcServer:
                 engine=params.get("engine") or load_prefs().get("engine") or "general",
                 kind=params.get("kind") or "create",
             )
+        if method == "orca_status":
+            return orca_status()
+        if method == "orca_save_key":
+            return orca_save_key(str(params.get("key") or ""))
+        if method == "orca_remove_key":
+            return orca_remove_key()
+        if method == "orca_sign_in":
+            return orca_sign_in(self._on_event, self.sign_in_cancel)
+        if method == "orca_sign_in_cancel":
+            self.sign_in_cancel.set()
+            return {"ok": True}
+        if method == "orca_models":
+            return orca_models(refresh=bool(params.get("refresh")))
         if method == "cancel":
             self.chat_cancel.set()
             return self.runtime.cancel()
@@ -200,6 +238,7 @@ class RpcServer:
             return stop_owned_server()
         if method == "shutdown":
             self.chat_cancel.set()
+            self.sign_in_cancel.set()
             return self.runtime.shutdown()
         if method == "run_status":
             return {
@@ -230,8 +269,12 @@ class RpcServer:
             if message.get("method") == "chat_request":
                 self.start_chat_thread(message)
                 continue
+            if message.get("method") == "orca_sign_in":
+                self.start_sign_in_thread(message)
+                continue
             self._write(self.dispatch(message))
         self.chat_cancel.set()
+        self.sign_in_cancel.set()
         return 0
 
 

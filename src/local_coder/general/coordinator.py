@@ -411,6 +411,7 @@ def run_general_request(
         raise GeneralError(exc.detail, code=exc.code) from exc
     _emit(listener, "preparing", {"request_id": request_id})
     meta = prepare_workspace(folder, request_id, allow_starter=True)
+    meta["title"] = _title_line(text)
     _emit(listener, "activity", {"detail": "Working copy is ready."})
     candidate = Path(meta["candidate"])
     engine_cwd = Path(meta.get("engine_cwd") or candidate)
@@ -437,14 +438,7 @@ def run_general_request(
 
         cfg = load_machine_config()
         if agent_chat is None:
-            from local_coder.agent.runner import prepare_model
-            from local_coder.hosted import HostedError
-
             _emit(listener, "activity", {"detail": f"Using {model} on {provider_place(cfg)}."})
-            try:
-                prepare_model(cfg, lambda detail: _emit(listener, "activity", {"detail": detail}))
-            except HostedError as exc:
-                raise GeneralError(str(exc), code="gpu") from exc
         meta["model_id"] = model
         meta["engine"] = "agent"
         meta["provider"] = cfg.provider
@@ -624,8 +618,8 @@ def _run_agent_request(
         chat=_counted_chat(chat, ledger),
         context_chars=context_chars,
         history=recent_messages(folder, limit=10, max_chars=1500),
-        on_activity=lambda detail: _emit(listener, "activity", {"detail": detail}),
         cancel=cancel,
+        on_step=lambda step: _emit(listener, "activity", step),
     )
     run = session.ask(text, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s())
     web_app = _is_vite_app(engine_cwd)
@@ -672,6 +666,7 @@ def _run_agent_request(
             "changed": session.toolbox.changed_paths,
             "commands": session.toolbox.commands[:50],
             "transcript": "agent_transcript.json",
+            "cost_usd": session.cost_usd,
         }
         session.save(request_root / "agent_transcript.json", status=run.status)
         shutil.rmtree(request_root / "agent-tmp", ignore_errors=True)
@@ -937,6 +932,32 @@ def _publish_candidate(engine_cwd: Path, candidate: Path) -> None:
         sync_source_tree(engine_cwd, candidate)
         return
     copy_snapshot(engine_cwd, candidate)
+
+
+def _title_line(text: str) -> str:
+    """The first non-empty line of a request, for lists."""
+    line = next((row.strip() for row in text.splitlines() if row.strip()), "")
+    return line[:160]
+
+
+def _title_from_transcript(request_root: Path) -> str:
+    """A title for requests saved before titles were kept: the user message that started the agent."""
+    try:
+        data = json.loads((request_root / "agent_transcript.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    messages = data.get("messages") if isinstance(data, dict) else None
+    if not isinstance(messages, list):
+        return ""
+    request = ""
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            break
+        if message.get("role") == "user":
+            request = str(message.get("content") or "")
+    return _title_line(request)
 
 
 def _save_meta(meta: dict[str, Any]) -> None:
@@ -1214,6 +1235,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         },
         "model_commentary": commentary,
         "accept_requires_confirmation": True,
+        "cost_usd": (meta.get("agent") or {}).get("cost_usd") if isinstance(meta.get("agent"), dict) else None,
     }
 
 
@@ -1224,6 +1246,8 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     if not result.get("ok"):
         raise GeneralError(str(result.get("detail") or "Keep failed."), code=str(result.get("code") or "accept"))
     stop_owned()
+    meta["kept"] = True
+    _save_meta(meta)
     return {"ok": True, **result, "request_id": request_id, "repo": str(Path(user_path).resolve())}
 
 
@@ -1269,11 +1293,20 @@ def list_requests(user_path: str | Path) -> list[dict[str, Any]]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        agent = meta.get("agent") if isinstance(meta.get("agent"), dict) else {}
+        if meta.get("discarded"):
+            outcome = "discarded"
+        elif meta.get("kept"):
+            outcome = "kept"
+        elif agent.get("status") in {"stopped", "time_limit", "step_limit", "error"}:
+            outcome = str(agent["status"])
+        else:
+            outcome = "review"
         rows.append({
             "episode_id": meta.get("request_id") or entry.name,
             "request_id": meta.get("request_id") or entry.name,
-            "outcome": "discarded" if meta.get("discarded") else "review",
-            "request": (meta.get("title") or "")[:160],
+            "outcome": outcome,
+            "request": (meta.get("title") or _title_from_transcript(entry))[:160],
             "updated_ts": meta.get("created_ts"),
             "created_ts": meta.get("created_ts"),
             "complete": False,

@@ -1,7 +1,8 @@
 """Run the agent for the app: questions (read-only) and change requests (working copy).
 
-Only models that return native tool calls use the agent; today that is the
-hosted Nemotron 3.5 Super 120B. Local llama.cpp models keep their own paths.
+Only models that return native tool calls use the agent: the hosted models
+(Nemotron 3.5 Super 120B on NVIDIA, and OrcaRouter's models). Local llama.cpp
+models keep their own paths.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from local_coder.hosted import hosted_chat, warm_up
+from local_coder.hosted import hosted_chat
 from local_coder.machine import MachineConfig, is_hosted
 
 from .access import AccessPolicy
@@ -38,43 +39,26 @@ def agent_capable(cfg: MachineConfig) -> bool:
 
 
 def hosted_tool_chat(cfg: MachineConfig) -> ChatFn:
-    """Chat function for the loop: the hosted model, thinking on, tools offered."""
+    """Chat function for the loop: the hosted model, tools offered, reasoning as selected (on by default).
+
+    OrcaRouter models keep their provider's own sampling defaults (several reasoning
+    models refuse a temperature), and each run is one OrcaRouter session.
+    """
     max_tokens = min(_OUTPUT_TOKENS, int(cfg.max_tokens or _OUTPUT_TOKENS))
+    session = f"local-coder-{secrets.token_hex(6)}"
 
     def chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "model": cfg.model_alias,
-            "messages": messages,
-            "temperature": cfg.temperature or 0.3,
-            "max_tokens": max_tokens,
-        }
+        body: dict[str, Any] = {"model": cfg.model_alias, "messages": messages, "max_tokens": max_tokens}
+        if cfg.provider != "orcarouter" or cfg.temperature:
+            body["temperature"] = cfg.temperature or 0.3
         if cfg.top_p:
             body["top_p"] = cfg.top_p
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
-        return hosted_chat(cfg, body, thinking=True)
+        return hosted_chat(cfg, body, thinking=cfg.reasoning != "off", session=session)
 
     return chat
-
-
-def prepare_model(cfg: MachineConfig, on_activity: Callable[[str], None] | None = None) -> None:
-    """Wake your GPU and load the model before the first agent step (does nothing for other providers)."""
-    if cfg.provider != "cloudrun":
-        return
-    name = cfg.model_alias
-    say = on_activity or (lambda _text: None)
-    say(f"Starting your GPU and loading {name}. If it was asleep this takes a few minutes.")
-    last = [0.0]
-
-    def progress(seconds: float) -> None:
-        if seconds - last[0] >= 20:
-            last[0] = seconds
-            say(f"Still loading {name} ({int(seconds)} s).")
-
-    took = warm_up(cfg, progress)
-    if took > 5:
-        say(f"{name} is ready ({int(took)} s).")
 
 
 def context_chars_for(cfg: MachineConfig) -> int:
@@ -110,6 +94,7 @@ class AskResult:
     read_paths: list[str] = field(default_factory=list)
     steps: int = 0
     transcript: Path | None = None
+    cost_usd: float | None = None
 
 
 def run_ask(
@@ -124,6 +109,7 @@ def run_ask(
     home: Path | None = None,
     max_steps: int = ASK_STEPS,
     seconds: int = ASK_SECONDS,
+    on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> AskResult:
     """Answer a question with read-only tools across the home folder."""
     home = home or Path.home()
@@ -143,6 +129,7 @@ def run_ask(
         context_chars=min(context_chars, ASK_CONTEXT_CHARS),
         on_activity=on_activity,
         cancel=cancel,
+        on_step=on_step,
     )
     run = session.ask(question, max_steps=max_steps, deadline=time.monotonic() + seconds, hurry_after=0.5)
     opened = toolbox.opened
@@ -161,6 +148,7 @@ def run_ask(
         read_paths=list(toolbox.read_paths),
         steps=run.steps,
         transcript=transcript,
+        cost_usd=session.cost_usd,
     )
 
 
@@ -175,6 +163,7 @@ def build_session(
     on_activity: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
     home: Path | None = None,
+    on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> AgentSession:
     """A session that may change the request's working copy."""
     home = home or Path.home()
@@ -192,6 +181,7 @@ def build_session(
         context_chars=context_chars,
         on_activity=on_activity,
         cancel=cancel,
+        on_step=on_step,
     )
 
 

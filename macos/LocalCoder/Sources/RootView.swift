@@ -1,125 +1,185 @@
 import AppKit
 import SwiftUI
-import WebKit
-
-private enum LCColor {
-    static let brand = Color(red: 0.18, green: 0.36, blue: 0.28)
-    static let paper = Color(red: 0.96, green: 0.96, blue: 0.94)
-    static let sidebar = Color(red: 0.93, green: 0.93, blue: 0.90)
-    static let bubbleUser = Color(red: 0.18, green: 0.36, blue: 0.28).opacity(0.12)
-    static let bubbleAssistant = Color.white
-    static let ink = Color(red: 0.12, green: 0.14, blue: 0.13)
-}
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var columns = NavigationSplitViewVisibility.all
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            sidebar
-                .frame(width: 248)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 18)
-                .background(LCColor.sidebar)
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        NavigationSplitView(columnVisibility: $columns) {
+            SidebarView()
+                .navigationSplitViewColumnWidth(min: 200, ideal: 236, max: 320)
+        } detail: {
+            SessionView()
+                .navigationTitle(model.projectPath == nil ? "Local Coder" : model.projectName)
+                .navigationSubtitle(Self.tildePath(model.projectPath) ?? "Any folder on this Mac")
+                .toolbar { toolbar }
+                .inspector(isPresented: $model.inspectorShown) {
+                    ChangesInspector()
+                        .inspectorColumnWidth(min: 340, ideal: 460, max: 760)
+                }
         }
-        .frame(minWidth: 960, minHeight: 680)
-        .background(LCColor.paper)
-        .preferredColorScheme(.light)
-        .sheet(isPresented: $model.showSettings) {
-            SettingsView()
+        .sheet(isPresented: $model.showConnect) {
+            ConnectOrcaRouterView()
                 .environmentObject(model)
-                .frame(width: 480, height: 420)
+        }
+        .sheet(isPresented: $model.showBrowser) {
+            ModelBrowser()
+                .environmentObject(model)
         }
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Local Coder")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(LCColor.brand)
-
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
             Button {
                 model.newChat()
             } label: {
-                Label("New chat", systemImage: "square.and.pencil")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Label("New Chat", systemImage: "square.and.pencil")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(LCColor.brand)
+            .help("Start a new conversation (⌘N)")
             .accessibilityIdentifier("newChatButton")
-
-            VStack(alignment: .leading, spacing: 6) {
-                Button {
-                    model.openProject()
-                } label: {
-                    Label("Open Project…", systemImage: "folder")
-                }
-                .accessibilityIdentifier("openProjectButton")
-
-                Button {
-                    model.newProject()
-                } label: {
-                    Label("New Project…", systemImage: "plus.square")
-                }
-                .accessibilityIdentifier("newProjectButton")
-
-                Button("Advanced settings") {
-                    model.showSettings = true
-                }
-                .font(.caption)
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                withAnimation { model.inspectorShown.toggle() }
+            } label: {
+                Label("Changes", systemImage: "sidebar.trailing")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(LCColor.ink.opacity(0.8))
+            .help(model.hasChanges ? "Show the proposed changes" : "Changes and preview")
+        }
+    }
 
-            if !model.recent.isEmpty {
-                sidebarSection("Recent projects") {
-                    ForEach(model.recent) { project in
-                        Button(project.name) { model.selectProject(project.path) }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(model.projectPath == project.path ? LCColor.brand : LCColor.ink)
-                            .fontWeight(model.projectPath == project.path ? .semibold : .regular)
-                            .help(project.path)
-                    }
+    static func tildePath(_ path: String?) -> String? {
+        guard let path else { return nil }
+        let home = NSHomeDirectory()
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
+}
+
+// MARK: - Sidebar
+
+struct SidebarView: View {
+    @EnvironmentObject private var model: AppModel
+
+    private var selection: Binding<String?> {
+        Binding(
+            get: { model.projectPath },
+            set: { path in
+                if let path { model.selectProject(path) }
+            }
+        )
+    }
+
+    var body: some View {
+        List(selection: selection) {
+            Section("Projects") {
+                if model.recent.isEmpty {
+                    Text("Projects you open appear here.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(model.recent) { project in
+                    Label(project.name, systemImage: "folder")
+                        .help(RootView.tildePath(project.path) ?? project.path)
+                        .tag(Optional(project.path))
+                        .contextMenu {
+                            Button("Show in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
+                            }
+                        }
                 }
             }
-
-            if !model.history.isEmpty {
-                sidebarSection("Recent requests") {
+            if model.projectPath != nil && !model.history.isEmpty {
+                Section("Requests") {
                     ForEach(model.history) { row in
                         Button {
                             model.openHistory(row)
                         } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(row.request.isEmpty ? row.episodeID : row.request)
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.leading)
-                                Text(row.outcome)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+                            HistoryRowView(row: row)
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 2) {
+                Button {
+                    model.openProject()
+                } label: {
+                    Label("Open Folder…", systemImage: "folder.badge.plus")
+                }
+                .help("Open a project folder (⌘O)")
+                .accessibilityIdentifier("openProjectButton")
+                Spacer()
+                Button {
+                    model.newProject()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("Create a new project (⇧⌘N)")
+                .accessibilityIdentifier("newProjectButton")
+                if model.projectPath != nil {
+                    Button {
+                        model.closeProject()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .disabled(model.running)
+                    .help("Close this project and ask about anything on your Mac (its chat stays saved)")
+                }
+            }
+            .buttonStyle(.borderless)
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+        }
     }
+}
 
-    private func sidebarSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
+private struct HistoryRowView: View {
+    let row: HistoryRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(row.request.isEmpty ? "Request" : row.request)
+                .lineLimit(2)
+                .truncationMode(.tail)
+            Text(outcome)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .padding(.top, 8)
-            content()
         }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 
-    private var detail: some View {
+    private var outcome: String {
+        let label = Self.labels[row.outcome] ?? row.outcome.replacingOccurrences(of: "_", with: " ").capitalized
+        guard let date = Self.parse(row.updated) else { return label }
+        let when = date.formatted(.relative(presentation: .named))
+        return label.isEmpty ? when : "\(label) · \(when)"
+    }
+
+    private static let labels = [
+        "review": "Done", "kept": "Kept", "discarded": "Discarded", "stopped": "Stopped",
+        "time_limit": "Ran out of time", "step_limit": "Ran out of steps", "error": "Failed",
+        "solved": "Solved", "blocked": "Blocked",
+    ]
+
+    private static func parse(_ text: String) -> Date? {
+        if let seconds = Double(text) { return Date(timeIntervalSince1970: seconds) }
+        return ISO8601DateFormatter().date(from: text)
+    }
+}
+
+// MARK: - Session (the conversation log)
+
+struct SessionView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
         Group {
             if let error = model.startupError {
                 ContentUnavailableView(
@@ -127,557 +187,335 @@ struct RootView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )
-                .padding(28)
-            } else if model.projectPath == nil {
-                welcomeShell
+            } else if model.entries.isEmpty && !model.running {
+                StartView()
             } else {
-                projectShell
+                ConversationLog()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ComposerBar()
+        }
+        .overlay(alignment: .top) {
+            if let banner = model.banner {
+                NoticeBar(text: banner) { model.banner = nil }
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: model.banner)
     }
+}
 
-    private var welcomeShell: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text("Chat")
-                        .font(.system(size: 34, weight: .semibold, design: .rounded))
-                        .foregroundStyle(LCColor.ink)
-                    Text("Ask about any project on your Mac, or describe a new app to build.")
+private struct NoticeBar: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .glassEffect(.regular, in: .rect(cornerRadius: 12))
+        .frame(maxWidth: 620)
+        .padding(.horizontal, 20)
+    }
+}
+
+struct ConversationLog: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                let entries = model.entries
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    EntryView(entry: entry, isLast: index == entries.count - 1)
+                    if index < entries.count - 1 {
+                        Divider()
+                            .padding(.vertical, 22)
+                    }
+                }
+            }
+            .padding(.horizontal, 36)
+            .padding(.top, 28)
+            .padding(.bottom, 24)
+            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        .defaultScrollAnchor(.bottom)
+    }
+}
+
+struct EntryView: View {
+    @EnvironmentObject private var model: AppModel
+    let entry: ConversationEntry
+    let isLast: Bool
+
+    private var live: Bool { isLast && model.running }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let prompt = entry.prompt {
+                PromptHeadline(text: prompt)
+            }
+            if live {
+                LiveTrace()
+            } else if let prompt = entry.prompt, let record = model.traces[prompt] {
+                TraceSummary(record: record)
+            }
+            ForEach(entry.answers) { answer in
+                ProseView(text: answer.text)
+                    .contextMenu {
+                        Button("Copy Answer") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(answer.text, forType: .string)
+                        }
+                    }
+            }
+            if isLast && !model.running && model.hasChanges && model.snapshot?["can_keep"] as? Bool == true {
+                ChangesPill()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct PromptHeadline: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(.tint)
+                .frame(width: 3)
+            Text(text)
+                .font(.system(size: 17, weight: .semibold))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct ChangesPill: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        let stats = DiffParser.totals(DiffParser.parse(model.diffText, delta: model.changeDelta))
+        Button {
+            withAnimation { model.inspectorShown = true }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.on.doc")
+                Text("\(model.changedFiles.count) file\(model.changedFiles.count == 1 ? "" : "s") changed")
+                Text("+\(stats.added)").foregroundStyle(.green)
+                Text("−\(stats.removed)").foregroundStyle(.red)
+                Text("Review")
+                    .fontWeight(.semibold)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+            }
+            .font(.callout.monospacedDigit())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+}
+
+// MARK: - Start
+
+struct StartView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 76, height: 76)
+                    .accessibilityHidden(true)
+                VStack(spacing: 6) {
+                    Text(model.projectPath == nil ? "What should we look at?" : model.projectName)
+                        .font(.system(size: 26, weight: .semibold))
+                    Text(model.projectPath == nil
+                         ? "Ask about any project on your Mac, or describe an app to build."
+                         : (model.projectSummary.isEmpty ? "Ask about this project, or describe a change." : model.projectSummary))
                         .font(.title3)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
-                    if let name = model.selectedModelName {
-                        modelChip(name)
-                    }
-                    if let banner = model.banner {
-                        bannerCard(banner)
-                    }
-                    if !model.chatTurns.isEmpty {
-                        chatTranscript
-                    }
-                    if model.running {
-                        livingProgress
-                    }
-                    prerequisiteBox
+                        .frame(maxWidth: 520)
                 }
-                .padding(28)
-                .frame(maxWidth: 720, alignment: .leading)
-            }
-            composerBar
-        }
-    }
-
-    private var projectShell: some View {
-        VStack(spacing: 0) {
-            slimHeader
-            if let banner = model.banner {
-                bannerCard(banner)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 8)
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if model.chatTurns.isEmpty && model.explainSummary == nil && model.snapshot == nil && !model.running {
-                            emptyChatHint
-                        }
-                        chatTranscript
-                        if let summary = model.explainSummary, model.chatTurns.isEmpty {
-                            explainBox(summary)
-                        }
-                        if model.running {
-                            livingProgress
-                                .id("progress")
-                        }
-                        if shouldShowReview {
-                            reviewBox
-                                .id("review")
-                        }
-                        Color.clear.frame(height: 8).id("chat-bottom")
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
-                    .frame(maxWidth: 820, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .onChange(of: model.chatTurns.count) { _, _ in
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo("chat-bottom", anchor: .bottom)
-                    }
-                }
-                .onChange(of: model.running) { _, running in
-                    if running {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            proxy.scrollTo("progress", anchor: .bottom)
-                        }
-                    }
+                ModelCard()
+                    .frame(maxWidth: 540)
+                if !model.blockingIssues.isEmpty {
+                    BlockingCard(issues: model.blockingIssues)
+                        .frame(maxWidth: 540)
                 }
             }
-            composerBar
+            .padding(40)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 40)
         }
     }
+}
 
-    private var shouldShowReview: Bool {
-        guard model.snapshot != nil else { return false }
-        if !model.changedFiles.isEmpty { return true }
-        if !model.diffText.isEmpty { return true }
-        if model.previewURL != nil { return true }
-        // Empty coding result: show only when commentary exists and chat didn't already absorb it.
-        if let commentary = model.modelCommentary, !commentary.isEmpty, model.chatTurns.isEmpty {
-            return true
-        }
-        return false
-    }
+/// The selected model at a glance, with a way to change it.
+private struct ModelCard: View {
+    @EnvironmentObject private var model: AppModel
 
-    private var slimHeader: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.projectName)
+    var body: some View {
+        let selected = model.selectedModel
+        let needsKey = selected?.provider == "orcarouter" && !model.orcaConnected
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: selected?.placeSymbol ?? "cpu")
+                .font(.system(size: 18))
+                .foregroundStyle(.tint)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(.tint.opacity(0.12)))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(selected?.name ?? "No model selected")
                     .font(.headline)
-                    .foregroundStyle(LCColor.ink)
-                Text(model.projectPath ?? "")
-                    .font(.caption2)
+                Text(needsKey ? "Connect OrcaRouter to use this model" : cardDetail(selected))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             Spacer(minLength: 8)
-            if let name = model.selectedModelName {
-                modelChip(name)
-            }
-            if !model.supported {
-                Text("Limited")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.orange.opacity(0.15), in: Capsule())
+            if needsKey {
+                Button("Connect…") { model.showConnect = true }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button("Change…") { model.showBrowser = true }
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
-        .background(LCColor.paper.opacity(0.95))
-        .overlay(alignment: .bottom) {
-            Divider().opacity(0.5)
+        .padding(16)
+        .background(.background.secondary, in: .rect(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator.opacity(0.6)))
+    }
+
+    private func cardDetail(_ selected: CatalogModel?) -> String {
+        guard let selected else { return "Pick one to start." }
+        switch selected.provider {
+        case "orcarouter":
+            return selected.free ? "Free through OrcaRouter" : "Through OrcaRouter · \(selected.subtitle) per million tokens"
+        case "nvidia": return "Free · runs on NVIDIA's servers"
+        default: return selected.subtitle.isEmpty ? "Runs on this Mac" : "Runs on this Mac · \(selected.subtitle)"
         }
     }
+}
 
-    private func modelChip(_ name: String) -> some View {
-        Text(name)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(LCColor.brand)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(LCColor.brand.opacity(0.1), in: Capsule())
-            .help(model.selectedModelNote ?? name)
-    }
+private struct BlockingCard: View {
+    @EnvironmentObject private var model: AppModel
+    let issues: [String]
 
-    private func bannerCard(_ text: String) -> some View {
-        Text(text)
-            .font(.callout)
-            .textSelection(.enabled)
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.yellow.opacity(0.18), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private var emptyChatHint: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Start here")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(LCColor.ink)
-            Text("Ask where files live, what the project is, or describe a change to build.")
-                .foregroundStyle(.secondary)
-            Text(model.projectSummary)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            prerequisiteBox
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private var chatTranscript: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(model.chatTurns) { turn in
-                chatBubble(turn)
-                    .id(turn.id)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .bottom)),
-                        removal: .opacity
-                    ))
-            }
-        }
-        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: model.chatTurns.count)
-    }
-
-    /// Bold, italics, `code` and links from the model's reply; line breaks kept as written.
-    private static func inlineMarkdown(_ text: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
-    }
-
-    private func chatBubble(_ turn: ChatTurn) -> some View {
-        let isUser = turn.role == "user"
-        return HStack {
-            if isUser { Spacer(minLength: 48) }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(isUser ? "You" : "Local Coder")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(isUser ? AttributedString(turn.text) : Self.inlineMarkdown(turn.text))
+            Label("This Mac needs attention", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            ForEach(Array(issues.enumerated()), id: \.offset) { _, item in
+                Text(item)
+                    .font(.callout)
                     .textSelection(.enabled)
-                    .foregroundStyle(LCColor.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(12)
-            .background(
-                isUser ? LCColor.bubbleUser : LCColor.bubbleAssistant,
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(isUser ? Color.clear : Color.black.opacity(0.06), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(isUser ? 0 : 0.04), radius: 6, y: 2)
-            .contextMenu {
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(turn.text, forType: .string)
-                }
-            }
-            if !isUser { Spacer(minLength: 48) }
+            Button("Check Again") { model.refreshReadiness() }
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.08), in: .rect(cornerRadius: 16))
+    }
+}
+
+// MARK: - Composer
+
+struct ComposerBar: View {
+    @EnvironmentObject private var model: AppModel
+
+    private var empty: Bool {
+        model.requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var composerBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if model.running && model.projectPath == nil {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(model.progress)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(model.elapsedLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            HStack(alignment: .bottom, spacing: 10) {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .topLeading) {
                 ComposerField(
                     text: $model.requestText,
                     isEnabled: !model.running,
                     onSubmit: { model.submitRequest() }
                 )
-                .frame(minHeight: 52, maxHeight: 140)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
-                )
-                .overlay(alignment: .topLeading) {
-                    if model.requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(model.projectPath == nil
-                             ? "Message Local Coder… e.g. Build a task board"
-                             : "Ask a question or describe a change…")
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 14)
-                            .allowsHitTesting(false)
-                    }
-                }
-
-                Button(model.running ? "…" : "Send") { model.submitRequest() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(LCColor.brand)
-                    .disabled(model.running || model.requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .keyboardShortcut(.return, modifiers: [.command])
-                    .accessibilityIdentifier("startButton")
-            }
-            Text("Enter to send · Shift+Enter for a new line")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 14)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Divider().opacity(0.45)
-        }
-    }
-
-    private var livingProgress: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Working")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(LCColor.brand)
-                Spacer()
-                Text(model.elapsedLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Button("Stop") { model.stop() }
-                    .font(.caption)
-                    .accessibilityIdentifier("stopButton")
-            }
-            // Headline only when it adds info beyond the latest Actions row.
-            if model.progressLog.last != model.progress {
-                Text(model.progress)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(LCColor.ink)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !model.progressLog.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Actions")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 3) {
-                                ForEach(Array(model.progressLog.enumerated()), id: \.offset) { index, step in
-                                    HStack(alignment: .top, spacing: 6) {
-                                        Text("•")
-                                            .foregroundStyle(index == model.progressLog.count - 1
-                                                             ? LCColor.brand : .secondary)
-                                        Text(step)
-                                            .font(.caption)
-                                            .foregroundStyle(index == model.progressLog.count - 1
-                                                             ? .primary : .secondary)
-                                            .textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .id("action-\(index)")
-                                }
-                            }
-                        }
-                        .frame(maxHeight: 180)
-                        .onChange(of: model.progressLog.count) { _, _ in
-                            if let last = model.progressLog.indices.last {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    proxy.scrollTo("action-\(last)", anchor: .bottom)
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                Text(model.progress)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(LCColor.ink)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(LCColor.brand.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityIdentifier("livingProgress")
-    }
-
-    private func explainBox(_ summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(model.explainHits.isEmpty ? "Local Coder" : "Read-only look at the selected code")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(summary)
-                .textSelection(.enabled)
-            ForEach(Array(model.explainHits.enumerated()), id: \.offset) { _, hit in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(hit["path"] as? String ?? "")")
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                    Text(hit["excerpt"] as? String ?? "")
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-                .padding(8)
-                .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-        }
-        .padding(12)
-        .background(LCColor.bubbleAssistant, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
-        )
-        .contextMenu {
-            Button("Copy") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(summary, forType: .string)
-            }
-        }
-    }
-
-    private var reviewBox: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(model.complete ? "Ready to review" : "Result")
-                .font(.headline)
-                .foregroundStyle(LCColor.ink)
-            Text(model.reviewExplanation)
+                .frame(minHeight: 40, maxHeight: 180)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if !model.changedFiles.isEmpty {
-                Text("Files touched: \(model.changedFiles.joined(separator: ", "))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                if model.requestText.isEmpty {
+                    Text(model.projectPath == nil
+                         ? "Ask about any project, or describe an app to build"
+                         : "Ask about \(model.projectName), or describe a change")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 11)
+                        .padding(.top, 8)
+                        .allowsHitTesting(false)
+                }
             }
-            if model.hasRealChecks {
-                checks
-            }
-            if !model.diffText.isEmpty {
-                DisclosureGroup("Show file difference") {
-                    ScrollView {
-                        DiffView(text: model.diffText)
+            HStack(spacing: 10) {
+                ModelMenu()
+                if model.selectedModel?.reasoningSwitch == true {
+                    ReasoningMenu()
+                }
+                Spacer()
+                if model.running {
+                    Button {
+                        model.stop()
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 18, height: 18)
                     }
-                    .frame(minHeight: 120, maxHeight: 280)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.separator))
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            }
-            if let url = model.previewURL, let parsed = URL(string: url) {
-                Text("Running preview")
-                    .font(.headline)
-                PreviewPane(url: parsed)
-                    .frame(minHeight: 280)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .accessibilityIdentifier("previewView")
-                Button("Open in Browser") {
-                    NSWorkspace.shared.open(parsed)
-                }
-                .accessibilityIdentifier("openInBrowserButton")
-            }
-            HStack {
-                Button("Keep changes") { model.keep() }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .help("Stop")
+                    .accessibilityIdentifier("stopButton")
+                } else {
+                    Button {
+                        model.submitRequest()
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 18, height: 18)
+                    }
                     .buttonStyle(.borderedProminent)
-                    .tint(LCColor.brand)
-                    .disabled(!model.canKeep)
-                    .keyboardShortcut("k", modifiers: [.command])
-                    .accessibilityIdentifier("keepButton")
-                Button("Discard changes") { model.discard() }
-                    .disabled(!model.canDiscard)
-                    .accessibilityIdentifier("discardButton")
-                if !model.canKeep && model.snapshot != nil {
-                    Text("This result can be inspected, but it cannot be kept as a verified change.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .buttonBorderShape(.circle)
+                    .disabled(empty)
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    .help("Send (Return)")
+                    .accessibilityIdentifier("startButton")
                 }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(LCColor.brand.opacity(0.18), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
-    }
-
-    private var checks: some View {
-        let facts = model.snapshot?["facts"] as? [String: Any] ?? [:]
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("What was actually checked")
-                .font(.subheadline.weight(.semibold))
-            checkLine("Starting tests", facts["baseline"] as? [String: Any])
-            checkLine("Latest check", facts["current"] as? [String: Any])
-            checkLine("Final check", facts["final"] as? [String: Any])
-            Text("These are recorded check results, not a claim that the request is done.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func checkLine(_ title: String, _ row: [String: Any]?) -> some View {
-        let status = row?["status"] as? String ?? "not run"
-        let failed = (row?["failed"] as? [String])?.joined(separator: ", ") ?? ""
-        return Text("\(title): \(status)\(failed.isEmpty ? "" : " — \(failed)")")
-            .font(.callout)
-            .textSelection(.enabled)
-    }
-
-    private var prerequisiteBox: some View {
-        let rows = model.readiness?["rows"] as? [[String: Any]] ?? []
-        let blocking = model.readiness?["blocking"] as? [String] ?? []
-        return VStack(alignment: .leading, spacing: 6) {
-            if !blocking.isEmpty {
-                Text("Something on this Mac still needs attention")
-                    .font(.headline)
-                ForEach(Array(blocking.enumerated()), id: \.offset) { _, item in
-                    Text(item)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                }
-                HStack {
-                    Button("Open Docker Desktop") { model.openDocker() }
-                    Button("Build test worker") { model.buildWorker() }
-                    Button("Check again") { model.refreshReadiness() }
-                }
-            } else if !rows.isEmpty && model.projectPath == nil {
-                Text("This Mac can use the selected model. Isolated tests are optional and need Docker only for the older Python engine.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-struct PreviewPane: NSViewRepresentable {
-    let url: URL
-
-    func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        let view = WKWebView(frame: .zero, configuration: config)
-        view.setAccessibilityIdentifier("previewWebView")
-        view.load(URLRequest(url: url))
-        return view
-    }
-
-    func updateNSView(_ view: WKWebView, context: Context) {
-        if view.url != url {
-            view.load(URLRequest(url: url))
-        }
-    }
-}
-
-struct DiffView: View {
-    let text: String
-
-    var body: some View {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                Text(line.isEmpty ? " " : line)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(color(for: line))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(background(for: line))
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(8)
-    }
-
-    private func color(for line: String) -> Color {
-        if line.hasPrefix("+") && !line.hasPrefix("+++") { return Color.green }
-        if line.hasPrefix("-") && !line.hasPrefix("---") { return Color.red }
-        return .primary
-    }
-
-    private func background(for line: String) -> Color {
-        if line.hasPrefix("+") && !line.hasPrefix("+++") { return Color.green.opacity(0.12) }
-        if line.hasPrefix("-") && !line.hasPrefix("---") { return Color.red.opacity(0.12) }
-        return .clear
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        .frame(maxWidth: 760)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 18)
+        .padding(.top, 6)
+        .frame(maxWidth: .infinity)
     }
 }

@@ -3,6 +3,7 @@ import Foundation
 enum EngineError: LocalizedError {
     case notStarted
     case helperFailed(String)
+    case refused(code: String, detail: String)
     case badResponse(String)
     case pythonMissing
 
@@ -12,11 +13,19 @@ enum EngineError: LocalizedError {
             return "The Local Coder helper is not running."
         case .helperFailed(let detail):
             return detail
+        case .refused(_, let detail):
+            return detail
         case .badResponse(let detail):
             return detail
         case .pythonMissing:
             return "Python 3.11+ was not found. Install Python at /usr/local/bin/python3, then reopen the app."
         }
+    }
+
+    /// The helper's error code (for example "missing_key"), when it sent one.
+    var code: String? {
+        if case .refused(let code, _) = self { return code }
+        return nil
     }
 }
 
@@ -170,7 +179,7 @@ final class EngineClient {
         } else {
             let error = object["error"] as? [String: Any]
             let detail = error?["detail"] as? String ?? "The helper refused that request."
-            callback?(.failure(EngineError.helperFailed(detail)))
+            callback?(.failure(EngineError.refused(code: error?["code"] as? String ?? "", detail: detail)))
         }
     }
 

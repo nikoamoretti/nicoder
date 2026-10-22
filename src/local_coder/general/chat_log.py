@@ -94,8 +94,20 @@ def append_turn(project: str | Path, role: str, text: str) -> dict[str, Any]:
     return save_chat(project, turns)
 
 
+def archive_dir() -> Path:
+    """Earlier conversations, kept when a new chat starts."""
+    return chat_dir() / "archive"
+
+
 def clear_chat(project: str | Path) -> dict[str, Any]:
-    """Forget the transcript for this project."""
+    """Start a fresh transcript for this project; the old one is kept in archive/, never deleted."""
+    current = load_chat(project)
+    if current["turns"]:
+        folder = archive_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        target = folder / f"{chat_key(project)}-{stamp}.json"
+        target.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
     return save_chat(project, [])
 
 

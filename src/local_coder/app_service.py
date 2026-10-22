@@ -432,28 +432,23 @@ def _agent_chat(
     cancel: threading.Event | None,
 ) -> dict[str, Any]:
     """A question answered by the agent with read-only tools across the home folder."""
-    from local_coder.agent.runner import context_chars_for, hosted_tool_chat, prepare_model, run_ask
+    from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
     from local_coder.general.chat_log import append_turn, recent_messages
 
     cfg = load_machine_config()
 
-    def activity(detail: str) -> None:
+    def step(data: dict[str, Any]) -> None:
         if listener is not None:
-            listener({"type": "activity", "data": {"detail": detail}, "phrase": detail})
+            listener({"type": "activity", "data": data, "phrase": str(data.get("detail") or "")})
 
-    try:
-        prepare_model(cfg, activity)
-    except HostedError as exc:
-        return {"kind": "chat", "summary": str(exc), "hits": [], "model_commentary": str(exc), "status": "error",
-                "files_read": [], "open_project": None}
     asked = run_ask(
         f"{question}\n\n({extra})" if extra else question,
         project=repo,
         chat=hosted_tool_chat(cfg),
         context_chars=context_chars_for(cfg),
         history=recent_messages(repo, limit=10, max_chars=1500) if repo is not None else None,
-        on_activity=activity,
         cancel=cancel,
+        on_step=step,
     )
     opened = asked.opened if asked.opened is not None and asked.opened != repo else None
     result: dict[str, Any] = {
@@ -464,6 +459,7 @@ def _agent_chat(
         "status": asked.status,
         "files_read": asked.read_paths,
         "open_project": str(opened) if opened is not None else None,
+        "cost_usd": asked.cost_usd,
     }
     target = opened or repo
     if target is not None:
@@ -709,9 +705,9 @@ def select_model(model_id: str) -> dict[str, Any]:
         raise AppError(f"Unknown model: {model_id}", code="unknown_model")
     current = load_machine_config()
     if entry.provider != "local":
-        if entry.provider == "cloudrun" and not entry.endpoint:
-            raise AppError("Your GPU is not set up yet (local-coder gpu setup).", code="missing_gpu")
-        if entry.provider != "cloudrun" and not find_api_key(entry.api_key_name)[0]:
+        if not find_api_key(entry.api_key_name)[0]:
+            if entry.provider == "orcarouter":
+                raise AppError(f"Connect OrcaRouter to use {entry.name}.", code="missing_key")
             raise AppError(
                 f"{entry.name} needs the {entry.api_key_name} key, and it is not on this Mac.",
                 code="missing_key",
@@ -743,8 +739,14 @@ def select_model(model_id: str) -> dict[str, Any]:
         "api_key_name": entry.api_key_name,
         "temperature": entry.temperature,
         "top_p": entry.top_p,
+        "reasoning": reasoning_pref(entry.id) if entry.reasoning_switch else "on",
+        "reasoning_switch": entry.reasoning_switch,
     })
     write_machine_config(cfg)
+    if entry.provider == "orcarouter":
+        from . import orcarouter
+
+        orcarouter.remember_model(entry.model_alias)
     return {
         "ok": True,
         "selected": entry.id,
@@ -799,6 +801,106 @@ def readiness() -> dict[str, Any]:
         "models": catalog["models"],
         "selected_model": catalog["selected"],
         "current_alias": catalog["current_alias"],
+        "orcarouter": orca_status(),
+        "reasoning": cfg.reasoning,
+        "reasoning_switch": cfg.reasoning_switch,
+    }
+
+
+def _reasoning_prefs_path() -> Path:
+    return config_dir() / "reasoning.json"
+
+
+def reasoning_pref(model_id: str) -> str:
+    """The reasoning mode last chosen for a model ("on" unless it was turned off)."""
+    try:
+        data = json.loads(_reasoning_prefs_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "on"
+    return "off" if isinstance(data, dict) and data.get(model_id) == "off" else "on"
+
+
+def set_reasoning(mode: str) -> dict[str, Any]:
+    """Turn the selected model's reasoning on or off; remembered for that model."""
+    if mode not in {"on", "off"}:
+        raise AppError("Reasoning is either on or off.", code="bad_request")
+    cfg = load_machine_config()
+    selected = list_models(cfg)["selected"]
+    entry = entry_by_id(selected) if selected else None
+    if not (cfg.reasoning_switch or (entry is not None and entry.reasoning_switch)):
+        raise AppError("This model has no reasoning switch.", code="no_switch")
+    path = _reasoning_prefs_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if selected:
+        data[selected] = mode
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_machine_config(cfg.model_copy(update={"reasoning": mode, "reasoning_switch": True}))
+    return {"ok": True, "reasoning": mode, "model": selected}
+
+
+def orca_status() -> dict[str, Any]:
+    """OrcaRouter connection for the app (never the key)."""
+    from . import orcarouter
+
+    return orcarouter.key_status()
+
+
+def orca_save_key(value: str) -> dict[str, Any]:
+    """Check and keep a pasted OrcaRouter key."""
+    from . import orcarouter
+
+    try:
+        return orcarouter.save_pasted_key(value)
+    except orcarouter.OrcaError as exc:
+        raise AppError(str(exc), code="orcarouter") from exc
+    except Exception:  # noqa: BLE001 — never let an unexpected error carry the key into a reply
+        raise AppError("The key could not be saved.", code="orcarouter") from None
+
+
+def orca_remove_key() -> dict[str, Any]:
+    """Forget the OrcaRouter key on this Mac. A selected OrcaRouter model stays selected but unusable."""
+    from . import orcarouter
+
+    status = orcarouter.remove_key()
+    status["detail"] = "OrcaRouter is disconnected on this Mac."
+    return status
+
+
+def orca_sign_in(listener: EventListener | None = None, cancel: threading.Event | None = None) -> dict[str, Any]:
+    """Sign in with OrcaRouter in the browser and keep the new key."""
+    from . import orcarouter
+
+    def say(text: str) -> None:
+        if listener is not None:
+            listener({"type": "orca_sign_in", "phrase": text, "data": {"detail": text}})
+
+    try:
+        return orcarouter.sign_in(on_status=say, cancel=cancel)
+    except orcarouter.OrcaError as exc:
+        raise AppError(str(exc), code="orcarouter") from exc
+
+
+def orca_models(*, refresh: bool = False) -> dict[str, Any]:
+    """OrcaRouter's chat models with tool calls, plus recent and suggested picks."""
+    from . import orcarouter
+
+    try:
+        catalog = orcarouter.load_catalog(refresh=refresh)
+    except orcarouter.OrcaError as exc:
+        raise AppError(str(exc), code="orcarouter") from exc
+    cfg = load_machine_config()
+    return {
+        **catalog,
+        "recent": orcarouter.recent_models(),
+        "suggested": orcarouter.suggested(catalog["models"]),
+        "selected": cfg.model_alias if cfg.provider == "orcarouter" else "",
+        "connected": orcarouter.key_status()["connected"],
     }
 
 

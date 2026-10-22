@@ -12,11 +12,13 @@
    eight-generation Python FIND/PATCH/CHECK/DONE loop is a legacy path only.
    General-engine budgets are request wall-clock and generation ceilings in
    `general/budgets.py`, not the old four-file span cap.
-   One hosted model is also offered: NVIDIA's Nemotron 3.5 Super 120B
-   (`nemotron35-super` in the catalog), chosen explicitly in Settings. When it
-   is selected, talk and act calls go to NVIDIA instead of llama.cpp and no
-   local server starts. Nothing ever falls back between local and hosted.
-   With that model, talk and act run **Local Coder's own agent**
+   Hosted models are also offered, always chosen explicitly: NVIDIA's
+   Nemotron 3.5 Super 120B (`nemotron35-super`, free) and any OrcaRouter
+   model (`orca:<model id>`, Nico's choice on 2026-10-22: "Im going to use
+   orcarouter"). When one is selected, talk and act calls go to that provider
+   instead of llama.cpp and no local server starts. Nothing ever falls back
+   between local and hosted, or between hosted models.
+   With a hosted model, talk and act run **Local Coder's own agent**
    (`src/local_coder/agent/`, Nico's call on 2026-10-22: OpenCode/Conductor-level
    capability, but never OpenCode or Conductor as the engine). The model calls
    tools that Local Coder executes: find_project / list / glob / grep / read
@@ -60,11 +62,30 @@
 - `src/local_coder/machine.py` — machine-local config (`~/.config/local-coder`),
   never committed, never contains secrets. A hosted model stores only its
   provider, endpoint, and the *name* of its API key.
-- `src/local_coder/hosted.py` — the hosted-model client (NVIDIA). Reads the key
-  at request time from the environment or the Keychain item `key:<NAME>` (made
-  by Nico's `key` tool via /usr/bin/security, so no password prompt); the key
+- `src/local_coder/hosted.py` — the hosted-model client (NVIDIA, OrcaRouter).
+  Reads the key at request time from the environment or the Keychain item
+  `key:<NAME>` (made via /usr/bin/security, so no password prompt); the key
   never reaches config, logs, events, or errors. Streams, then folds the reply
-  into llama.cpp's non-streaming shape; retries once only on a dropped/busy reply.
+  into llama.cpp's non-streaming shape. 5xx/dropped streams get three attempts,
+  429 four; refusals (bad key, empty balance, unknown model) are not retried
+  and are explained in plain words. OrcaRouter requests carry
+  `X-OrcaRouter-Include-Cost` (billed `usage.cost_usd`, summed per run and shown
+  in the app) and one `X-OrcaRouter-Session-Id` per agent run. Reasoning off
+  (the composer's switch, Qwen and Nemotron only): `chat_template_kwargs.
+  enable_thinking=false` plus `enable_thinking=false` for Qwen on OrcaRouter
+  (checked live 2026-10-22: OrcaRouter ignores `reasoning` for Qwen3.8 27B).
+  OrcaRouter models keep their provider's sampling defaults (no temperature).
+- `src/local_coder/orcarouter.py` — OrcaRouter account and models. The key
+  lives in the Keychain item `key:ORCAROUTER_API_KEY`, written by
+  `/usr/bin/security -i` fed on stdin (never in a process list), registered for
+  Nico's `key` tool. "Sign in with OrcaRouter" is OAuth 2.0 + PKCE with a
+  127.0.0.1 callback (the helper's only listener, open while the browser
+  waits); a pasted key is checked against `/v1/dashboard/billing/subscription`
+  first. The model list is the public `/v1/models` joined with the public
+  benchmark board (intelligence, speed), filtered to chat models that list
+  `tools`, cached 12 h in `~/.config/local-coder/orcarouter-models.json`.
+  The menu shows the selected and recent models (else a data-picked few); any
+  other is picked in the app's model browser.
 - `src/local_coder/server.py` — server lifecycle with explicit ownership; never
   kill a process this tool did not start, never take over an occupied port.
 - `src/local_coder/cli.py` — installed `local-coder` entry point; `accept` is
@@ -90,22 +111,17 @@
   `nemotron_discard_draft` (a private copy under `drafts/`; apply refuses on
   conflicts). Always uses the hosted Nemotron entry, whatever the app selected.
   Standard library JSON-RPC only; keep it that way.
-- `src/local_coder/gpu/` — Nico's own cloud GPU (2026-10-22: "download all the
-  local models I want and then have 1 gpu I rent ... pick and choose"). Lives in
-  Veil's Google Cloud project `faceblur-private-20260901`, `us-central1`:
-  bucket `local-coder-models-332930293289-us-central1` (models.json + one
-  folder per model + this package's GPU code under `.local-coder/`), Cloud Run
-  service `local-coder-gpu` (vLLM image via the `dockerhub` Artifact Registry
-  remote repo, 1× RTX PRO 6000 96 GB, 20 vCPU/80 GiB, min 0/max 1 instances,
-  private: callers use a gcloud identity token), Cloud Run job
-  `local-coder-fetch` (CPU; streams Hugging Face files into the bucket).
-  `swapper.py` (stdlib) runs in the container: one model at a time, swaps on
-  demand, SSE keep-alive while loading, `/lc/load` progress. Picker entries
-  `gpu:<id>` come from the cached models.json (never wake the GPU); the app
-  warms the GPU before an agent run. CLI: `local-coder gpu setup|add|list|
-  remove|warm|status|spend`. About $3.19/hour while an instance is up,
-  nothing when idle (scales to zero ~15 min after the last request).
-- `macos/` — SwiftUI Local Coder.app. Do not add a web backend.
+- `macos/` — SwiftUI Local Coder.app (macOS 26, SwiftUI app lifecycle). Do not
+  add a web backend. Layout: sidebar (projects, requests), the conversation as
+  a log (prompt headline, live step timeline with times and Stop, a one-line
+  summary with cost, the answer as prose), a Changes inspector (files, diff,
+  checks, preview, Keep/Discard), a glass composer with the model menu and the
+  reasoning switch, the OrcaRouter model browser and connect sheet, and a
+  Settings window. New Chat archives the old transcript
+  (`chats/archive/`); closing a project never stops a run or clears its chat.
+  `LOCAL_CODER_UI_PROBE=1` at launch lets a script open views (never change
+  state); `macos/scripts/ui_snapshots/snapshots.sh <dir>` renders every screen
+  offscreen with sample data.
 
 ## Coding conventions
 

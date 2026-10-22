@@ -21,8 +21,9 @@ struct ComposerField: NSViewRepresentable {
         }
         textView.delegate = context.coordinator
         textView.isRichText = false
+        textView.drawsBackground = false
         textView.allowsUndo = true
-        textView.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        textView.font = NSFont.systemFont(ofSize: 14)
         textView.textContainerInset = NSSize(width: 6, height: 8)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.string = text

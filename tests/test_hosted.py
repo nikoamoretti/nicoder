@@ -178,7 +178,7 @@ def test_refused_key_is_not_retried_and_never_echoed(monkeypatch):
 
 def test_missing_key_stops_before_any_request(monkeypatch):
     calls = _install_client(monkeypatch)
-    with pytest.raises(hosted.HostedError, match="NVIDIA credential was not found"):
+    with pytest.raises(hosted.HostedError, match="NVIDIA key was not found"):
         hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
     assert calls == []
 
@@ -325,7 +325,7 @@ def test_local_complete_uses_the_hosted_model_with_thinking(monkeypatch):
     )
     seen: dict = {}
 
-    def fake_chat(cfg, payload, *, thinking):
+    def fake_chat(cfg, payload, *, thinking, **_):
         seen.update(payload=payload, thinking=thinking)
         return {
             "id": "c1",
@@ -375,7 +375,7 @@ def test_chat_with_the_hosted_model_runs_the_agent(tmp_path, monkeypatch):
     machine.write_machine_config(_hosted_cfg())
     seen: dict = {}
 
-    def fake_chat(cfg, payload, *, thinking):
+    def fake_chat(cfg, payload, *, thinking, **_):
         seen.update(payload=payload, thinking=thinking)
         return {"choices": [{"message": {"content": "It is a task board."}, "finish_reason": "stop"}]}
 

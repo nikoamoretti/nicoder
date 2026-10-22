@@ -67,7 +67,7 @@ def _use_hosted(monkeypatch, script: Script | None = None) -> None:
 
     machine.write_machine_config(HOSTED)
     if script is not None:
-        def fake(cfg, body, *, thinking):
+        def fake(cfg, body, *, thinking, **_):
             return script(body["messages"], body.get("tools") or [])
 
         monkeypatch.setattr(runner, "hosted_chat", fake)
@@ -121,7 +121,7 @@ def test_stop_reaches_a_question_that_is_running(monkeypatch, home):
     _use_hosted(monkeypatch, Script())
     from local_coder.agent import runner
 
-    monkeypatch.setattr(runner, "hosted_chat", lambda cfg, body, *, thinking: slow_model(body["messages"], []))
+    monkeypatch.setattr(runner, "hosted_chat", lambda cfg, body, *, thinking, **_: slow_model(body["messages"], []))
     out = io.StringIO()
     server = RpcServer(out=out)
     server_holder["server"] = server
@@ -247,3 +247,47 @@ def test_question_opens_the_repo_it_read_when_the_model_forgot(monkeypatch, home
     result = chat_request(None, "What is in the prototypes app folder?")
     assert result["open_project"] == str(repo)
     assert load_chat(repo)["turns"][-1]["text"] == "Three small modules."
+
+
+def test_a_new_chat_keeps_the_old_one_in_the_archive(tmp_path):
+    from local_coder.general.chat_log import append_turn, archive_dir, clear_chat, load_chat
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    append_turn(repo, "user", "What does this do?")
+    append_turn(repo, "assistant", "It draws a map.")
+    clear_chat(repo)
+    assert load_chat(repo)["turns"] == []
+    kept = list(archive_dir().glob("*.json"))
+    assert len(kept) == 1
+    assert [turn["text"] for turn in json.loads(kept[0].read_text())["turns"]] == ["What does this do?",
+                                                                                 "It draws a map."]
+    clear_chat(repo)
+    assert len(list(archive_dir().glob("*.json"))) == 1, "an empty chat is not archived"
+
+
+def test_requests_list_their_text_and_how_they_ended(tmp_path):
+    from local_coder.general.coordinator import _save_meta, list_requests, load_meta, prepare_workspace
+
+    repo = tmp_path / "board"
+    repo.mkdir()
+    (repo / "index.html").write_text("<h1>Board</h1>\n", encoding="utf-8")
+    first = prepare_workspace(repo, "ep-1", allow_starter=False)
+    first["title"] = "Add a dark mode toggle"
+    first["kept"] = True
+    _save_meta(first)
+    second = prepare_workspace(repo, "ep-2", allow_starter=False)
+    second["agent"] = {"status": "stopped"}
+    _save_meta(second)
+    (Path(second["baseline"]).parent / "agent_transcript.json").write_text(json.dumps({"messages": [
+        {"role": "system", "content": "You are Local Coder."},
+        {"role": "user", "content": "An earlier question"},
+        {"role": "assistant", "content": "An earlier answer"},
+        {"role": "user", "content": "Make the header sticky\nand blue"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "user", "content": "Local Coder's check failed"},
+    ]}), encoding="utf-8")
+    rows = {row["request_id"]: row for row in list_requests(repo)}
+    assert (rows["ep-1"]["request"], rows["ep-1"]["outcome"]) == ("Add a dark mode toggle", "kept")
+    assert (rows["ep-2"]["request"], rows["ep-2"]["outcome"]) == ("Make the header sticky", "stopped")
+    assert load_meta(first["project_id"], "ep-1")["kept"] is True

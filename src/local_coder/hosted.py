@@ -1,16 +1,16 @@
-"""Hosted chat models (NVIDIA's API, or your own Cloud Run GPU) behind llama.cpp's reply shape.
+"""Hosted chat models (NVIDIA's API and OrcaRouter) behind llama.cpp's reply shape.
 
-Used only when the machine config selects a hosted provider. For NVIDIA the API
-key is read at request time from the environment or the macOS Keychain item
-that the `key` tool writes (`key:<NAME>`, created by /usr/bin/security, so
-reading it never shows a password prompt). For the Cloud Run GPU ("cloudrun")
-the credential is a short-lived identity token from the signed-in gcloud. No
-credential ever reaches config, logs, events, artifacts, or error text.
+Used only when the machine config selects a hosted provider. The API key is
+read at request time from the environment or the macOS Keychain item that the
+`key` tool writes (`key:<NAME>`, created by /usr/bin/security, so reading it
+never shows a password prompt). The key never reaches config, logs, events,
+artifacts, or error text.
 
 Replies are streamed so a long generation keeps the connection alive, then
-folded into one completion dict (text, reasoning and tool calls). NVIDIA's
-hosted endpoint fails intermittently, so a dropped stream or a 5xx answer gets
-three attempts, a rate limit (429) four; refusals such as a bad key are not
+folded into one completion dict (text, reasoning, tool calls and usage; on
+OrcaRouter the usage carries the billed `cost_usd`). Hosted endpoints fail
+intermittently, so a dropped stream or a 5xx answer gets three attempts, a
+rate limit (429) four; refusals such as a bad key or an empty balance are not
 retried.
 """
 from __future__ import annotations
@@ -27,15 +27,23 @@ from .machine import MachineConfig
 
 KEYCHAIN_PREFIX = "key:"
 _SECURITY = "/usr/bin/security"
-_PROVIDER_NAMES = {"nvidia": "NVIDIA", "cloudrun": "your GPU"}
-_PROVIDER_PLACES = {"nvidia": "NVIDIA's servers", "cloudrun": "your Google Cloud GPU"}
-_TOKEN_TTL_S = 45 * 60
-_token_cache: dict[str, tuple[str, float]] = {}
+_PROVIDER_NAMES = {"nvidia": "NVIDIA", "orcarouter": "OrcaRouter"}
+_PROVIDER_PLACES = {"nvidia": "NVIDIA's servers", "orcarouter": "OrcaRouter"}
 _RETRY_STATUS = frozenset({500, 502, 503, 504})
 _READ_TIMEOUT_S = 120.0
 _ATTEMPTS = 3
 _BUSY_ATTEMPTS = 4
 _BUSY_WAIT_CAP_S = 30.0
+# OrcaRouter refusals that no retry fixes, with what to tell the user.
+_ORCA_REFUSALS = {
+    "insufficient_user_quota": "Your OrcaRouter balance is empty. Add credits at orcarouter.ai/console, "
+                               "or pick a free model.",
+    "free_quota_exhausted": "No free OrcaRouter model could take this request right now. Pick a paid model.",
+    "model_not_found": "OrcaRouter does not offer this model to your account. Pick another one.",
+    "model_not_yet_available": "OrcaRouter has announced this model but it is not live yet. Pick another one.",
+    "budget_exceeded": "Your OrcaRouter workspace reached its monthly budget for this key.",
+    "pre_consume_token_quota_failed": "This OrcaRouter key used up its own spending cap.",
+}
 
 
 class HostedError(RuntimeError):
@@ -64,30 +72,8 @@ def provider_place(cfg: MachineConfig) -> str:
     return _PROVIDER_PLACES.get(cfg.provider, f"{provider_name(cfg)}'s servers")
 
 
-def gcloud_identity_token() -> tuple[str, str]:
-    """A Cloud Run identity token from the signed-in gcloud (cached ~45 minutes)."""
-    cached = _token_cache.get("gcloud")
-    if cached and time.monotonic() - cached[1] < _TOKEN_TTL_S:
-        return cached[0], "gcloud identity token"
-    import shutil
-
-    binary = shutil.which("gcloud") or "/opt/homebrew/bin/gcloud"
-    try:
-        proc = subprocess.run([binary, "auth", "print-identity-token", "--quiet"], capture_output=True, text=True,
-                              timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return "", "gcloud is not installed or did not answer"
-    token = proc.stdout.strip()
-    if proc.returncode != 0 or not token:
-        return "", "gcloud is not signed in (run: gcloud auth login)"
-    _token_cache["gcloud"] = (token, time.monotonic())
-    return token, "gcloud identity token"
-
-
 def credential(cfg: MachineConfig) -> tuple[str, str]:
     """The bearer credential for this provider and where it came from ('' when missing)."""
-    if cfg.provider == "cloudrun":
-        return gcloud_identity_token()
     return find_api_key(cfg.api_key_name)
 
 
@@ -122,23 +108,39 @@ def find_api_key(name: str) -> tuple[str, str]:
     return "", f"{name} is not set and the Keychain has no {KEYCHAIN_PREFIX}{name} item"
 
 
-def hosted_chat(cfg: MachineConfig, body: dict[str, Any], *, thinking: bool) -> dict[str, Any]:
-    """One chat completion from the hosted provider, shaped like a non-streaming llama.cpp reply."""
+def hosted_chat(
+    cfg: MachineConfig,
+    body: dict[str, Any],
+    *,
+    thinking: bool,
+    session: str = "",
+) -> dict[str, Any]:
+    """One chat completion from the hosted provider, shaped like a non-streaming llama.cpp reply.
+
+    `session` groups an agent run's calls on OrcaRouter (its Sessions view); other providers ignore it.
+    """
     key, where = credential(cfg)
     if not key:
-        raise HostedError(f"The {provider_name(cfg)} credential was not found: {where}.")
-    payload = {
-        **body,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-        "chat_template_kwargs": {"enable_thinking": thinking},
-    }
+        raise HostedError(f"The {provider_name(cfg)} key was not found: {where}.")
+    payload: dict[str, Any] = {**body, "stream": True, "stream_options": {"include_usage": True}}
+    extra_headers: dict[str, str] = {}
+    if cfg.provider == "orcarouter":
+        extra_headers["X-OrcaRouter-Include-Cost"] = "true"
+        if session:
+            extra_headers["X-OrcaRouter-Session-Id"] = session
+        if not thinking and cfg.reasoning_switch:
+            # Alibaba's API reads enable_thinking; Qwen served by OrcaRouter itself reads the chat template.
+            payload["enable_thinking"] = False
+            if cfg.model_alias.startswith("qwen/"):
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
+    else:
+        payload["chat_template_kwargs"] = {"enable_thinking": thinking}
     problem = ""
     attempt = 0
     while True:
         attempt += 1
         try:
-            data = _stream_once(cfg, payload, key)
+            data = _stream_once(cfg, payload, key, extra_headers)
         except _Busy as exc:
             problem = str(exc)
             if attempt >= _BUSY_ATTEMPTS:
@@ -156,9 +158,11 @@ def hosted_chat(cfg: MachineConfig, body: dict[str, Any], *, thinking: bool) -> 
     raise HostedError(f"{provider_name(cfg)} did not answer after {attempt} attempts: {problem}")
 
 
-def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[str, Any]:
+def _stream_once(
+    cfg: MachineConfig, payload: dict[str, Any], key: str, extra_headers: dict[str, str],
+) -> dict[str, Any]:
     url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {key}", "Accept": "text/event-stream"}
+    headers = {"Authorization": f"Bearer {key}", "Accept": "text/event-stream", **extra_headers}
     deadline = time.monotonic() + max(30, int(cfg.gen_timeout))
     content: list[str] = []
     reasoning: list[str] = []
@@ -174,13 +178,7 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
             timeout=httpx.Timeout(_READ_TIMEOUT_S, connect=15.0), trust_env=False, follow_redirects=False,
         ) as client, client.stream("POST", url, json=payload, headers=headers) as response:
             if response.status_code != 200:
-                detail = _error_detail(response)
-                message = f"HTTP {response.status_code}{': ' + detail if detail else ''}"
-                if response.status_code == 429:
-                    raise _Busy(message, _retry_after(response))
-                if response.status_code in _RETRY_STATUS:
-                    raise _Retryable(message)
-                raise HostedError(f"{provider_name(cfg)} refused the request ({message}).")
+                _raise_for_status(cfg, response)
             for line in response.iter_lines():
                 if time.monotonic() > deadline:
                     raise HostedError(f"no complete reply within {cfg.gen_timeout} seconds")
@@ -193,6 +191,11 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
                     event = json.loads(data)
                 except ValueError:
                     continue
+                if isinstance(event.get("error"), dict):
+                    message, code, _meta = _error_fields(event)
+                    if code in _ORCA_REFUSALS:
+                        raise HostedError(_ORCA_REFUSALS[code])
+                    raise _Retryable(f"the reply stopped with an error: {message or code or 'no detail'}")
                 reply_id = reply_id or event.get("id")
                 served = served or event.get("model")
                 if isinstance(event.get("usage"), dict):
@@ -228,50 +231,23 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
     }
 
 
-def warm_up(
-    cfg: MachineConfig,
-    on_progress: Any = None,
-    *,
-    timeout_s: float = 1500.0,
-) -> float:
-    """Wake the Cloud Run GPU and load the selected model; returns the seconds it took.
-
-    No-op for other providers. The GPU's /lc/load streams progress events until the
-    model is ready, so a cold start (instance start plus model load) does not look
-    like a dead connection.
-    """
-    if cfg.provider != "cloudrun":
-        return 0.0
-    token, where = credential(cfg)
-    if not token:
-        raise HostedError(f"Your GPU cannot be reached: {where}.")
-    started = time.monotonic()
-    url = f"{cfg.endpoint.rstrip('/')}/lc/load"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
-    try:
-        with httpx.Client(
-            timeout=httpx.Timeout(timeout_s, connect=60.0), trust_env=False, follow_redirects=False,
-        ) as client, client.stream("POST", url, json={"model": cfg.model_alias}, headers=headers) as response:
-            if response.status_code != 200:
-                raise HostedError(f"Your GPU refused the request (HTTP {response.status_code}: "
-                                  f"{_error_detail(response) or 'no detail'}).")
-            for line in response.iter_lines():
-                if not line.startswith("data:"):
-                    continue
-                try:
-                    event = json.loads(line[5:])
-                except ValueError:
-                    continue
-                status = event.get("status")
-                if status == "ready":
-                    return round(time.monotonic() - started, 1)
-                if status == "failed":
-                    raise HostedError(f"Your GPU could not load {cfg.model_alias}: {event.get('detail')}")
-                if on_progress is not None:
-                    on_progress(time.monotonic() - started)
-    except (httpx.HTTPError, OSError) as exc:
-        raise HostedError(f"Your GPU did not answer: {type(exc).__name__}: {exc}") from exc
-    raise HostedError("Your GPU closed the connection before the model was ready.")
+def _raise_for_status(cfg: MachineConfig, response: httpx.Response) -> None:
+    """Turn a non-200 answer into the right error: wait, retry once more, or stop with a plain reason."""
+    message, code, meta = _error_info(response)
+    status = response.status_code
+    text = f"HTTP {status}{': ' + message if message else ''}"
+    if cfg.provider == "orcarouter":
+        if code in _ORCA_REFUSALS:
+            raise HostedError(_ORCA_REFUSALS[code])
+        if status == 401:
+            raise HostedError("OrcaRouter did not accept the API key. Connect OrcaRouter again in Settings.")
+        if meta.get("retryable") is False or meta.get("reason") == "err_free_access_denied":
+            raise HostedError(f"OrcaRouter refused the request ({text}).")
+    if status == 429:
+        raise _Busy(text, _retry_after(response))
+    if status in _RETRY_STATUS:
+        raise _Retryable(text)
+    raise HostedError(f"{provider_name(cfg)} refused the request ({text}).")
 
 
 def _fold_tool_calls(slots: dict[int, dict[str, Any]], deltas: Any) -> None:
@@ -305,19 +281,29 @@ def _retry_after(response: httpx.Response) -> float | None:
         return None
 
 
-def _error_detail(response: httpx.Response) -> str:
-    """Short provider explanation from an error body (never request headers)."""
+def _error_info(response: httpx.Response) -> tuple[str, str, dict[str, Any]]:
+    """(message, code, metadata) from an error body; never request headers."""
     try:
         response.read()
         data = response.json()
     except (httpx.HTTPError, ValueError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
+        return "", "", {}
+    return _error_fields(data) if isinstance(data, dict) else ("", "", {})
+
+
+def _error_fields(data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    error = data.get("error")
+    if isinstance(error, dict):
+        meta = error.get("metadata")
+        return (str(error.get("message") or "")[:200], str(error.get("code") or ""),
+                meta if isinstance(meta, dict) else {})
     for name in ("detail", "message", "error", "title"):
         value = data.get(name)
-        if isinstance(value, dict):
-            value = value.get("message")
         if value:
-            return str(value)[:200]
-    return ""
+            return str(value)[:200], "", {}
+    return "", "", {}
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """Short provider explanation from an error body (never request headers)."""
+    return _error_info(response)[0]
