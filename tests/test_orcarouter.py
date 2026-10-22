@@ -540,3 +540,49 @@ def test_a_config_saved_before_the_switch_existed_can_still_turn_reasoning_off(m
     assert app_service.set_reasoning("off")["reasoning"] == "off"
     cfg = machine.load_machine_config()
     assert (cfg.reasoning, cfg.reasoning_switch) == ("off", True)
+
+
+def test_stop_cuts_a_streaming_reply_short(monkeypatch):
+    monkeypatch.setenv("ORCAROUTER_API_KEY", KEY)
+    cancel = threading.Event()
+
+    class Endless(_Stream):
+        def iter_lines(self):
+            for n in range(1000):
+                if n == 3:
+                    cancel.set()
+                yield "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": "word "}}]})
+
+    calls = _client(monkeypatch, Endless())
+    with pytest.raises(hosted.HostedError, match="Stopped"):
+        hosted.hosted_chat(_orca_cfg(), {"messages": []}, thinking=True, cancel=cancel)
+    assert len(calls) == 1, "a stop is not retried"
+
+
+def test_a_stopped_model_call_ends_the_run_as_stopped(tmp_path):
+    from local_coder.agent.access import AccessPolicy
+    from local_coder.agent.loop import AgentSession
+    from local_coder.agent.tools import ToolBox
+
+    cancel = threading.Event()
+
+    def chat(messages, tools):
+        cancel.set()
+        raise hosted.HostedError("Stopped.")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    session = AgentSession(chat=chat, toolbox=ToolBox(AccessPolicy(home=home), cwd=home, run_tmp=tmp_path / "t"),
+                           system="s", cancel=cancel)
+    run = session.ask("hello")
+    assert (run.status, run.answer) == ("stopped", "Stopped.")
+
+
+def test_the_agent_hands_stop_to_the_model_call(monkeypatch):
+    from local_coder.agent import runner
+
+    seen: dict = {}
+    monkeypatch.setattr(runner, "hosted_chat", lambda cfg, body, **kwargs: seen.update(kwargs) or {})
+    cancel = threading.Event()
+    runner.hosted_tool_chat(_orca_cfg(), cancel=cancel)([], [])
+    assert seen["cancel"] is cancel

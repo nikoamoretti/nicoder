@@ -18,10 +18,13 @@ struct LocalCoderApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") { model.newChat() }
                     .keyboardShortcut("n")
+                    .disabled(model.running)
                 Button("New Project…") { model.newProject() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(model.running)
                 Button("Open Project…") { model.openProject() }
                     .keyboardShortcut("o")
+                    .disabled(model.running)
             }
             CommandMenu("Model") {
                 Button("All OrcaRouter Models…") { model.showBrowser = true }

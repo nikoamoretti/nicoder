@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -52,6 +53,10 @@ class HostedError(RuntimeError):
 
 class _Retryable(HostedError):
     """A dropped stream or server error worth exactly one more attempt."""
+
+
+class _Stopped(HostedError):
+    """The user pressed Stop while the reply was streaming."""
 
 
 class _Busy(HostedError):
@@ -114,10 +119,12 @@ def hosted_chat(
     *,
     thinking: bool,
     session: str = "",
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     """One chat completion from the hosted provider, shaped like a non-streaming llama.cpp reply.
 
     `session` groups an agent run's calls on OrcaRouter (its Sessions view); other providers ignore it.
+    `cancel` (the run's Stop) ends a streaming reply at the next chunk instead of after it finishes.
     """
     key, where = credential(cfg)
     if not key:
@@ -139,8 +146,10 @@ def hosted_chat(
     attempt = 0
     while True:
         attempt += 1
+        if cancel is not None and cancel.is_set():
+            raise _Stopped("Stopped.")
         try:
-            data = _stream_once(cfg, payload, key, extra_headers)
+            data = _stream_once(cfg, payload, key, extra_headers, cancel)
         except _Busy as exc:
             problem = str(exc)
             if attempt >= _BUSY_ATTEMPTS:
@@ -160,6 +169,7 @@ def hosted_chat(
 
 def _stream_once(
     cfg: MachineConfig, payload: dict[str, Any], key: str, extra_headers: dict[str, str],
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Accept": "text/event-stream", **extra_headers}
@@ -180,6 +190,8 @@ def _stream_once(
             if response.status_code != 200:
                 _raise_for_status(cfg, response)
             for line in response.iter_lines():
+                if cancel is not None and cancel.is_set():
+                    raise _Stopped("Stopped.")
                 if time.monotonic() > deadline:
                     raise HostedError(f"no complete reply within {cfg.gen_timeout} seconds")
                 if not line.startswith("data:"):

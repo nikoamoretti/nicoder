@@ -445,7 +445,7 @@ def run_general_request(
         _save_meta(meta)
         _run_agent_request(
             meta, folder, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
-            chat=agent_chat or hosted_tool_chat(cfg),
+            chat=agent_chat or hosted_tool_chat(cfg, cancel=cancel),
             context_chars=context_chars_for(cfg),
             fresh=not continue_from,
             start_preview_after=start_preview_after,

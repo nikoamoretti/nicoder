@@ -191,6 +191,10 @@ MainActor.assumeIsolated {
     model.trace = Array(steps(start: Date().addingTimeInterval(-47)).prefix(6))
     capture(main, "11-live-run")
 
+    // 2b. A run whose messages were cleared mid-run still shows the prompt and live steps.
+    model.chatTurns = []
+    capture(main, "11b-live-run-without-messages")
+
     // 3. Start screen inside a project, reasoning off.
     model.reasoningOn = false
     model.running = false

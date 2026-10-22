@@ -37,7 +37,8 @@ struct RootView: View {
             } label: {
                 Label("New Chat", systemImage: "square.and.pencil")
             }
-            .help("Start a new conversation (⌘N)")
+            .disabled(model.running)
+            .help(model.running ? "Stop the current request first" : "Start a new conversation (⌘N)")
             .accessibilityIdentifier("newChatButton")
         }
         ToolbarItem(placement: .primaryAction) {
@@ -104,6 +105,8 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .disabled(model.running)
+        .help(model.running ? "The sidebar unlocks when the current request ends (or press Stop)." : "")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 2) {
                 Button {
@@ -111,6 +114,7 @@ struct SidebarView: View {
                 } label: {
                     Label("Open Folder…", systemImage: "folder.badge.plus")
                 }
+                .disabled(model.running)
                 .help("Open a project folder (⌘O)")
                 .accessibilityIdentifier("openProjectButton")
                 Spacer()
@@ -119,6 +123,7 @@ struct SidebarView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .disabled(model.running)
                 .help("Create a new project (⇧⌘N)")
                 .accessibilityIdentifier("newProjectButton")
                 if model.projectPath != nil {
@@ -248,6 +253,10 @@ struct ConversationLog: View {
                         Divider()
                             .padding(.vertical, 22)
                     }
+                }
+                if entries.isEmpty && model.running {
+                    EntryView(entry: ConversationEntry(id: "running", prompt: model.currentPrompt, answers: []),
+                              isLast: true)
                 }
             }
             .padding(.horizontal, 36)

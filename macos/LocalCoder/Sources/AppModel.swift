@@ -163,6 +163,8 @@ final class AppModel: ObservableObject {
 
     private let engine = EngineClient()
     private var activeEpisode: String?
+    /// The project the active request runs in (the window may not switch away until it ends).
+    private var activeEpisodePath: String?
     private var quitting = false
     private var started = false
     private var pendingModelId: String?
@@ -305,10 +307,10 @@ final class AppModel: ObservableObject {
 
     // MARK: Projects and conversation
 
+    /// Start a fresh conversation (the old one is archived by the engine). Not while a request runs:
+    /// clearing the screen mid-run used to leave a blank "running" window and drop the result.
     func newChat() {
-        if running {
-            stop()
-        }
+        guard !running else { return }
         let path = projectPath
         snapshot = nil
         requestText = ""
@@ -346,6 +348,7 @@ final class AppModel: ObservableObject {
     }
 
     func newProject() {
+        guard !running else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -379,6 +382,7 @@ final class AppModel: ObservableObject {
     }
 
     func openProject() {
+        guard !running else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -390,7 +394,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectProject(_ path: String) {
-        guard path != projectPath || inspection == nil else { return }
+        guard !running, path != projectPath || inspection == nil else { return }
         banner = nil
         chatTurns = []
         snapshot = nil
@@ -473,6 +477,7 @@ final class AppModel: ObservableObject {
                 snapshot = nil
                 previewURL = nil
                 inspectorShown = false
+                activeEpisodePath = path
                 let started = try await engine.call("run_request", [
                     "path": path,
                     "text": text,
@@ -917,13 +922,15 @@ final class AppModel: ObservableObject {
             return
         }
         activeEpisode = nil
+        let episodePath = activeEpisodePath ?? projectPath
+        activeEpisodePath = nil
         Task {
             do {
                 var params: [String: Any] = ["episode_id": episode]
-                if let path = projectPath {
+                if let path = episodePath {
                     params["path"] = path
                 }
-                snapshot = try await engine.call("snapshot", params)
+                snapshot = try await engine.call("snapshot", params, timeoutSeconds: 60)
                 finishTrace(cost: requestCost)
                 if let preview = snapshot?["preview"] as? [String: Any],
                    let url = preview["url"] as? String, !url.isEmpty,
@@ -933,7 +940,7 @@ final class AppModel: ObservableObject {
                     previewURL = nil
                 }
                 inspectorShown = hasChanges || previewURL != nil
-                if let path = projectPath {
+                if let path = episodePath {
                     try await loadChat(for: path)
                 }
                 let reply = (snapshot?["model_commentary"] as? String) ?? (snapshot?["summary"] as? String)

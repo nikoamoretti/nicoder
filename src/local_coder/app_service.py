@@ -444,7 +444,7 @@ def _agent_chat(
     asked = run_ask(
         f"{question}\n\n({extra})" if extra else question,
         project=repo,
-        chat=hosted_tool_chat(cfg),
+        chat=hosted_tool_chat(cfg, cancel=cancel),
         context_chars=context_chars_for(cfg),
         history=recent_messages(repo, limit=10, max_chars=1500) if repo is not None else None,
         cancel=cancel,

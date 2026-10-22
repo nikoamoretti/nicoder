@@ -38,7 +38,7 @@ def agent_capable(cfg: MachineConfig) -> bool:
     return is_hosted(cfg)
 
 
-def hosted_tool_chat(cfg: MachineConfig) -> ChatFn:
+def hosted_tool_chat(cfg: MachineConfig, cancel: threading.Event | None = None) -> ChatFn:
     """Chat function for the loop: the hosted model, tools offered, reasoning as selected (on by default).
 
     OrcaRouter models keep their provider's own sampling defaults (several reasoning
@@ -56,7 +56,7 @@ def hosted_tool_chat(cfg: MachineConfig) -> ChatFn:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
-        return hosted_chat(cfg, body, thinking=cfg.reasoning != "off", session=session)
+        return hosted_chat(cfg, body, thinking=cfg.reasoning != "off", session=session, cancel=cancel)
 
     return chat
 

@@ -199,6 +199,8 @@ class AgentSession:
                 reply = self.chat(self.messages, self.toolbox.schemas())
             except Exception as exc:  # noqa: BLE001 — any provider failure ends this request plainly
                 self._log_call(call_started, None, error=str(exc))
+                if self._cancelled():
+                    return AgentRun("Stopped.", "stopped", steps, calls)
                 return AgentRun(f"The model did not answer: {exc}", "error", steps, calls, error=str(exc))
             self._log_call(call_started, reply)
             steps += 1
