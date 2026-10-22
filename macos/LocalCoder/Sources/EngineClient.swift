@@ -111,6 +111,15 @@ final class EngineClient {
         if process?.isRunning == true {
             let payload = "{\"id\":\"0\",\"method\":\"shutdown\",\"params\":{}}\n"
             try? stdinHandle?.write(contentsOf: Data(payload.utf8))
+            // The helper serves until its stdin closes; a busy one gets three seconds, then SIGTERM.
+            try? stdinHandle?.close()
+            let deadline = Date().addingTimeInterval(3)
+            while process?.isRunning == true && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process?.isRunning == true {
+                process?.terminate()
+            }
             process?.waitUntilExit()
         }
         process = nil
