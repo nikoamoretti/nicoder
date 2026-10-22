@@ -68,7 +68,11 @@ from local_coder.persistence import new_episode_id
 from local_coder.server import ServerError, server_status
 
 EventListener = Callable[[dict[str, Any]], None]
+AgentChat = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 MAX_CHECK_REPAIRS = 8
+AGENT_REPAIR_ROUNDS = 2
+AGENT_MAX_STEPS = 80
+_VITE_CONFIGS = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
 
 
 class _GenerationLedger:
@@ -379,8 +383,13 @@ def run_general_request(
     generation_limit: int | None = None,
     continue_from: str | None = None,
     wall_seconds: int | None = None,
+    agent_chat: AgentChat | None = None,
 ) -> dict[str, Any]:
-    """Snapshot, ask the model for files, apply them, then review."""
+    """Snapshot, ask the model for files, apply them, then review.
+
+    With an agent-capable model (or `agent_chat` in tests), Local Coder's own
+    agent edits the working copy with tools instead of the file-block path.
+    """
     folder = Path(user_path).expanduser().resolve()
     inspection = inspect_project(folder)
     classified = classify_request(text, inspection)
@@ -423,6 +432,23 @@ def run_general_request(
                 complete=None, conversation="", start_preview_after=start_preview_after,
                 allow_repair=False,
             )
+    elif agent_chat is not None or (fake_complete is None and _agent_capable()):
+        from local_coder.agent.runner import context_chars_for, hosted_tool_chat
+
+        cfg = load_machine_config()
+        if agent_chat is None:
+            _emit(listener, "activity", {"detail": f"Using {model} on {provider_name(cfg)}'s servers."})
+        meta["model_id"] = model
+        meta["engine"] = "agent"
+        meta["provider"] = cfg.provider
+        _save_meta(meta)
+        _run_agent_request(
+            meta, folder, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
+            chat=agent_chat or hosted_tool_chat(cfg),
+            context_chars=context_chars_for(cfg),
+            fresh=not continue_from,
+            start_preview_after=start_preview_after,
+        )
     else:
         cfg = load_machine_config()
         if fake_complete is None:
@@ -509,6 +535,140 @@ def run_general_request(
     review["turns"] = load_chat(folder)["turns"]
     _emit(listener, "done", {"request_id": request_id})
     return review
+
+
+def _agent_capable() -> bool:
+    from local_coder.agent.runner import agent_capable
+
+    return agent_capable(load_machine_config())
+
+
+def _is_vite_app(root: Path) -> bool:
+    """Local Coder's own checks (source scan, build, preview) are built for Vite web apps."""
+    return (
+        (root / "package.json").is_file()
+        and (root / "src").is_dir()
+        and any((root / name).is_file() for name in _VITE_CONFIGS)
+    )
+
+
+def _counted_chat(chat: AgentChat, ledger: _GenerationLedger) -> AgentChat:
+    """Count each agent model call against the request budget."""
+
+    def counted(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        ledger.count += 1
+        started = time.perf_counter()
+        try:
+            return chat(messages, tools)
+        finally:
+            ledger.note_generation(time.perf_counter() - started)
+
+    return counted
+
+
+def _agent_steps(ledger: _GenerationLedger) -> int:
+    return max(1, min(AGENT_MAX_STEPS, ledger.max_generations - ledger.count))
+
+
+def _check_feedback(meta: dict[str, Any]) -> str:
+    """Local Coder's latest failed check, phrased for the agent's next turn."""
+    checks = meta.get("checks") or []
+    errors = [str(row) for row in (checks[-1].get("errors") or [])] if checks else []
+    health = meta.get("preview_health") if isinstance(meta.get("preview_health"), dict) else {}
+    detail = "\n".join(errors[:40]) or str((health or {}).get("detail") or "the check failed without details")
+    return (
+        "Local Coder checked the working copy (source check, build and preview) and it failed:\n"
+        f"{detail[:6000]}\n"
+        "Fix these problems in the working copy, run the build again, then reply."
+    )
+
+
+def _run_agent_request(
+    meta: dict[str, Any],
+    folder: Path,
+    candidate: Path,
+    engine_cwd: Path,
+    text: str,
+    inspection: dict[str, Any],
+    listener: EventListener | None,
+    cancel: threading.Event,
+    ledger: _GenerationLedger,
+    *,
+    chat: AgentChat,
+    context_chars: int,
+    fresh: bool,
+    start_preview_after: bool,
+) -> None:
+    """Local Coder's own agent edits the working copy; Local Coder checks what it wrote."""
+    import shutil
+
+    from local_coder.agent.runner import build_session
+    from local_coder.general.chat_log import recent_messages
+
+    request_root = Path(meta["baseline"]).parent
+    baseline = Path(meta["baseline"])
+    if fresh:
+        # Start from the user's folder as it is now; node_modules in the live copy stay.
+        sync_source_tree(baseline, engine_cwd)
+    session = build_session(
+        project=folder,
+        workdir=engine_cwd,
+        run_tmp=request_root / "agent-tmp",
+        chat=_counted_chat(chat, ledger),
+        context_chars=context_chars,
+        history=recent_messages(folder, limit=10, max_chars=1500),
+        on_activity=lambda detail: _emit(listener, "activity", {"detail": detail}),
+        cancel=cancel,
+    )
+    run = session.ask(text, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s())
+    web_app = _is_vite_app(engine_cwd)
+    rounds = 0
+    try:
+        while True:
+            _publish_candidate(engine_cwd, candidate)
+            meta["model_commentary"] = run.answer
+            if cancel.is_set() or run.status == "stopped":
+                meta["model_commentary"] = "Stopped. Review what changed so far, or discard it."
+                _stop(meta, "cancelled")
+                break
+            if not _has_file_changes(baseline, candidate):
+                break
+            if not web_app:
+                meta["verification"] = {
+                    "local_checks": "not_run",
+                    "detail": "Local Coder's own checks cover Vite web apps; the agent ran the project's commands.",
+                    "agent_commands": session.toolbox.commands[-20:],
+                }
+                break
+            for key in ("stopped_incomplete", "stop_reason", "preview_health"):
+                meta.pop(key, None)
+            _verify_and_repair(
+                meta, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
+                complete=None, conversation="", start_preview_after=start_preview_after, allow_repair=False,
+            )
+            if meta.get("stop_reason") == "checks_passed" or cancel.is_set():
+                break
+            if rounds >= AGENT_REPAIR_ROUNDS or run.status != "answered" or not ledger.can_generate():
+                break
+            rounds += 1
+            _emit(listener, "activity", {"detail": "Sending Local Coder's check results back to the model."})
+            run = session.ask(
+                _check_feedback(meta), max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s(),
+            )
+    finally:
+        meta["agent"] = {
+            "status": run.status,
+            "steps": run.steps,
+            "tool_calls": run.tool_calls,
+            "repair_rounds": rounds,
+            "read": session.toolbox.read_paths[:100],
+            "changed": session.toolbox.changed_paths,
+            "commands": session.toolbox.commands[:50],
+            "transcript": "agent_transcript.json",
+        }
+        session.save(request_root / "agent_transcript.json", status=run.status)
+        shutil.rmtree(request_root / "agent-tmp", ignore_errors=True)
+        _save_meta(meta)
 
 
 def _bound_complete(
@@ -996,6 +1156,8 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         summary = commentary or (
             f"I changed {len(files)} file(s). Review the preview, then Keep or Discard."
         )
+    elif commentary and meta.get("engine") == "agent":
+        summary = commentary
     elif commentary:
         summary = (
             "The model stopped after planning and did not write files. "
@@ -1010,9 +1172,10 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         stored = raw_verification
     if stored.get("preview") in {"ok", "failed", "not_run"}:
         preview_status = str(stored.get("preview") or preview_status)
+    engine = str(meta.get("engine") or "local")
     return {
         "kind": "code",
-        "engine": "local",
+        "engine": engine,
         "request_id": request_id,
         "episode_id": request_id,
         "preview": preview,
@@ -1024,7 +1187,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "files": files,
             "delta": delta.as_dict(),
             "complete": False,
-            "engine": "local",
+            "engine": engine,
             "model_id": meta.get("model_id"),
             "provider": meta.get("provider") or "local",
             "pin": meta.get("pin") or pin_record(),

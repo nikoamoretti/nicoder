@@ -51,9 +51,12 @@ def known_entries(home: Path | None = None) -> list[CatalogEntry]:
             model_file="",
             model_alias="nvidia/nemotron-3.5-super-vl-120b-a12b",
             server_binary="",
-            n_ctx=65536,
+            n_ctx=131072,
             quantization="hosted",
-            note="Runs on NVIDIA's servers, so nothing loads on this Mac. Project files are sent to NVIDIA.",
+            note=(
+                "Runs on NVIDIA's servers. It can read your folders (never secrets or ~/Library) and run "
+                "sandboxed commands; what it reads is sent to NVIDIA. Changes still wait for Keep."
+            ),
             max_tokens=16384,
             gen_timeout=300,
             provider="nvidia",

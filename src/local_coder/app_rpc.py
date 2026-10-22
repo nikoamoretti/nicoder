@@ -7,15 +7,18 @@ One response object per stdout line:
   {"id": "1", "ok": true, "result": {...}}
   {"id": "1", "ok": false, "error": {"code": "...", "detail": "..."}}
 
-Unsolicited progress during a run:
+Unsolicited progress during a run or a question:
   {"id": null, "event": "progress", "payload": {...}}
 
+`chat_request` runs on its own thread, so `cancel` and other calls are served
+while a question is being answered; its response arrives when it is done.
 The helper binds only stdin/stdout. It does not open a network port.
 """
 from __future__ import annotations
 
 import json
 import sys
+import threading
 import traceback
 from pathlib import Path
 from typing import Any, TextIO
@@ -65,11 +68,29 @@ class RpcServer:
     def __init__(self, runtime: AppRuntime | None = None, out: TextIO | None = None) -> None:
         self.runtime = runtime or AppRuntime()
         self.out = out or sys.stdout
+        self.chat_cancel = threading.Event()
+        self._chat_thread: threading.Thread | None = None
+        self._write_lock = threading.Lock()
         self.runtime.subscribe(self._on_event)
 
     def _write(self, payload: dict[str, Any]) -> None:
-        self.out.write(json.dumps(payload, default=str) + "\n")
-        self.out.flush()
+        line = json.dumps(payload, default=str) + "\n"
+        with self._write_lock:
+            self.out.write(line)
+            self.out.flush()
+
+    def start_chat_thread(self, message: dict[str, Any]) -> threading.Thread | None:
+        """Answer a question off the read loop so Stop and other calls still get through."""
+        if self._chat_thread is not None and self._chat_thread.is_alive():
+            self._write(_err(message.get("id"), "busy", "A question is already being answered."))
+            return None
+        self.chat_cancel.clear()
+        thread = threading.Thread(
+            target=lambda: self._write(self.dispatch(message)), name="local-coder-chat", daemon=True,
+        )
+        self._chat_thread = thread
+        thread.start()
+        return thread
 
     def _on_event(self, event: dict[str, Any]) -> None:
         self._write({"id": None, "event": "progress", "payload": event})
@@ -104,7 +125,12 @@ class RpcServer:
         if method == "explain_request":
             return explain_request(params["path"], params["text"])
         if method == "chat_request":
-            return chat_request(params["path"], params["text"])
+            return chat_request(
+                params.get("path") or None,
+                str(params.get("text") or ""),
+                listener=self._on_event,
+                cancel=self.chat_cancel,
+            )
         if method == "load_chat":
             return load_project_chat(params["path"])
         if method == "clear_chat":
@@ -139,6 +165,7 @@ class RpcServer:
                 kind=params.get("kind") or "create",
             )
         if method == "cancel":
+            self.chat_cancel.set()
             return self.runtime.cancel()
         if method == "keep":
             return keep_changes(params["episode_id"], params["path"])
@@ -172,6 +199,7 @@ class RpcServer:
         if method == "stop_server":
             return stop_owned_server()
         if method == "shutdown":
+            self.chat_cancel.set()
             return self.runtime.shutdown()
         if method == "run_status":
             return {
@@ -199,7 +227,11 @@ class RpcServer:
             if not isinstance(message, dict):
                 self._write(_err(None, "bad_request", "request must be an object"))
                 continue
+            if message.get("method") == "chat_request":
+                self.start_chat_thread(message)
+                continue
             self._write(self.dispatch(message))
+        self.chat_cancel.set()
         return 0
 
 

@@ -7,8 +7,10 @@ never shows a password prompt). The key never reaches config, logs, events,
 artifacts, or error text.
 
 Replies are streamed so a long generation keeps the connection alive, then
-folded into one completion dict. A stream that drops before it finishes, or a
-busy/5xx answer, is retried once; refusals such as a bad key are not.
+folded into one completion dict (text, reasoning and tool calls). NVIDIA's
+hosted endpoint fails intermittently, so a dropped stream or a 5xx answer gets
+three attempts, a rate limit (429) four; refusals such as a bad key are not
+retried.
 """
 from __future__ import annotations
 
@@ -25,8 +27,11 @@ from .machine import MachineConfig
 KEYCHAIN_PREFIX = "key:"
 _SECURITY = "/usr/bin/security"
 _PROVIDER_NAMES = {"nvidia": "NVIDIA"}
-_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+_RETRY_STATUS = frozenset({500, 502, 503, 504})
 _READ_TIMEOUT_S = 120.0
+_ATTEMPTS = 3
+_BUSY_ATTEMPTS = 4
+_BUSY_WAIT_CAP_S = 30.0
 
 
 class HostedError(RuntimeError):
@@ -34,7 +39,15 @@ class HostedError(RuntimeError):
 
 
 class _Retryable(HostedError):
-    """A dropped stream or busy answer worth exactly one more attempt."""
+    """A dropped stream or server error worth exactly one more attempt."""
+
+
+class _Busy(HostedError):
+    """A rate limit: wait, then try again."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def provider_name(cfg: MachineConfig) -> str:
@@ -79,17 +92,26 @@ def hosted_chat(cfg: MachineConfig, body: dict[str, Any], *, thinking: bool) -> 
         "chat_template_kwargs": {"enable_thinking": thinking},
     }
     problem = ""
-    for attempt in (1, 2):
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             data = _stream_once(cfg, payload, key)
+        except _Busy as exc:
+            problem = str(exc)
+            if attempt >= _BUSY_ATTEMPTS:
+                break
+            time.sleep(min(_BUSY_WAIT_CAP_S, exc.retry_after or 5.0 * attempt))
+            continue
         except _Retryable as exc:
             problem = str(exc)
-            if attempt == 1:
-                time.sleep(2)
+            if attempt >= _ATTEMPTS:
+                break
+            time.sleep(3.0 * attempt)
             continue
         data["timings"]["attempts"] = attempt
         return data
-    raise HostedError(f"{provider_name(cfg)} did not answer after two attempts: {problem}")
+    raise HostedError(f"{provider_name(cfg)} did not answer after {attempt} attempts: {problem}")
 
 
 def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[str, Any]:
@@ -98,6 +120,7 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
     deadline = time.monotonic() + max(30, int(cfg.gen_timeout))
     content: list[str] = []
     reasoning: list[str] = []
+    tool_calls: dict[int, dict[str, Any]] = {}
     finish: str | None = None
     usage: dict[str, Any] = {}
     reply_id = None
@@ -111,6 +134,8 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
             if response.status_code != 200:
                 detail = _error_detail(response)
                 message = f"HTTP {response.status_code}{': ' + detail if detail else ''}"
+                if response.status_code == 429:
+                    raise _Busy(message, _retry_after(response))
                 if response.status_code in _RETRY_STATUS:
                     raise _Retryable(message)
                 raise HostedError(f"{provider_name(cfg)} refused the request ({message}).")
@@ -136,7 +161,8 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
                         reasoning.append(str(delta["reasoning_content"]))
                     if delta.get("content"):
                         content.append(str(delta["content"]))
-                    if first_token_s is None and (content or reasoning):
+                    _fold_tool_calls(tool_calls, delta.get("tool_calls"))
+                    if first_token_s is None and (content or reasoning or tool_calls):
                         first_token_s = round(time.perf_counter() - started, 3)
                     if choice.get("finish_reason"):
                         finish = str(choice["finish_reason"])
@@ -144,21 +170,51 @@ def _stream_once(cfg: MachineConfig, payload: dict[str, Any], key: str) -> dict[
         raise _Retryable(f"{type(exc).__name__}: {exc}") from exc
     if finish is None:
         raise _Retryable("the connection closed before the reply finished")
+    reply: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(content),
+        "reasoning_content": "".join(reasoning) or None,
+    }
+    if tool_calls:
+        reply["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
     return {
         "id": reply_id,
         "model": served,
-        "choices": [{
-            "index": 0,
-            "finish_reason": finish,
-            "message": {
-                "role": "assistant",
-                "content": "".join(content),
-                "reasoning_content": "".join(reasoning) or None,
-            },
-        }],
+        "choices": [{"index": 0, "finish_reason": finish, "message": reply}],
         "usage": usage,
         "timings": {"first_token_s": first_token_s, "stream_s": round(time.perf_counter() - started, 3)},
     }
+
+
+def _fold_tool_calls(slots: dict[int, dict[str, Any]], deltas: Any) -> None:
+    """Merge streamed tool-call pieces: the id and name arrive once, arguments in fragments."""
+    if not isinstance(deltas, list):
+        return
+    for position, item in enumerate(deltas):
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        if not isinstance(index, int):
+            index = len(slots) if item.get("id") else max(slots, default=position)
+        slot = slots.setdefault(index, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+        if item.get("id") and not slot["id"]:
+            slot["id"] = str(item["id"])
+        function = item.get("function") or {}
+        if function.get("name") and not slot["function"]["name"]:
+            slot["function"]["name"] = str(function["name"])
+        arguments = function.get("arguments")
+        if isinstance(arguments, dict):
+            slot["function"]["arguments"] += json.dumps(arguments)
+        elif arguments:
+            slot["function"]["arguments"] += str(arguments)
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    """Seconds from a Retry-After header, when it is a number."""
+    try:
+        return max(0.0, float(response.headers.get("retry-after") or ""))
+    except ValueError:
+        return None
 
 
 def _error_detail(response: httpx.Response) -> str:

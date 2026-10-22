@@ -16,6 +16,17 @@
    (`nemotron35-super` in the catalog), chosen explicitly in Settings. When it
    is selected, talk and act calls go to NVIDIA instead of llama.cpp and no
    local server starts. Nothing ever falls back between local and hosted.
+   With that model, talk and act run **Local Coder's own agent**
+   (`src/local_coder/agent/`, Nico's call on 2026-10-22: OpenCode/Conductor-level
+   capability, but never OpenCode or Conductor as the engine). The model calls
+   tools that Local Coder executes: find_project / list / glob / grep / read
+   anywhere in the home folder except secrets and ~/Library; write / edit only
+   in the request's working copy (Keep/Discard still decides what lands); bash
+   only inside the macOS sandbox (`agent/sandbox.py`: writes limited to the
+   working copy and temp folders, secrets unreadable, Keychain and the `key`
+   tool blocked, scrubbed environment). Questions are read-only and may
+   `open_project` the repo they found. Do not loosen these rules, add an
+   unsandboxed shell, or route the agent through a foreign agent CLI.
 2. **Software owns truth.** Only the controller mutates `EpisodeState`. The model
    cannot write state, pick commands, or declare tests green. A model's "solved"
    is a validation request, nothing more.
@@ -61,8 +72,16 @@
 - `src/local_coder/accept.py` — single accept/discard implementation for CLI and app.
 - `src/local_coder/app_service.py` + `app_rpc.py` — structured Mac-app API
   (JSON-lines helper, no network server).
-- `src/local_coder/general/harness.py` — candidate-only read / write / hash-edit.
-  No host bash. No foreign agent CLI.
+- `src/local_coder/general/harness.py` — candidate-only read / write / hash-edit
+  for the local llama.cpp models. No host bash. No foreign agent CLI.
+- `src/local_coder/agent/` — the tool-calling agent for models with native tool
+  calls (today the hosted Nemotron): `access.py` (path rules), `sandbox.py`
+  (sandbox-exec profile and runner), `tools.py`, `loop.py`, `prompts.py`,
+  `runner.py` (app entry points). Change requests run it in
+  `coordinator._run_agent_request`; Local Coder's own checks run only on Vite
+  web apps, failures go back to the agent (two rounds), other projects record
+  `local_checks: not_run`. Transcripts: `agent_transcript.json` per request,
+  `~/.local/share/local-coder/agent-runs/` for questions.
 - `macos/` — SwiftUI Local Coder.app. Do not add a web backend.
 
 ## Coding conventions

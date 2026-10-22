@@ -327,10 +327,19 @@ def classify_legacy_request(text: str, inspection: dict[str, Any] | None = None)
 
 
 def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Default product classifier: new apps and web work are allowed."""
+    """Default product classifier: new apps and web work are allowed.
+
+    With an agent-capable model, "look" requests become questions: the agent
+    reads the code itself instead of the lexical excerpt view.
+    """
+    from local_coder.agent.runner import agent_capable
     from local_coder.general.inspect import classify_request as general_classify
 
-    return general_classify(text, inspection)
+    result = general_classify(text, inspection)
+    if result.get("kind") == "explain" and agent_capable(load_machine_config()):
+        summary = "This will look through the code and answer without editing files."
+        return {**result, "kind": "chat", "summary": summary}
+    return result
 
 
 def explain_request(path: str | Path, text: str) -> dict[str, Any]:
@@ -371,28 +380,92 @@ def explain_request(path: str | Path, text: str) -> dict[str, Any]:
     }
 
 
-def chat_request(path: str | Path, text: str) -> dict[str, Any]:
-    """Answer an ordinary question with the local model. No canned replies."""
+def chat_request(
+    path: str | Path | None,
+    text: str,
+    *,
+    listener: EventListener | None = None,
+    cancel: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Answer an ordinary question. No canned replies.
+
+    With an agent-capable model the agent searches and reads the Mac itself and
+    may open the project it found (`open_project` in the result). `path` is
+    None when no project is open yet.
+    """
+    from local_coder.agent.runner import agent_capable
     from local_coder.general.inspect import asked_to_see_ui
 
-    repo = Path(path).expanduser().resolve()
-    if not repo.is_dir():
+    repo = Path(path).expanduser().resolve() if path else None
+    if repo is not None and not repo.is_dir():
         raise AppError("That folder does not exist.")
     question = text.strip()
     if not question:
         raise AppError("Write a question first.")
     extra = ""
     preview = None
-    if asked_to_see_ui(question):
+    if repo is not None and asked_to_see_ui(question):
         preview, extra = _start_preview_note(repo)
-    from local_coder.general.chat_log import recent_messages
+    if agent_capable(load_machine_config()):
+        result = _agent_chat(repo, question, extra=extra, listener=listener, cancel=cancel)
+    else:
+        from local_coder.general.chat_log import recent_messages
 
-    reply = _local_chat_completion(
-        question, repo, extra=extra, history=recent_messages(repo),
-    )
-    result = _chat_result(repo, question, reply)
+        reply = _local_chat_completion(
+            question, repo, extra=extra, history=recent_messages(repo) if repo is not None else None,
+        )
+        if repo is not None:
+            result = _chat_result(repo, question, reply)
+        else:
+            result = {"kind": "chat", "summary": reply, "hits": [], "model_commentary": reply, "status": "answered"}
     if preview is not None:
         result["preview"] = preview
+    return result
+
+
+def _agent_chat(
+    repo: Path | None,
+    question: str,
+    *,
+    extra: str,
+    listener: EventListener | None,
+    cancel: threading.Event | None,
+) -> dict[str, Any]:
+    """A question answered by the agent with read-only tools across the home folder."""
+    from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
+    from local_coder.general.chat_log import append_turn, recent_messages
+
+    cfg = load_machine_config()
+
+    def activity(detail: str) -> None:
+        if listener is not None:
+            listener({"type": "activity", "data": {"detail": detail}, "phrase": detail})
+
+    asked = run_ask(
+        f"{question}\n\n({extra})" if extra else question,
+        project=repo,
+        chat=hosted_tool_chat(cfg),
+        context_chars=context_chars_for(cfg),
+        history=recent_messages(repo, limit=10, max_chars=1500) if repo is not None else None,
+        on_activity=activity,
+        cancel=cancel,
+    )
+    opened = asked.opened if asked.opened is not None and asked.opened != repo else None
+    result: dict[str, Any] = {
+        "kind": "chat",
+        "summary": asked.answer,
+        "hits": [],
+        "model_commentary": asked.answer,
+        "status": asked.status,
+        "files_read": asked.read_paths,
+        "open_project": str(opened) if opened is not None else None,
+    }
+    target = opened or repo
+    if target is not None:
+        append_turn(target, "user", question)
+        result["turns"] = append_turn(target, "assistant", asked.answer)["turns"]
+    if opened is not None:
+        remember_project(opened)
     return result
 
 
@@ -488,7 +561,7 @@ def clear_project_chat(path: str | Path) -> dict[str, Any]:
 
 def _local_chat_completion(
     question: str,
-    project_path: Path,
+    project_path: Path | None,
     *,
     extra: str = "",
     history: list[dict[str, str]] | None = None,
@@ -496,7 +569,7 @@ def _local_chat_completion(
     """One short non-streaming chat completion from the owned local server or the hosted model."""
     ensure_server(wait_s=300)
     cfg = load_machine_config()
-    brief = _project_brief(project_path)
+    brief = _project_brief(project_path) if project_path is not None else "No project folder is open yet."
     system = (
         "You are Local Coder, a local coding assistant inside a Mac app. "
         "You already have the project facts below — never claim you cannot see the "

@@ -315,6 +315,13 @@ final class AppModel: ObservableObject {
             do {
                 var path = projectPath
                 if path == nil {
+                    // A question needs no new folder: the model looks around the Mac and may open the project it means.
+                    let first = try await engine.call("classify_request", ["text": text])
+                    let firstKind = first["kind"] as? String
+                    if firstKind == "chat" || firstKind == "explain" {
+                        try await answerQuestion(path: nil, text: text)
+                        return
+                    }
                     running = true
                     startProgressClock()
                     noteProgress("Creating a project from what you wrote.")
@@ -358,37 +365,12 @@ final class AppModel: ObservableObject {
                     return
                 }
                 if kind == "chat" {
-                    running = true
-                    startProgressClock()
-                    noteProgress("Answering…")
-                    snapshot = nil
-                    let result = try await engine.call(
-                        "chat_request",
-                        ["path": path, "text": text],
-                        timeoutSeconds: 600
-                    )
-                    clockTask?.cancel()
-                    running = false
-                    progress = "Ready."
-                    applyChatTurns(result["turns"])
-                    if chatTurns.isEmpty {
-                        let reply = (result["model_commentary"] as? String)
-                            ?? (result["summary"] as? String)
-                        if let reply, !reply.isEmpty {
-                            appendLocalTurn(role: "assistant", text: reply)
-                        }
-                    }
-                    explainSummary = nil
-                    explainHits = result["hits"] as? [[String: Any]] ?? []
-                    if let preview = result["preview"] as? [String: Any],
-                       let url = preview["url"] as? String, !url.isEmpty {
-                        previewURL = url
-                    }
+                    try await answerQuestion(path: path, text: text)
                     return
                 }
                 running = true
                 startProgressClock()
-                noteProgress("Starting the local coding engine.")
+                noteProgress("Starting.")
                 snapshot = nil
                 previewURL = nil
                 let started = try await engine.call("run_request", [
@@ -404,6 +386,49 @@ final class AppModel: ObservableObject {
                 banner = error.localizedDescription
                 appendLocalTurn(role: "assistant", text: error.localizedDescription)
             }
+        }
+    }
+
+    /// Answer a question in chat. With no project open, `path` is nil; when the model opens a
+    /// project, the window switches to it and shows the conversation there.
+    private func answerQuestion(path: String?, text: String) async throws {
+        running = true
+        startProgressClock()
+        noteProgress("Answering…")
+        snapshot = nil
+        var params: [String: Any] = ["text": text]
+        if let path {
+            params["path"] = path
+        }
+        let result: [String: Any]
+        do {
+            result = try await engine.call("chat_request", params, timeoutSeconds: 1200)
+        } catch {
+            clockTask?.cancel()
+            running = false
+            progress = "Ready."
+            throw error
+        }
+        clockTask?.cancel()
+        running = false
+        progress = "Ready."
+        if let opened = result["open_project"] as? String, !opened.isEmpty {
+            selectProject(opened)
+            return
+        }
+        if let turns = result["turns"] as? [[String: Any]], !turns.isEmpty {
+            applyChatTurns(turns)
+        } else {
+            let reply = (result["model_commentary"] as? String) ?? (result["summary"] as? String)
+            if let reply, !reply.isEmpty {
+                appendLocalTurn(role: "assistant", text: reply)
+            }
+        }
+        explainSummary = nil
+        explainHits = result["hits"] as? [[String: Any]] ?? []
+        if let preview = result["preview"] as? [String: Any],
+           let url = preview["url"] as? String, !url.isEmpty {
+            previewURL = url
         }
     }
 

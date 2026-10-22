@@ -20,7 +20,7 @@ def _hosted_cfg(**overrides) -> machine.MachineConfig:
         "endpoint": "https://integrate.api.nvidia.com",
         "provider": "nvidia",
         "api_key_name": "NVIDIA_API_KEY",
-        "n_ctx": 65536,
+        "n_ctx": 131072,
         "max_tokens": 16384,
         "quantization": "hosted",
     }
@@ -50,10 +50,14 @@ def _reply_lines(text: str = "Here it is.", finish: str = "stop") -> list[str]:
 
 
 class _Response:
-    def __init__(self, status_code: int = 200, lines: list[str] | None = None, body: dict | None = None):
+    def __init__(
+        self, status_code: int = 200, lines: list[str] | None = None, body: dict | None = None,
+        headers: dict | None = None,
+    ):
         self.status_code = status_code
         self._lines = lines or []
         self._body = body
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -95,7 +99,7 @@ def _install_client(monkeypatch, *responses) -> list[dict]:
             return item
 
     monkeypatch.setattr(hosted.httpx, "Client", FakeClient)
-    monkeypatch.setattr(hosted.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(hosted.time, "sleep", lambda seconds: calls.append({"slept": seconds}))
     return calls
 
 
@@ -149,13 +153,15 @@ def test_dropped_stream_is_retried_once(monkeypatch):
     assert len(_requests(calls)) == 2
 
 
-def test_two_dropped_connections_raise_after_the_second(monkeypatch):
+def test_dropped_connections_and_server_errors_give_up_after_three_attempts(monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
     dropped = httpx.RemoteProtocolError("Server disconnected without sending a response.")
-    calls = _install_client(monkeypatch, dropped, dropped)
-    with pytest.raises(hosted.HostedError, match="two attempts"):
+    failed = _Response(status_code=500, body={"message": "Failed to generate completions"})
+    calls = _install_client(monkeypatch, dropped, failed, dropped)
+    with pytest.raises(hosted.HostedError, match="3 attempts"):
         hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
-    assert len(_requests(calls)) == 2
+    assert len(_requests(calls)) == 3
+    assert [call["slept"] for call in calls if "slept" in call] == [3.0, 6.0]
 
 
 def test_refused_key_is_not_retried_and_never_echoed(monkeypatch):
@@ -228,7 +234,7 @@ def test_select_nemotron_writes_hosted_config_and_frees_the_local_model(monkeypa
     assert cfg.endpoint == "https://integrate.api.nvidia.com"
     assert cfg.model_alias == "nvidia/nemotron-3.5-super-vl-120b-a12b"
     assert (cfg.model_file, cfg.server_binary) == ("", "")
-    assert (cfg.n_ctx, cfg.max_tokens) == (65536, 16384)
+    assert (cfg.n_ctx, cfg.max_tokens) == (131072, 16384)
     assert cfg.api_key_name == "NVIDIA_API_KEY"
     assert SECRET not in machine.config_path().read_text(encoding="utf-8")
 
@@ -266,8 +272,8 @@ def test_helper_startup_keeps_the_hosted_context_window(monkeypatch):
 
     machine.write_machine_config(_hosted_cfg())
     monkeypatch.setattr(app_service, "stop_owned_server", lambda: {"ok": True, "stopped": False})
-    assert app_service.ensure_machine_config()["config"]["n_ctx"] == 65536
-    assert machine.load_machine_config().n_ctx == 65536
+    assert app_service.ensure_machine_config()["config"]["n_ctx"] == 131072
+    assert machine.load_machine_config().n_ctx == 131072
 
 
 def test_hosted_model_needs_no_local_server(monkeypatch):
@@ -362,25 +368,29 @@ def test_hosted_prompt_budget_uses_the_larger_window(monkeypatch):
     assert hosted_budget > 4 * direct_write.prompt_budget_chars()
 
 
-def test_chat_uses_the_hosted_model_without_thinking(tmp_path, monkeypatch):
+def test_chat_with_the_hosted_model_runs_the_agent(tmp_path, monkeypatch):
     from local_coder import app_service
+    from local_coder.agent import runner
 
     machine.write_machine_config(_hosted_cfg())
     seen: dict = {}
 
     def fake_chat(cfg, payload, *, thinking):
         seen.update(payload=payload, thinking=thinking)
-        return {"choices": [{"message": {"content": "It is a task board."}}]}
+        return {"choices": [{"message": {"content": "It is a task board."}, "finish_reason": "stop"}]}
 
-    monkeypatch.setattr(app_service, "hosted_chat", fake_chat)
+    monkeypatch.setattr(runner, "hosted_chat", fake_chat)
     monkeypatch.setattr(app_service, "server_start", lambda *a, **k: pytest.fail("no local server"))
     root = tmp_path / "board"
     root.mkdir()
     (root / "package.json").write_text("{}", encoding="utf-8")
     reply = app_service.chat_request(root, "what is this project?")
     assert reply["summary"] == "It is a task board."
-    assert seen["thinking"] is False
-    assert seen["payload"]["max_tokens"] == 512
+    assert reply["open_project"] is None
+    assert [turn["role"] for turn in reply["turns"]] == ["user", "assistant"]
+    assert seen["thinking"] is True
+    assert {tool["function"]["name"] for tool in seen["payload"]["tools"]} >= {"find_project", "read", "bash"}
+    assert "write" not in {tool["function"]["name"] for tool in seen["payload"]["tools"]}
 
 
 def test_legacy_engine_refuses_a_hosted_model(tmp_path):
@@ -390,3 +400,54 @@ def test_legacy_engine_refuses_a_hosted_model(tmp_path):
     with pytest.raises(AppError) as info:
         run_request(tmp_path, "fix the failing test", profile_name="d2")
     assert info.value.code == "unsupported"
+
+
+def test_streamed_tool_calls_are_folded_into_one_message(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    lines = _sse(
+        {"id": "c1", "model": SERVED, "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "id": "call-a", "type": "function", "function": {"name": "glob", "arguments": ""}},
+        ]}}]},
+        {"id": "c1", "model": SERVED, "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": '{"pattern": "*.ts",'}},
+        ]}}]},
+        {"id": "c1", "model": SERVED, "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": ' "path": "~/projects"}'}},
+            {"index": 1, "id": "call-b", "type": "function",
+             "function": {"name": "read", "arguments": '{"path": "a"}'}},
+        ]}}]},
+        {"id": "c1", "model": SERVED, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+    )
+    _install_client(monkeypatch, _Response(lines=lines))
+    data = hosted.hosted_chat(_hosted_cfg(), {"messages": [], "tools": [{"type": "function"}]}, thinking=True)
+    message = data["choices"][0]["message"]
+    assert data["choices"][0]["finish_reason"] == "tool_calls"
+    assert message["content"] == ""
+    assert [call["id"] for call in message["tool_calls"]] == ["call-a", "call-b"]
+    first = message["tool_calls"][0]["function"]
+    assert first["name"] == "glob"
+    assert json.loads(first["arguments"]) == {"pattern": "*.ts", "path": "~/projects"}
+
+
+def test_a_rate_limit_is_waited_out(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    busy = {"status": 429, "title": "Too Many Requests"}
+    calls = _install_client(
+        monkeypatch,
+        _Response(status_code=429, body=busy, headers={"retry-after": "7"}),
+        _Response(status_code=429, body=busy),
+        _Response(lines=_reply_lines("Done.")),
+    )
+    data = hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
+    assert data["choices"][0]["message"]["content"] == "Done."
+    assert data["timings"]["attempts"] == 3
+    assert [call["slept"] for call in calls if "slept" in call] == [7.0, 10.0]
+
+
+def test_a_rate_limit_gives_up_after_four_attempts(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    busy = _Response(status_code=429, body={"title": "Too Many Requests"})
+    calls = _install_client(monkeypatch, busy, busy, busy, busy)
+    with pytest.raises(hosted.HostedError, match="4 attempts"):
+        hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
+    assert len(_requests(calls)) == 4

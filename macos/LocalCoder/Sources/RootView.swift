@@ -143,7 +143,7 @@ struct RootView: View {
                     Text("Chat")
                         .font(.system(size: 34, weight: .semibold, design: .rounded))
                         .foregroundStyle(LCColor.ink)
-                    Text("Ask a question or describe what to build. A project folder is created when you send.")
+                    Text("Ask about any project on your Mac, or describe a new app to build.")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -152,6 +152,9 @@ struct RootView: View {
                     }
                     if let banner = model.banner {
                         bannerCard(banner)
+                    }
+                    if !model.chatTurns.isEmpty {
+                        chatTranscript
                     }
                     if model.running {
                         livingProgress
@@ -310,6 +313,12 @@ struct RootView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.86), value: model.chatTurns.count)
     }
 
+    /// Bold, italics, `code` and links from the model's reply; line breaks kept as written.
+    private static func inlineMarkdown(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+    }
+
     private func chatBubble(_ turn: ChatTurn) -> some View {
         let isUser = turn.role == "user"
         return HStack {
@@ -318,7 +327,7 @@ struct RootView: View {
                 Text(isUser ? "You" : "Local Coder")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(turn.text)
+                Text(isUser ? AttributedString(turn.text) : Self.inlineMarkdown(turn.text))
                     .textSelection(.enabled)
                     .foregroundStyle(LCColor.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
