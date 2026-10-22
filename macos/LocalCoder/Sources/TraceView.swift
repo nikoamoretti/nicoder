@@ -157,10 +157,8 @@ private struct ThinkingRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Rail(first: first, last: true, icon: AnyView(
-                ProgressView()
-                    .controlSize(.mini)
+                HomininSpinner(size: 20)
                     .frame(width: 22, height: 22)
-                    .background(Circle().fill(.tint.opacity(0.12)))
             ))
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 HStack(alignment: .firstTextBaseline) {

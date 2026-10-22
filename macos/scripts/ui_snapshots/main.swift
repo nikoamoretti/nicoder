@@ -196,6 +196,23 @@ MainActor.assumeIsolated {
     model.reasoningOn = false
     capture(main, "11b-live-run-without-messages")
 
+    // 2c. The working indicator's walk cycle: eight poses large, then at its real size.
+    let sheet = show(VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 0) {
+            ForEach(0..<8, id: \.self) { frame in
+                HomininFrame(phase: 2 * .pi * Double(frame) / 8).frame(width: 100, height: 80)
+            }
+        }
+        HStack(spacing: 18) {
+            ForEach(0..<8, id: \.self) { frame in
+                HomininFrame(phase: 2 * .pi * Double(frame) / 8).frame(width: 20, height: 20)
+            }
+            Text("Writing").foregroundStyle(.secondary)
+        }
+    }.padding(12).background(Color(nsColor: .windowBackgroundColor)), size: CGSize(width: 840, height: 150))
+    capture(sheet, "16-walk-cycle")
+    sheet.orderOut(nil)
+
     // 3. Start screen inside a project, reasoning off.
     model.reasoningOn = false
     model.running = false
