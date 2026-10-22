@@ -2,14 +2,14 @@ import SwiftUI
 
 /// The working indicator: a tiny Australopithecus walking in place with a big stick, drawn in the
 /// spinner's style (monochrome strokes, about 20 pt). Nico asked for it in place of the spinner,
-/// 2026-10-22. With Reduce Motion on, it stands still.
+/// 2026-10-22. Like the system spinner it replaces, it keeps moving with Reduce Motion on: it is a
+/// small in-place loop, not motion across the screen (and Nico's Mac has Reduce Motion on).
 struct HomininSpinner: View {
     var size = 20.0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: reduceMotion)) { context in
-            HomininFrame(phase: reduceMotion ? 1.9 : 2 * .pi * context.date.timeIntervalSinceReferenceDate
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
+            HomininFrame(phase: 2 * .pi * context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: 3600) / Hominin.period)
         }
         .frame(width: size, height: size)

@@ -190,6 +190,7 @@ MainActor.assumeIsolated {
     model.traceStart = Date().addingTimeInterval(-47)
     model.trace = Array(steps(start: Date().addingTimeInterval(-47)).prefix(6))
     capture(main, "11-live-run")
+    capture(main, "11-live-run-later")
 
     // 2b. A run whose messages were cleared mid-run still shows the prompt and live steps (reasoning off).
     model.chatTurns = []
