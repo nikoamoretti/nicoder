@@ -58,6 +58,8 @@ struct TraceTimeline: View {
     let steps: [TraceStep]
     let start: Date
     let live: Bool
+    /// What the live row says while the model works on its next step.
+    var waiting = "Working"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -71,7 +73,7 @@ struct TraceTimeline: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
             if live {
-                ThinkingRow(since: steps.last?.started ?? start, first: steps.isEmpty)
+                ThinkingRow(since: steps.last?.started ?? start, first: steps.isEmpty, label: waiting)
             }
         }
         .animation(.snappy(duration: 0.25), value: steps.count)
@@ -150,6 +152,7 @@ private struct TraceRow: View {
 private struct ThinkingRow: View {
     let since: Date
     let first: Bool
+    let label: String
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -161,7 +164,7 @@ private struct ThinkingRow: View {
             ))
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 HStack(alignment: .firstTextBaseline) {
-                    Text(first ? "Starting" : "Thinking")
+                    Text(first ? "Starting" : label)
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 12)
                     Text(Durations.label(context.date.timeIntervalSince(since)))
@@ -181,6 +184,16 @@ private struct ThinkingRow: View {
 struct LiveTrace: View {
     @EnvironmentObject private var model: AppModel
 
+    /// "Thinking" only when the model reasons; with reasoning off it is writing its next step.
+    private var waiting: String {
+        guard model.selectedModel?.reasoningSwitch == true else { return "Working" }
+        return model.reasoningOn ? "Thinking" : "Writing"
+    }
+
+    private var reasoningNote: String {
+        model.selectedModel?.reasoningSwitch == true && !model.reasoningOn ? "reasoning off" : ""
+    }
+
     var body: some View {
         let start = model.traceStart ?? Date()
         VStack(alignment: .leading, spacing: 6) {
@@ -193,7 +206,7 @@ struct LiveTrace: View {
                         .foregroundStyle(.secondary)
                         .contentTransition(.numericText())
                     if let name = model.selectedModel?.name {
-                        Text("· \(name)")
+                        Text(reasoningNote.isEmpty ? "· \(name)" : "· \(name) · \(reasoningNote)")
                             .font(.callout)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
@@ -203,7 +216,7 @@ struct LiveTrace: View {
                         .controlSize(.small)
                 }
             }
-            TraceTimeline(steps: model.trace, start: start, live: true)
+            TraceTimeline(steps: model.trace, start: start, live: true, waiting: waiting)
         }
         .padding(14)
         .background(.background.secondary, in: .rect(cornerRadius: 14))
