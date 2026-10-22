@@ -26,7 +26,7 @@ def _plant(home: Path, *parts: str, data: bytes = b"gguf") -> Path:
 
 def test_known_entries_include_bonsai_and_qwen(tmp_path):
     ids = [row.id for row in known_entries(tmp_path)]
-    assert ids == ["bonsai2-27b", "qwen35-9b", "qwen35-4b"]
+    assert ids == ["nemotron35-super", "bonsai2-27b", "qwen35-9b", "qwen35-4b"]
     bonsai = next(row for row in known_entries(tmp_path) if row.id == "bonsai2-27b")
     assert bonsai.n_ctx == 8192
     assert bonsai.gen_timeout == 600

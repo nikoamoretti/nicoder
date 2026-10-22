@@ -615,7 +615,7 @@ struct RootView: View {
                     Button("Check again") { model.refreshReadiness() }
                 }
             } else if !rows.isEmpty && model.projectPath == nil {
-                Text("This Mac can use the selected local model. Isolated tests are optional and need Docker only for the older Python engine.")
+                Text("This Mac can use the selected model. Isolated tests are optional and need Docker only for the older Python engine.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

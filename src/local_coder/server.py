@@ -21,7 +21,7 @@ from pathlib import Path
 
 import httpx
 
-from .machine import MachineConfig, config_dir
+from .machine import MachineConfig, config_dir, is_hosted
 
 
 class ServerError(Exception):
@@ -107,6 +107,9 @@ def server_status(cfg: MachineConfig) -> dict:
         "model_alias": None,
         "note": "",
     }
+    if is_hosted(cfg):
+        status.update({"hosted": True, "note": "the selected model runs on the provider's servers; no local server"})
+        return status
     if record is not None:
         pid = int(record.get("pid", 0))
         if pid and _process_alive(pid):
@@ -126,6 +129,8 @@ def server_status(cfg: MachineConfig) -> dict:
 
 def server_start(cfg: MachineConfig, wait_s: int = 90) -> dict:
     """Start the configured server once, recording ownership. No downloads."""
+    if is_hosted(cfg):
+        raise ServerError("the selected model runs on the provider's servers; there is no local server to start")
     record = _read_pid_record()
     if record is not None:
         pid = int(record.get("pid", 0))

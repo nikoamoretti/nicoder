@@ -3,6 +3,8 @@
 Stored at ~/.config/local-coder/config.toml (or LOCAL_CODER_CONFIG_DIR).
 Never committed to the repository; never contains secrets. Paths here are
 machine-specific by design, which is why they do not live in the checkout.
+A hosted model stores only the provider, its endpoint, and the *name* of
+the API key; the key itself is read at request time (see hosted.py).
 """
 from __future__ import annotations
 
@@ -37,6 +39,13 @@ class MachineConfig(BaseModel):
     n_ctx: int = 8192
     max_tokens: int = 2048
     gen_timeout: int = 300
+    provider: str = "local"
+    api_key_name: str = ""
+
+
+def is_hosted(cfg: MachineConfig) -> bool:
+    """True when the selected model runs on a provider's servers, not on llama.cpp here."""
+    return cfg.provider != "local"
 
 
 def config_dir() -> Path:
@@ -100,6 +109,8 @@ def write_machine_config(cfg: MachineConfig) -> Path:
         f"n_ctx = {cfg.n_ctx}",
         f"max_tokens = {cfg.max_tokens}",
         f"gen_timeout = {cfg.gen_timeout}",
+        f'provider = "{cfg.provider}"',
+        f'api_key_name = "{cfg.api_key_name}"',
         "",
     ]
     tmp = path.with_suffix(".toml.tmp")
@@ -112,6 +123,15 @@ def machine_status(cfg: MachineConfig) -> list[tuple[str, bool, str]]:
     """(name, ok, detail) prerequisite facts; no model generations."""
     import shutil
 
+    if is_hosted(cfg):
+        from .hosted import find_api_key, provider_name
+
+        key, where = find_api_key(cfg.api_key_name)
+        return [
+            ("model", True, f"{cfg.model_alias} on {provider_name(cfg)}'s servers (nothing loads on this Mac)"),
+            ("API key", bool(key), where),
+            ("endpoint", True, cfg.endpoint),
+        ]
     rows: list[tuple[str, bool, str]] = []
     model = Path(cfg.model_file).expanduser() if cfg.model_file else None
     if model is None:

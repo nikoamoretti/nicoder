@@ -188,7 +188,7 @@ final class AppModel: ObservableObject {
                 readiness = try await engine.call("readiness")
                 applyCatalog(from: readiness)
                 ready = true
-                // Warm the local model now so the first message is not a cold start.
+                // Warm the local model now so the first message is not a cold start (no-op for a hosted model).
                 Task {
                     _ = try? await engine.call("ensure_server", [:], timeoutSeconds: 300)
                     readiness = try? await engine.call("readiness")
@@ -246,7 +246,7 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let parent = panel.url else { return }
         let alert = NSAlert()
         alert.messageText = "Name the new project"
-        alert.informativeText = "Local Coder will create an empty React starter here. The local model writes the real application after you describe it."
+        alert.informativeText = "Local Coder will create an empty React starter here. The model writes the real application after you describe it."
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(string: "my-app")

@@ -62,7 +62,8 @@ from local_coder.general.snapshot import (
 from local_coder.general.source_check import parse_retry_message
 from local_coder.general.starter import copy_starter
 from local_coder.general.toolchain import ensure_ts_preview
-from local_coder.machine import load_machine_config
+from local_coder.hosted import provider_name
+from local_coder.machine import is_hosted, load_machine_config
 from local_coder.persistence import new_episode_id
 from local_coder.server import ServerError, server_status
 
@@ -341,10 +342,12 @@ def load_meta(project_id: str, request_id: str) -> dict[str, Any]:
 
 
 def ensure_model_server() -> dict[str, Any]:
-    """Start the owned llama-server with tool-calling flags if needed."""
+    """Start the owned llama-server with tool-calling flags if needed. A hosted model needs none."""
     from local_coder.server import server_start as _start
 
     cfg = load_machine_config()
+    if is_hosted(cfg):
+        return {"ok": True, "started": False, "hosted": True}
     status = server_status(cfg)
     if status["healthy"] and status["owned"]:
         return {"ok": True, "started": False, "status": status}
@@ -421,15 +424,19 @@ def run_general_request(
                 allow_repair=False,
             )
     else:
+        cfg = load_machine_config()
         if fake_complete is None:
-            _emit(listener, "model_starting", {})
+            if is_hosted(cfg):
+                _emit(listener, "activity", {"detail": f"Using {model} on {provider_name(cfg)}'s servers."})
+            else:
+                _emit(listener, "model_starting", {})
             ensure_model_server()
             try:
                 assert_identity(model)
             except ModelIdentityError as exc:
                 raise GeneralError(exc.detail, code=exc.code) from exc
         meta["model_id"] = model
-        meta["engine"] = "local"
+        meta["engine"] = cfg.provider if is_hosted(cfg) else "local"
         (Path(meta["baseline"]).parent / "meta.json").write_text(
             json.dumps(meta, indent=2) + "\n", encoding="utf-8",
         )

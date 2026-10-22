@@ -37,7 +37,7 @@ struct SettingsView: View {
             Text("Ordinary use is the general engine. The older Python-only profiles stay available here and are never switched automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("Bonsai 2 27B is the preferred model. Keep it selected unless it is too slow. Choosing a model is only the first step. Close this window, open or create a project, then type what you want.")
+            Text("Nemotron runs on NVIDIA's servers and is the fastest. Bonsai 2 27B is the best model that runs on this Mac. After choosing, close this window and type what you want.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button("Check this Mac again") { model.refreshReadiness() }

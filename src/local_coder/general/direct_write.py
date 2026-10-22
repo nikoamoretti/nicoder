@@ -36,7 +36,8 @@ from local_coder.general.repair_context import (
 )
 from local_coder.general.snapshot import EXCLUDE, iter_source_files
 from local_coder.general.source_check import scan_text
-from local_coder.machine import load_machine_config
+from local_coder.hosted import HostedError, hosted_chat
+from local_coder.machine import is_hosted, load_machine_config
 from local_coder.server import ServerError, server_start
 
 # Re-export for tests and callers that imported these from here.
@@ -63,6 +64,9 @@ __all__ = [
 
 # Measured 2.64 chars/token on hashed TypeScript repair prompts with the Bonsai tokenizer.
 _CHARS_PER_TOKEN = 2.4
+# Hosted requests are accounted with the conservative 2-bytes-per-token estimate; 1.8 keeps
+# the same ~10% slack the local ratio has against the measured Bonsai rate.
+_HOSTED_CHARS_PER_TOKEN = 1.8
 _SYSTEM_TOKENS = 60
 _REPAIR_TURNS = 3
 
@@ -349,7 +353,8 @@ def prompt_budget_chars() -> int:
         - 2 * policy.per_message_overhead
         - _SYSTEM_TOKENS
     )
-    return max(2400, int(tokens * _CHARS_PER_TOKEN))
+    ratio = _HOSTED_CHARS_PER_TOKEN if is_hosted(cfg) else _CHARS_PER_TOKEN
+    return max(2400, int(tokens * ratio))
 
 
 def build_repair_prompt(
@@ -414,21 +419,25 @@ def _file_list(root: Path) -> str:
 
 
 def local_complete(prompt: str) -> CompletionResult:
-    """One non-streaming chat completion from the owned llama.cpp server."""
+    """One non-streaming chat completion from the owned llama.cpp server or the selected hosted model."""
     from dataclasses import replace
 
     from local_coder.engines.context_budget import (
+        ConservativeEstimator,
         LlamaCppTokenizer,
+        TokenCounter,
         account,
         policy_for_runtime,
         resolve_output_limit,
     )
 
     cfg = load_machine_config()
-    try:
-        server_start(cfg, wait_s=300)
-    except ServerError:
-        pass
+    hosted = is_hosted(cfg)
+    if not hosted:
+        try:
+            server_start(cfg, wait_s=300)
+        except ServerError:
+            pass
     system = (
         "You change files in Local Coder with write, edit, or read blocks. "
         "First a short plain-language summary. No plans. No shell."
@@ -447,7 +456,7 @@ def local_complete(prompt: str) -> CompletionResult:
     policy = policy_for_runtime(n_ctx=int(cfg.n_ctx), output_reserve=max_tokens)
     requested_out, _out_source = resolve_output_limit(body, policy)
     policy = replace(policy, output_reserve=requested_out)
-    counter = LlamaCppTokenizer(cfg.endpoint)
+    counter: TokenCounter = ConservativeEstimator() if hosted else LlamaCppTokenizer(cfg.endpoint)
     measured = account(body, counter, policy)
     account_s = round(time.perf_counter() - prepared, 3)
     if not measured.allowed:
@@ -458,7 +467,6 @@ def local_complete(prompt: str) -> CompletionResult:
             f"margin {policy.safety_margin} vs n_ctx {policy.n_ctx}). "
             "The context window was not increased."
         )
-    url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": cfg.model_alias,
         "messages": body["messages"],
@@ -467,18 +475,27 @@ def local_complete(prompt: str) -> CompletionResult:
         "stream": False,
     }
     started = time.perf_counter()
-    try:
-        with httpx.Client(timeout=cfg.gen_timeout, trust_env=False, follow_redirects=False) as client:
-            response = client.post(url, json=payload)
-    except (httpx.HTTPError, OSError) as exc:
-        raise RuntimeError(f"The local model did not answer: {exc}") from exc
-    elapsed_s = round(time.perf_counter() - started, 3)
-    if response.status_code != 200:
-        raise RuntimeError(f"The local model returned HTTP {response.status_code}.")
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError("The local model returned an unreadable reply.") from exc
+    data: Any
+    if hosted:
+        try:
+            data = hosted_chat(cfg, payload, thinking=True)
+        except HostedError as exc:
+            raise RuntimeError(f"The model did not answer: {exc}") from exc
+        elapsed_s = round(time.perf_counter() - started, 3)
+    else:
+        url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
+        try:
+            with httpx.Client(timeout=cfg.gen_timeout, trust_env=False, follow_redirects=False) as client:
+                response = client.post(url, json=payload)
+        except (httpx.HTTPError, OSError) as exc:
+            raise RuntimeError(f"The local model did not answer: {exc}") from exc
+        elapsed_s = round(time.perf_counter() - started, 3)
+        if response.status_code != 200:
+            raise RuntimeError(f"The local model returned HTTP {response.status_code}.")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RuntimeError("The local model returned an unreadable reply.") from exc
     choices = data.get("choices") if isinstance(data, dict) else None
     if not isinstance(choices, list) or not choices:
         raise RuntimeError("The local model returned an empty reply.")
@@ -509,6 +526,8 @@ def local_complete(prompt: str) -> CompletionResult:
                 "predicted_n",
                 "predicted_ms",
                 "predicted_per_second",
+                "first_token_s",
+                "attempts",
             )
         },
     }

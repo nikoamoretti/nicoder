@@ -24,6 +24,15 @@ def isolated_local_coder_data(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "local-coder-data"))
     monkeypatch.setenv(machine.CONFIG_DIR_ENV, str(tmp_path / "machine-config"))
 
+
+@pytest.fixture(autouse=True)
+def no_real_api_keys(monkeypatch):
+    """Never read the developer's Keychain or inherit a real hosted-model key."""
+    from local_coder import hosted
+
+    monkeypatch.setattr(hosted, "read_keychain", lambda service: "")
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+
 from local_coder.config import load_config  # noqa: E402
 from local_coder.controller import Controller  # noqa: E402
 from local_coder.execution.trusted_local import TrustedLocalBackend  # noqa: E402

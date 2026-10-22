@@ -1,8 +1,9 @@
-"""Installed local models that Local Coder can switch between.
+"""Models Local Coder can switch between: installed local files plus one hosted model.
 
-This is a discovery list of files already on the Mac. It never downloads
-weights. Bonsai 2 must use the PrismML llama-server; the Qwen files use the
-ordinary llama.cpp binary on PATH.
+Local entries are a discovery list of files already on the Mac; this never
+downloads weights. Bonsai 2 must use the PrismML llama-server; the Qwen files
+use the ordinary llama.cpp binary on PATH. The hosted entry runs on NVIDIA's
+servers and is available when its API key is on this Mac.
 """
 from __future__ import annotations
 
@@ -11,11 +12,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from .hosted import find_api_key
 from .machine import MachineConfig, load_machine_config
 
 
 class CatalogEntry(BaseModel):
-    """One selectable local model."""
+    """One selectable model."""
 
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -28,6 +30,9 @@ class CatalogEntry(BaseModel):
     note: str
     max_tokens: int = 2048
     gen_timeout: int = 300
+    provider: str = "local"
+    endpoint: str = ""
+    api_key_name: str = ""
 
 
 def _home() -> Path:
@@ -35,11 +40,26 @@ def _home() -> Path:
 
 
 def known_entries(home: Path | None = None) -> list[CatalogEntry]:
-    """Hard-coded catalog of models this product knows how to launch."""
+    """Hard-coded catalog of models this product knows how to launch or call."""
     root = home or _home()
     qwen_dir = root / ".cache" / "local-coder" / "models"
     bonsai_dir = root / "Models" / "Bonsai-demo"
     return [
+        CatalogEntry(
+            id="nemotron35-super",
+            name="Nemotron 3.5 Super 120B — NVIDIA cloud",
+            model_file="",
+            model_alias="nvidia/nemotron-3.5-super-vl-120b-a12b",
+            server_binary="",
+            n_ctx=65536,
+            quantization="hosted",
+            note="Runs on NVIDIA's servers, so nothing loads on this Mac. Project files are sent to NVIDIA.",
+            max_tokens=16384,
+            gen_timeout=300,
+            provider="nvidia",
+            endpoint="https://integrate.api.nvidia.com",
+            api_key_name="NVIDIA_API_KEY",
+        ),
         CatalogEntry(
             id="bonsai2-27b",
             name="Bonsai 2 27B — preferred",
@@ -96,10 +116,14 @@ def list_models(cfg: MachineConfig | None = None, *, home: Path | None = None) -
     selected = ""
     rows: list[dict] = []
     for entry in known_entries(home):
-        path = Path(entry.model_file)
-        available = path.is_file() and _binary_ok(entry.server_binary)
-        resolved = str(path.resolve()) if path.exists() else entry.model_file
-        is_selected = bool(current_file) and resolved == current_file
+        if entry.provider != "local":
+            available = bool(find_api_key(entry.api_key_name)[0])
+            is_selected = current.provider == entry.provider and current.model_alias == entry.model_alias
+        else:
+            path = Path(entry.model_file)
+            available = path.is_file() and _binary_ok(entry.server_binary)
+            resolved = str(path.resolve()) if path.exists() else entry.model_file
+            is_selected = bool(current_file) and resolved == current_file
         if is_selected:
             selected = entry.id
         rows.append({

@@ -25,10 +25,13 @@ from .catalog import entry_by_id, list_models
 from .config import CONFIG_FILENAME, EXAMPLE_TOML, RepoConfig, load_config
 from .controller import Controller, git_is_dirty, git_revision
 from .execution.isolated import IsolatedBackend, IsolationUnavailable
+from .hosted import HostedError, find_api_key, hosted_chat, provider_name
 from .hostenv import apply_host_path
 from .machine import (
+    DEFAULT_ENDPOINT,
     config_dir,
     config_path,
+    is_hosted,
     load_machine_config,
     machine_status,
     write_machine_config,
@@ -490,7 +493,7 @@ def _local_chat_completion(
     extra: str = "",
     history: list[dict[str, str]] | None = None,
 ) -> str:
-    """One short non-streaming chat completion from the owned local server."""
+    """One short non-streaming chat completion from the owned local server or the hosted model."""
     ensure_server(wait_s=300)
     cfg = load_machine_config()
     brief = _project_brief(project_path)
@@ -518,7 +521,6 @@ def _local_chat_completion(
     if extra.strip():
         user = f"{user}\n\n({extra.strip()})"
     messages.append({"role": "user", "content": user})
-    url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": cfg.model_alias,
         "messages": messages,
@@ -526,17 +528,24 @@ def _local_chat_completion(
         "max_tokens": min(512, int(cfg.max_tokens or 512)),
         "stream": False,
     }
-    try:
-        with httpx.Client(timeout=cfg.gen_timeout, trust_env=False, follow_redirects=False) as client:
-            response = client.post(url, json=payload)
-    except (httpx.HTTPError, OSError) as exc:
-        raise AppError(f"The local model did not answer: {exc}", code="chat") from exc
-    if response.status_code != 200:
-        raise AppError(f"The local model returned HTTP {response.status_code}.", code="chat")
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise AppError("The local model returned an unreadable reply.", code="chat") from exc
+    if is_hosted(cfg):
+        try:
+            data = hosted_chat(cfg, payload, thinking=False)
+        except HostedError as exc:
+            raise AppError(f"The model did not answer: {exc}", code="chat") from exc
+    else:
+        url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
+        try:
+            with httpx.Client(timeout=cfg.gen_timeout, trust_env=False, follow_redirects=False) as client:
+                response = client.post(url, json=payload)
+        except (httpx.HTTPError, OSError) as exc:
+            raise AppError(f"The local model did not answer: {exc}", code="chat") from exc
+        if response.status_code != 200:
+            raise AppError(f"The local model returned HTTP {response.status_code}.", code="chat")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise AppError("The local model returned an unreadable reply.", code="chat") from exc
     choices = data.get("choices") if isinstance(data, dict) else None
     if not isinstance(choices, list) or not choices:
         raise AppError("The local model returned an empty reply.", code="chat")
@@ -619,23 +628,38 @@ def select_model(model_id: str) -> dict[str, Any]:
     entry = entry_by_id(model_id)
     if entry is None:
         raise AppError(f"Unknown model: {model_id}", code="unknown_model")
-    path = Path(entry.model_file).expanduser()
-    if not path.is_file():
-        raise AppError(f"{entry.name} is not installed on this Mac.", code="missing_model")
-    if not (shutil.which(entry.server_binary) or Path(entry.server_binary).expanduser().is_file()):
-        raise AppError(
-            f"The server for {entry.name} was not found ({entry.server_binary}).",
-            code="missing_binary",
-        )
+    current = load_machine_config()
+    if entry.provider != "local":
+        if not find_api_key(entry.api_key_name)[0]:
+            raise AppError(
+                f"{entry.name} needs the {entry.api_key_name} key, and it is not on this Mac.",
+                code="missing_key",
+            )
+        placement: dict[str, Any] = {"model_file": "", "server_binary": "", "endpoint": entry.endpoint}
+        loads = ""
+    else:
+        path = Path(entry.model_file).expanduser()
+        if not path.is_file():
+            raise AppError(f"{entry.name} is not installed on this Mac.", code="missing_model")
+        if not (shutil.which(entry.server_binary) or Path(entry.server_binary).expanduser().is_file()):
+            raise AppError(
+                f"The server for {entry.name} was not found ({entry.server_binary}).",
+                code="missing_binary",
+            )
+        placement = {"model_file": str(path.resolve()), "server_binary": entry.server_binary}
+        if is_hosted(current):
+            placement["endpoint"] = DEFAULT_ENDPOINT
+        loads = " The model loads while you do that."
     stop_owned_server()
-    cfg = load_machine_config().model_copy(update={
-        "model_file": str(path.resolve()),
+    cfg = current.model_copy(update={
+        **placement,
         "model_alias": entry.model_alias,
-        "server_binary": entry.server_binary,
         "n_ctx": entry.n_ctx,
         "quantization": entry.quantization,
         "max_tokens": entry.max_tokens,
         "gen_timeout": entry.gen_timeout,
+        "provider": entry.provider,
+        "api_key_name": entry.api_key_name,
     })
     write_machine_config(cfg)
     return {
@@ -643,10 +667,7 @@ def select_model(model_id: str) -> dict[str, Any]:
         "selected": entry.id,
         "config": cfg.model_dump(),
         "catalog": list_models(cfg),
-        "detail": (
-            f"{entry.name} is selected. Open or create a project, then describe "
-            "what you want. The model loads while you do that."
-        ),
+        "detail": f"{entry.name} is selected. Open or create a project, then describe what you want.{loads}",
     }
 
 
@@ -662,14 +683,21 @@ def readiness() -> dict[str, Any]:
         if not ok and name != "endpoint":
             blocking.append(detail)
     status = server_status(cfg)
-    rows.append({
-        "name": "model server",
-        "ok": bool(status["healthy"] and status["owned"]),
-        "detail": (
-            f"healthy owned server at {cfg.endpoint}" if status["healthy"] and status["owned"]
-            else status.get("note") or f"not running at {cfg.endpoint}"
-        ),
-    })
+    if is_hosted(cfg):
+        rows.append({
+            "name": "model server",
+            "ok": True,
+            "detail": f"not needed: {cfg.model_alias} runs on {provider_name(cfg)}'s servers",
+        })
+    else:
+        rows.append({
+            "name": "model server",
+            "ok": bool(status["healthy"] and status["owned"]),
+            "detail": (
+                f"healthy owned server at {cfg.endpoint}" if status["healthy"] and status["owned"]
+                else status.get("note") or f"not running at {cfg.endpoint}"
+            ),
+        })
     isolation = isolation_status()
     rows.append({"name": "isolated tests", "ok": isolation["ok"], "detail": isolation["detail"]})
     # Ordinary use is the general engine. Docker isolation is only required for
@@ -692,10 +720,12 @@ def readiness() -> dict[str, Any]:
 
 
 def ensure_server(*, wait_s: int = 300) -> dict[str, Any]:
-    """Start the owned local model if needed. Never adopt a foreign server."""
+    """Start the owned local model if needed. Never adopt a foreign server. A hosted model needs none."""
     apply_host_path()
     cfg = load_machine_config()
     status = server_status(cfg)
+    if is_hosted(cfg):
+        return {"ok": True, "started": False, "hosted": True, "status": status}
     if status["healthy"] and status["owned"]:
         return {"ok": True, "started": False, "status": status}
     if status["healthy"] and not status["owned"]:
@@ -909,6 +939,12 @@ def run_request(
 ) -> dict[str, Any]:
     """Run one bounded episode. Original files are not modified."""
     apply_host_path()
+    if is_hosted(load_machine_config()) and not str(profile_name).startswith("fake:"):
+        raise AppError(
+            "The older Python engine runs only models on this Mac. Pick a local model in "
+            "Settings, or switch the engine back to General.",
+            code="unsupported",
+        )
     folder = Path(repo).expanduser().resolve()
     inspection = inspect_legacy_project(folder)
     classified = classify_legacy_request(request, inspection)

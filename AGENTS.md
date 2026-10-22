@@ -12,6 +12,10 @@
    eight-generation Python FIND/PATCH/CHECK/DONE loop is a legacy path only.
    General-engine budgets are request wall-clock and generation ceilings in
    `general/budgets.py`, not the old four-file span cap.
+   One hosted model is also offered: NVIDIA's Nemotron 3.5 Super 120B
+   (`nemotron35-super` in the catalog), chosen explicitly in Settings. When it
+   is selected, talk and act calls go to NVIDIA instead of llama.cpp and no
+   local server starts. Nothing ever falls back between local and hosted.
 2. **Software owns truth.** Only the controller mutates `EpisodeState`. The model
    cannot write state, pick commands, or declare tests green. A model's "solved"
    is a validation request, nothing more.
@@ -43,7 +47,13 @@
 - `src/local_coder/profiles.py` — frozen named profiles (`d2` default, `d1`
   fallback). Never auto-switch a profile; resume refuses a mismatch.
 - `src/local_coder/machine.py` — machine-local config (`~/.config/local-coder`),
-  never committed, never contains secrets.
+  never committed, never contains secrets. A hosted model stores only its
+  provider, endpoint, and the *name* of its API key.
+- `src/local_coder/hosted.py` — the hosted-model client (NVIDIA). Reads the key
+  at request time from the environment or the Keychain item `key:<NAME>` (made
+  by Nico's `key` tool via /usr/bin/security, so no password prompt); the key
+  never reaches config, logs, events, or errors. Streams, then folds the reply
+  into llama.cpp's non-streaming shape; retries once only on a dropped/busy reply.
 - `src/local_coder/server.py` — server lifecycle with explicit ownership; never
   kill a process this tool did not start, never take over an occupied port.
 - `src/local_coder/cli.py` — installed `local-coder` entry point; `accept` is
