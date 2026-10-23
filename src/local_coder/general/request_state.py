@@ -5,10 +5,11 @@ they can never disagree. The flags live in the request's meta.json. A kept chang
 project, so "kept" wins when an old bug left both flags behind.
 
 A request can also be built on an older one that still waits: it ran on the project's sticky working
-copy while that copy held the older result (a hosted-agent run starts from the folder instead). That link
-is `built_on` in the newer request's meta.json. Keeping the newer request puts the older result into the
-project too, so the older request is closed by that Keep (`kept` plus `kept_with`); and the older one can
-not be kept or discarded on its own while the newer one still has changes to decide.
+copy while that copy held the older result, whichever engine it used (the hosted agent included). That
+link is `built_on` in the newer request's meta.json; a continuation carries it too, to the request it
+continues. Keeping the newer request puts the older result into the project too, so the older request is
+closed by that Keep (`kept` plus `kept_with`); and the older one can not be kept or discarded on its own
+while the newer one still has changes to decide.
 """
 from __future__ import annotations
 

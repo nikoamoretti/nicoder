@@ -284,8 +284,8 @@ def prepare_workspace(
     chat make folders. A request built on a result that still waits (`_open_request_in`) takes that
     result's baseline as its own instead: its diff and its Keep are then measured from one starting
     point, so what was changed in the folder meanwhile is neither shown as the model's work nor
-    reverted by Keep. `carry=False` starts from the folder as it is now, whatever result still waits:
-    the hosted agent does, and so does a continuation, which brings its own copy.
+    reverted by Keep. `carry=False` starts from the folder as it is now, whatever result still waits: a
+    continuation does, which brings its own copy and inherits no baseline.
     """
     user_path = user_path.expanduser().resolve()
     problem = folder_problem(user_path)
@@ -658,10 +658,10 @@ def run_general_request(
     except ModelIdentityError as exc:
         raise GeneralError(exc.detail, code=exc.code) from exc
     _emit(listener, "preparing", {"request_id": request_id})
-    # The engine is decided once, before the workspace is made: the agent starts from the folder, so its
-    # request never carries a waiting result (not even for a moment), and neither does a continuation.
+    # The engine is decided once. Every engine builds on the result that still waits in the working copy, the
+    # hosted agent included; only a continuation does not (it brings its own copy and inherits no baseline).
     use_agent = fake_engine is None and (agent_chat is not None or (fake_complete is None and _agent_capable()))
-    meta = prepare_workspace(folder, request_id, allow_starter=True, carry=not (use_agent or continue_from))
+    meta = prepare_workspace(folder, request_id, allow_starter=True, carry=not continue_from)
     meta["title"] = _title_line(text)
     _emit(listener, "activity", {"detail": "Working copy is ready."})
     candidate = Path(meta["candidate"])
@@ -864,8 +864,12 @@ def _run_agent_request(
     request_root = Path(meta["baseline"]).parent
     baseline = Path(meta["baseline"])
     if fresh:
-        # Start from the user's folder as it is now; node_modules in the live copy stay.
-        sync_source_tree(baseline, engine_cwd)
+        # Start in the project as this request is measured from it, whatever the workspace left in the copy: the
+        # result this request is built on (copied, never linked: the agent writes into this copy and that
+        # result's candidate is evidence), else the folder as it is now. Never skipped: the workspace has just
+        # rewritten the copy for Local Coder's preview (SWC), and that must not reach the review or Keep.
+        # node_modules in the live copy stay.
+        sync_source_tree(_agent_start_tree(meta, baseline), engine_cwd)
     session = build_session(
         project=folder,
         workdir=engine_cwd,
@@ -926,6 +930,18 @@ def _run_agent_request(
         session.save(request_root / "agent_transcript.json", status=run.status)
         shutil.rmtree(request_root / "agent-tmp", ignore_errors=True)
         _save_meta(meta)
+
+
+def _agent_start_tree(meta: dict[str, Any], baseline: Path) -> Path:
+    """The tree the agent's working copy starts as: the candidate of the waiting result this request is built on,
+    else the baseline. A missing candidate stops the run: syncing from nothing would empty the working copy."""
+    older = meta.get(BUILT_ON)
+    if not older:
+        return baseline
+    candidate = request_dir(str(meta["project_id"]), str(older)) / "candidate"
+    if not candidate.is_dir():
+        raise RuntimeError(f"the result this request is built on is gone: {candidate}")
+    return candidate
 
 
 def _bound_complete(
