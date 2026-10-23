@@ -108,15 +108,21 @@
   Evidence (`meta.json`, `candidate/`) stays on disk. A cancelled run ends with
   one `stopped` event, never `done`. A request starts the sticky copy from the folder
   as it is now, unless it is built on an older request that still waits (`built_on`
-  in its meta.json, found by comparing the copy with that request's result; a
-  hosted-agent run always starts from the folder). Such a request takes that
+  in its meta.json, found by comparing the copy with that request's result). Every
+  engine does this, the hosted agent included: its agent starts in the copy as that
+  result left it (`_run_agent_request` re-syncs the copy from that request's
+  candidate, copied and never linked, else from the baseline; the re-sync stays
+  because it undoes the preview's SWC rewrite of `package.json` and
+  `vite.config.ts`, which Keep must never write). Such a request takes that
   result's baseline as its own (`baseline/` and `baseline.json` copied whole; if
   either is damaged it starts from the folder instead), so its diff and its Keep
   are measured from one starting point: what Nico changed in the folder meanwhile
   is not shown as the model's work and Keep never reverts it, and a file he and
   the stack both changed makes Keep refuse (`conflict`) and write nothing (file
-  renames excepted until the `keep-renames` cut). The
-  hosted agent and `continue_from` never inherit a baseline, and
+  renames excepted until the `keep-renames` cut). Known limit: what he edited
+  after the first request started is not in the copy a follow-up's agent works
+  on (Keep still refuses a real clash). A continuation (`continue_from`) never
+  inherits a baseline, and
   `run_general_request` decides the engine once, before the workspace is made
   (`prepare_workspace(carry=...)`). Keeping a request closes the older
   ones it was built on as kept (`kept_with`: "These changes went in with a later
