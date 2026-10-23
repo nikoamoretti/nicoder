@@ -1357,6 +1357,19 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     meta = load_meta(project_id, request_id)
     if request_state(meta) == DISCARDED:
         raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
+    problem = folder_problem(user_path)
+    if problem:
+        # Keep must never make the folder again, and must not blame "changed files" for a missing one.
+        name = Path(user_path).expanduser().resolve().name
+        if problem["verdict"] == "missing":
+            raise GeneralError(
+                f"The folder “{name}” is gone, so there is nowhere to keep these changes.",
+                code="folder_gone",
+            )
+        raise GeneralError(
+            f"“{name}” is a file, not a folder, so there is nowhere to keep these changes.",
+            code=problem["verdict"],
+        )
     result = apply_delta(Path(user_path), Path(meta["baseline"]), Path(meta["candidate"]))
     if not result.get("ok"):
         raise GeneralError(str(result.get("detail") or "Keep failed."), code=str(result.get("code") or "accept"))

@@ -18,8 +18,10 @@ from local_coder.app_service import AppRuntime, classify_request, inspect_projec
 from local_coder.engines.opencode_config import data_root
 from local_coder.general.coordinator import (
     GeneralError,
+    keep_request,
     list_requests,
     prepare_workspace,
+    review_payload,
     run_general_request,
 )
 
@@ -166,3 +168,61 @@ def test_looking_things_up_for_a_gone_folder_creates_nothing(gone_folder):
         snapshot("req-nope", repo=gone_folder)
     assert _request_folders() == []
     assert not (data_root() / "projects").exists()
+
+
+# --- Fix A: Keep into a folder that is gone ------------------------------------------------------------------
+
+
+@pytest.fixture
+def ts_project(tmp_path):
+    project = tmp_path / "web"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
+    (project / "package.json").write_text('{"name":"web"}\n', encoding="utf-8")
+    return project
+
+
+def _waiting_result(project: Path, name: str, *, add: bool) -> dict:
+    def engine(candidate: Path, _text: str, _cancel) -> None:
+        if add:
+            (candidate / "src" / "b.ts").write_text("export const b = 2\n", encoding="utf-8")
+        else:
+            (candidate / "src" / "a.ts").write_text("export const a = 'changed'\n", encoding="utf-8")
+
+    return run_general_request(project, "change it", request_id=name, fake_engine=engine, start_preview_after=False)
+
+
+@pytest.mark.parametrize("add", [True, False], ids=["adds-a-file", "modifies-a-file"])
+def test_keep_refuses_when_the_folder_is_gone(ts_project, add):
+    review = _waiting_result(ts_project, "req-keep-gone", add=add)
+    assert review["can_keep"] is True
+    shutil.rmtree(ts_project)
+    with pytest.raises(GeneralError) as raised:
+        keep_request(review["project_id"], "req-keep-gone", ts_project)
+    assert raised.value.code == "folder_gone"
+    assert "gone" in raised.value.detail and ts_project.name in raised.value.detail
+    assert "Some files changed" not in raised.value.detail
+    assert not ts_project.exists(), "Keep must not recreate the folder"
+    # The waiting result stays on disk and can still be read.
+    candidate = data_root() / "projects" / review["project_id"] / "requests" / "req-keep-gone" / "candidate"
+    assert candidate.is_dir()
+    after = review_payload(review["project_id"], "req-keep-gone")
+    assert after["can_keep"] is True and after["facts"]["files"]
+
+
+def test_keep_refuses_when_the_folder_was_replaced_by_a_file(ts_project):
+    review = _waiting_result(ts_project, "req-keep-file", add=True)
+    shutil.rmtree(ts_project)
+    ts_project.write_text("now a file\n", encoding="utf-8")
+    with pytest.raises(GeneralError) as raised:
+        keep_request(review["project_id"], "req-keep-file", ts_project)
+    assert raised.value.code == "not_a_folder"
+    assert "is a file, not a folder" in raised.value.detail
+    assert ts_project.read_text(encoding="utf-8") == "now a file\n"
+
+
+def test_keep_still_works_when_the_folder_is_there(ts_project):
+    review = _waiting_result(ts_project, "req-keep-ok", add=True)
+    kept = keep_request(review["project_id"], "req-keep-ok", ts_project)
+    assert kept["ok"] is True and kept["applied"] == ["src/b.ts"]
+    assert (ts_project / "src" / "b.ts").read_text(encoding="utf-8") == "export const b = 2\n"
