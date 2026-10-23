@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 
 from local_coder.app_service import discard_changes, keep_changes, snapshot
+from local_coder.engines.opencode_config import data_root
 from local_coder.general.coordinator import (
     GeneralError,
     list_requests,
-    project_dir,
     request_dir,
     review_payload,
     run_general_request,
@@ -68,7 +68,7 @@ def test_a_second_keep_is_refused_and_does_not_blame_changed_files(project):
 def test_discard_after_keep_is_refused_and_the_kept_change_stays(project):
     review = _run(project, "req-1")
     keep_changes("req-1", project)
-    live = project_dir(review["project_id"]) / "live" / "candidate" / "src" / "a.ts"
+    live = data_root() / "projects" / review["project_id"] / "live" / "candidate" / "src" / "a.ts"
     with pytest.raises(GeneralError) as raised:
         discard_changes("req-1", repo=project)
     assert raised.value.code == "kept"

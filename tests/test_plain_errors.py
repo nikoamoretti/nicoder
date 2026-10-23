@@ -17,15 +17,14 @@ from pathlib import Path
 
 import pytest
 
-from local_coder import errorlog
 from local_coder.app_rpc import RpcServer
 from local_coder.app_service import AppRuntime, classify_request, inspect_project
 from local_coder.engines.opencode_config import data_root
-from local_coder.errorlog import UNEXPECTED, record_error
 from local_coder.general.coordinator import GeneralError, run_general_request
 
 from .conftest import TICKET_FILE
 
+LOG_NAME = "helper-errors.log"
 # What a person must never read in an error: Python's own words.
 RAW = re.compile(r'Traceback|Errno|File "|\.py\b|\b[A-Za-z]*(?:Error|Exception)\b')
 
@@ -42,7 +41,7 @@ def _rpc():
 
 
 def _log_text() -> str:
-    path = data_root() / "logs" / errorlog.LOG_NAME
+    path = data_root() / "logs" / LOG_NAME
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
@@ -116,9 +115,11 @@ def test_a_call_that_fails_unexpectedly_gets_one_plain_sentence(capfd):
     reply = server.dispatch({"id": "1", "method": "inspect_project", "params": {}})
     assert reply["ok"] is False
     assert reply["error"]["code"] == "internal"
-    assert reply["error"]["detail"] == UNEXPECTED
     _assert_plain(reply["error"]["detail"])
     assert "Traceback" not in json.dumps(reply)
+    from local_coder.errorlog import UNEXPECTED
+
+    assert reply["error"]["detail"] == UNEXPECTED
     stderr = capfd.readouterr().err
     assert "Traceback" in stderr and "KeyError" in stderr, "the raw text goes to the helper's stderr"
     logged = _log_text()
@@ -136,6 +137,9 @@ def test_a_missing_file_gets_a_plain_sentence(capfd):
 
 
 def test_the_error_log_is_private_and_stays_small(tmp_path):
+    from local_coder import errorlog
+    from local_coder.errorlog import record_error
+
     record_error("test", ValueError("first"))
     path = data_root() / "logs" / errorlog.LOG_NAME
     assert path.stat().st_mode & 0o777 == 0o600
@@ -147,6 +151,8 @@ def test_the_error_log_is_private_and_stays_small(tmp_path):
 
 
 def test_the_error_log_never_raises(tmp_path, monkeypatch):
+    from local_coder.errorlog import record_error
+
     blocker = tmp_path / "not-a-folder"
     blocker.write_text("file", encoding="utf-8")
     monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(blocker))
@@ -175,10 +181,13 @@ def test_a_worker_failure_is_one_plain_sentence_and_not_a_done(repo_copy, monkey
     runtime, events = _run_worker(repo_copy)
     errors = [event for event in events if event["type"] == "app_error"]
     assert len(errors) == 1
+    assert errors[0]["data"]["code"] == "runtime"
+    _assert_plain(errors[0]["data"]["detail"])
+    assert all(event["type"] not in {"done", "stopped"} for event in events), "a failure is not a finished attempt"
+    from local_coder.errorlog import UNEXPECTED
+
     assert errors[0]["data"] == {"detail": UNEXPECTED, "code": "runtime"}
     assert errors[0]["detail"] == UNEXPECTED
-    _assert_plain(errors[0]["detail"])
-    assert all(event["type"] not in {"done", "stopped"} for event in events), "a failure is not a finished attempt"
     assert runtime.last_error == UNEXPECTED and runtime.is_running() is False
     assert "No space left on device" in capfd.readouterr().err
     assert "No space left on device" in _log_text()

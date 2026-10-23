@@ -22,14 +22,7 @@ from local_coder.agent.tools import ToolBox
 from local_coder.app_service import chat_request, discard_changes, keep_changes, load_prefs
 from local_coder.engines.opencode_config import data_root
 from local_coder.general.chat_log import load_chat
-from local_coder.general.coordinator import (
-    _request_running,
-    project_dir,
-    project_id_for,
-    request_dir,
-    run_general_request,
-)
-from local_coder.general.waiting import age_text, find_waiting_result, waiting_note
+from local_coder.general.coordinator import project_id_for, request_dir, run_general_request
 
 QUESTION = "Did the fix work? What does add(2, 3) return now with the code in src/calc.py?"
 OLD = "def add(a, b):\n    return a - b\n"
@@ -233,7 +226,7 @@ def test_open_project_refuses_a_path_under_the_data_root(home, calc):
     box = ToolBox(
         AccessPolicy(home=home, project=calc), cwd=calc, run_tmp=home / "tmp", allow_open_project=True,
     )
-    for path in (candidate, data_root(), project_dir(review["project_id"])):
+    for path in (candidate, data_root(), data_root() / "projects" / review["project_id"]):
         outcome = box.call("open_project", {"path": str(path)})
         assert outcome.ok is False, path
         assert "not a project" in outcome.text
@@ -275,6 +268,8 @@ def test_the_note_follows_the_state_of_the_project(calc, monkeypatch):
 
 
 def test_the_newest_open_request_that_changed_files_is_the_waiting_one(calc):
+    from local_coder.general.waiting import find_waiting_result
+
     _fix(calc, "req-old")
     time.sleep(0.01)
     # A later request that only answered (changed no files) does not hide the older waiting result.
@@ -296,6 +291,9 @@ def test_the_newest_open_request_that_changed_files_is_the_waiting_one(calc):
 
 
 def test_nothing_is_waiting_while_a_request_is_still_running(calc):
+    from local_coder.general.coordinator import _request_running
+    from local_coder.general.waiting import find_waiting_result
+
     _fix(calc)
     with _request_running(project_id_for(calc)):
         assert find_waiting_result(calc) is None
@@ -303,6 +301,8 @@ def test_nothing_is_waiting_while_a_request_is_still_running(calc):
 
 
 def test_a_bad_record_never_fails_a_question(calc, monkeypatch):
+    from local_coder.general.waiting import waiting_note
+
     review = _fix(calc)
     (request_dir(review["project_id"], "req-fix") / "meta.json").write_text("{not json", encoding="utf-8")
     recorder = Recorder(_reply("Okay."))
@@ -322,6 +322,8 @@ def test_asking_about_a_project_with_no_record_creates_nothing(calc, monkeypatch
 
 
 def test_age_reads_in_plain_words():
+    from local_coder.general.waiting import age_text
+
     assert age_text(5) == "just now"
     assert age_text(60) == "1 minute ago"
     assert age_text(5 * 60) == "5 minutes ago"

@@ -12,13 +12,12 @@ from pathlib import Path
 import pytest
 
 from local_coder.app_service import discard_changes, keep_changes, snapshot
+from local_coder.engines.opencode_config import data_root
 from local_coder.general.coordinator import (
     GeneralError,
-    _request_running,
     discard_request,
     keep_request,
     list_requests,
-    project_dir,
     request_dir,
     review_payload,
     run_general_request,
@@ -139,7 +138,7 @@ def test_a_discarded_change_does_not_come_back_through_the_local_model_path(proj
 
 def test_resetting_the_working_copy_leaves_installed_packages_alone(project):
     review = _run(project, "req-1")
-    live = project_dir(review["project_id"]) / "live" / "candidate"
+    live = data_root() / "projects" / review["project_id"] / "live" / "candidate"
     (live / "node_modules" / "pkg").mkdir(parents=True)
     (live / "node_modules" / "pkg" / "index.js").write_text("module.exports = 1\n", encoding="utf-8")
     discard_changes("req-1", repo=project)
@@ -157,6 +156,8 @@ def test_discarding_twice_changes_nothing_the_second_time(project):
 
 
 def test_discard_waits_for_a_request_that_is_running_in_the_project(project):
+    from local_coder.general.coordinator import _request_running
+
     review = _run(project, "req-1")
     with _request_running(review["project_id"]), pytest.raises(GeneralError) as raised:
         discard_changes("req-1", repo=project)
