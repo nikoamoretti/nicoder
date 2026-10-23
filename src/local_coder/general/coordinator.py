@@ -50,7 +50,7 @@ from local_coder.general.repair_context import (
     invalidate_views,
     write_repair_state,
 )
-from local_coder.general.request_state import DISCARDED, WAITING, request_outcome, request_state
+from local_coder.general.request_state import DISCARDED, KEPT, WAITING, request_outcome, request_state
 from local_coder.general.snapshot import (
     Delta,
     TreeIndex,
@@ -1206,6 +1206,7 @@ def _has_file_changes(before: Path, after: Path) -> bool:
 
 
 DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
+KEPT_SUMMARY = "These changes are in your project."
 
 
 def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -> dict[str, Any]:
@@ -1312,6 +1313,10 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         stored = raw_verification
     if stored.get("preview") in {"ok", "failed", "not_run"}:
         preview_status = str(stored.get("preview") or preview_status)
+    if state == KEPT:
+        # What the model said before Keep ("the original project is unchanged...") is no longer true.
+        summary = KEPT_SUMMARY
+        commentary = None
     engine = str(meta.get("engine") or "local")
     return {
         "kind": "code",
@@ -1331,6 +1336,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "model_id": meta.get("model_id"),
             "provider": meta.get("provider") or "local",
             "pin": meta.get("pin") or pin_record(),
+            "outcome": request_outcome(meta),
         },
         "can_keep": state == WAITING and bool(files),
         "can_discard": state == WAITING and bool(files),
@@ -1355,8 +1361,11 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
 def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dict[str, Any]:
     """Apply B→C onto the current user tree. Not an OpenCode revert."""
     meta = load_meta(project_id, request_id)
-    if request_state(meta) == DISCARDED:
+    state = request_state(meta)
+    if state == DISCARDED:
         raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
+    if state == KEPT:
+        raise GeneralError("These changes are already in your project.", code="kept")
     problem = folder_problem(user_path)
     if problem:
         # Keep must never make the folder again, and must not blame "changed files" for a missing one.
@@ -1394,7 +1403,12 @@ def _reset_live_copy(meta: dict[str, Any]) -> None:
 def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
     """Close the request without keeping it. Evidence (meta.json, candidate/) stays on disk."""
     meta = load_meta(project_id, request_id)
-    if request_state(meta) == DISCARDED:
+    state = request_state(meta)
+    if state == KEPT:
+        raise GeneralError(
+            "These changes are already in your project, so they cannot be discarded.", code="kept",
+        )
+    if state == DISCARDED:
         return {"ok": True, "discarded": True, "request_id": request_id, "detail": "Already discarded."}
     if _request_in_flight(project_id):
         raise GeneralError(
