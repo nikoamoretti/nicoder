@@ -209,6 +209,18 @@ final class AppModel: ObservableObject {
         snapshot?["cost_usd"] as? Double
     }
 
+    /// The engine's one sentence about the result, when it has one.
+    var snapshotSummary: String? {
+        guard let text = (snapshot?["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// The newer request that has to be decided first, when this result is held back by it.
+    var blockedBy: String? {
+        snapshot?["blocked_by"] as? String
+    }
+
     var hasChanges: Bool {
         !changedFiles.isEmpty || !diffText.isEmpty
     }

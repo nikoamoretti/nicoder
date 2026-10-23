@@ -145,8 +145,10 @@
   summary with cost, the answer as prose), a Changes inspector (files, diff,
   checks, preview, Keep/Discard), a glass composer with the model menu and the
   reasoning switch, the OrcaRouter model browser and connect sheet, and a
-  Settings window. New Chat archives the old transcript
-  (`chats/archive/`); closing a project never stops a run or clears its chat.
+  Settings window. A kept request, or one held back by a newer request, has no
+  Keep/Discard bar: a strip with the engine's sentence and the cost takes its
+  place. New Chat archives the old transcript (`chats/archive/`); closing a
+  project never stops a run or clears its chat.
   `LOCAL_CODER_UI_PROBE=1` at launch lets a script open views (never change
   state); `macos/scripts/ui_snapshots/snapshots.sh <dir>` renders every screen
   offscreen with sample data.

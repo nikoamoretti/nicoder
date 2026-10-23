@@ -184,24 +184,44 @@ MainActor.assumeIsolated {
 
     // 1b. After Discard: the request is closed. No "files changed" pill under the answer; the inspector
     // says "No Changes" and has no Keep or Discard bar.
-    model.snapshot = [
+    let discarded: [String: Any] = [
         "episode_id": "demo", "diff": "", "can_keep": false, "can_discard": false, "outcome": "discarded",
         "summary": "Discarded. These changes were not added to your project.", "cost_usd": 0.041,
         "facts": ["files": [String](),
                   "delta": ["added": [String](), "modified": [String](), "deleted": [String](), "renamed": [Any]()]],
         "verification": ["build": "not_run", "typecheck": "not_run", "tests": "not_run", "preview": "not_run"],
     ]
+    model.snapshot = discarded
     model.inspectorShown = true
     capture(main, "10a-after-discard")
 
-    // 1c. After Keep: the change is in the project. The diff stays, but there is no pill and no Keep or Discard bar.
+    // 1c. After Keep: the change is in the project. The diff stays, but there is no pill and no Keep or Discard bar;
+    // a strip in the bar's place carries the engine's sentence and the cost.
     var kept = finished
     kept["can_keep"] = false
     kept["can_discard"] = false
     kept["outcome"] = "kept"
+    kept["summary"] = "These changes are in your project."
     model.snapshot = kept
     model.inspectorShown = true
     capture(main, "10b-after-keep")
+
+    // 1d. An older request held back by a newer one built on it (opened from History): its files and diff show, but
+    // neither Keep nor Discard is offered, so the strip says what to do instead.
+    var blocked = finished
+    blocked["can_keep"] = false
+    blocked["can_discard"] = false
+    blocked["outcome"] = "review"
+    blocked["blocked_by"] = "req-2"
+    blocked["summary"] = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
+    model.snapshot = blocked
+    model.inspectorShown = true
+    capture(main, "10c-blocked-older-request")
+
+    // 1e. The same while the newer request is still running (the longer sentence).
+    blocked["summary"] = "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
+    model.snapshot = blocked
+    capture(main, "10c-blocked-older-request-running")
 
     // 2. A run in progress.
     model.inspectorShown = false

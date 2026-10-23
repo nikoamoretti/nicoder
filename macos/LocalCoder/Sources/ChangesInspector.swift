@@ -44,9 +44,14 @@ struct ChangesInspector: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            // Only while a result with changes still waits: after Keep or Discard the request is closed.
-            if model.hasChanges && (model.canKeep || model.canDiscard) {
-                ReviewBar()
+            // Keep and Discard only while a result still waits. Once the request is closed (kept) or held back
+            // by a newer one, its files still show, so the strip says why there is no bar.
+            if model.hasChanges {
+                if model.canKeep || model.canDiscard {
+                    ReviewBar()
+                } else {
+                    ReviewNote()
+                }
             }
         }
         .onChange(of: model.previewURL) { _, url in
@@ -229,11 +234,7 @@ private struct ReviewBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let cost = model.requestCost {
-                Text("This change cost \(TraceSummary.cost(cost)).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            CostCaption()
             HStack(spacing: 10) {
                 Button("Discard", role: .destructive) { model.discard() }
                     .disabled(!model.canDiscard)
@@ -255,6 +256,41 @@ private struct ReviewBar: View {
         }
         .padding(14)
         .background(.bar)
+    }
+}
+
+/// The bar's place once there is nothing to decide: the engine's sentence (kept, or held back by a newer request)
+/// and the cost, in the bar's own chrome.
+private struct ReviewNote: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if model.snapshotSummary != nil || model.requestCost != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                if let summary = model.snapshotSummary {
+                    Text(summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                CostCaption()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(.bar)
+            .accessibilityIdentifier(model.blockedBy == nil ? "reviewNote" : "reviewNoteBlocked")
+        }
+    }
+}
+
+private struct CostCaption: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if let cost = model.requestCost {
+            Text("This change cost \(TraceSummary.cost(cost)).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
