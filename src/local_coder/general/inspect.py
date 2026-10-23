@@ -61,6 +61,28 @@ _QUESTION = re.compile(
 _MOBILE_HINT = ("swiftui", "uikit", "xcode project", "android studio", "kotlin android")
 
 
+def folder_problem(path: str | Path) -> dict[str, str] | None:
+    """Why this path cannot be a project folder, in plain words, or None when it can be one.
+
+    Cheap on purpose (no scan of the project), so a request can ask before it starts anything.
+    Local Coder never creates a folder for an old project: only New Project and the welcome
+    chat make folders.
+    """
+    repo = Path(path).expanduser().resolve()
+    name = repo.name or str(repo)
+    if not repo.exists():
+        return {
+            "verdict": "missing",
+            "summary": f"The folder “{name}” is gone. Open another project or start a new one.",
+        }
+    if not repo.is_dir():
+        return {
+            "verdict": "not_a_folder",
+            "summary": f"“{name}” is a file, not a folder. Open a project folder or start a new one.",
+        }
+    return None
+
+
 def inspect_project(path: str | Path) -> dict[str, Any]:
     """Describe what this folder is and what is missing. Does not refuse JS or dirty trees."""
     repo = Path(path).expanduser().resolve()
@@ -89,14 +111,11 @@ def inspect_project(path: str | Path) -> dict[str, Any]:
         "can_preview": False,
         "exclusions": ["node_modules", "dist", "build", ".git", ".venv", ".env", "secrets"],
     }
-    if not repo.exists():
-        report["can_create"] = True
-        report["summary"] = "This folder does not exist yet. You can create a new project here."
-        report["issues"].append({"code": "missing", "message": report["summary"], "blocking": False})
-        return report
-    if not repo.is_dir():
-        report["summary"] = "That path is a file, not a folder."
-        report["issues"].append({"code": "not_a_folder", "message": report["summary"], "blocking": True})
+    problem = folder_problem(repo)
+    if problem:
+        report["verdict"] = problem["verdict"]
+        report["summary"] = problem["summary"]
+        report["issues"].append({"code": problem["verdict"], "message": problem["summary"], "blocking": True})
         return report
 
     python_files = _count_by_suffix(repo, (".py",))
@@ -219,11 +238,8 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
     if not request:
         return {"kind": "empty", "summary": "Write what you would like to build or change.",
                 "detail": "The request box is empty."}
-    if inspection and inspection.get("verdict") == "missing" and not inspection.get("can_create"):
-        if inspection.get("exists") is False:
-            return {"kind": "code", "summary": "This will create a new project from your description.",
-                    "detail": "A blank starter can be prepared; the local model writes the application."}
-        return {"kind": "empty", "summary": inspection.get("summary") or "That folder is not available.",
+    if inspection and inspection.get("supported") is False:
+        return {"kind": "unsupported", "summary": inspection.get("summary") or "That folder is not available.",
                 "detail": inspection.get("verdict")}
     if asked_to_see_ui(request):
         return {"kind": "chat", "summary": "This will answer in chat without editing files.",
@@ -241,9 +257,6 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
             )
             result["detail"] = "The request will still be attempted, with that limit shown."
             result["limited"] = True
-        elif inspection and not inspection.get("exists"):
-            result["summary"] = "This will create a new project from your description."
-            result["detail"] = "A blank starter can be prepared; the local model writes the application."
         return result
     if _LOOK.search(request):
         return {"kind": "explain", "summary": "This will look up the selected code and stay read-only.",

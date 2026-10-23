@@ -986,10 +986,9 @@ def snapshot(episode_id: str, store: EpisodeStore | None = None,
              repo: str | Path | None = None) -> dict[str, Any]:
     """Controller-owned review payload for the UI."""
     if repo is not None:
-        from local_coder.general.coordinator import project_id_for, request_dir, review_payload
+        from local_coder.general.coordinator import project_id_for, request_meta_path, review_payload
 
-        meta = request_dir(project_id_for(Path(repo)), episode_id) / "meta.json"
-        if meta.exists():
+        if request_meta_path(project_id_for(Path(repo)), episode_id).exists():
             return review_payload(project_id_for(Path(repo)), episode_id)
     store = store or episode_store()
     state = store.load_state(episode_id)
@@ -1185,11 +1184,10 @@ def run_request(
 
 def keep_changes(episode_id: str, repo: str | Path, store: EpisodeStore | None = None) -> dict[str, Any]:
     """Accept a general request or a legacy episode."""
-    from local_coder.general.coordinator import keep_request, project_id_for, request_dir
+    from local_coder.general.coordinator import keep_request, project_id_for, request_meta_path
 
     folder = Path(repo)
-    meta = request_dir(project_id_for(folder), episode_id) / "meta.json"
-    if meta.exists():
+    if request_meta_path(project_id_for(folder), episode_id).exists():
         return keep_request(project_id_for(folder), episode_id, folder)
     store = store or episode_store()
     result = accept_mod.accept_episode(store, episode_id, Path(repo))
@@ -1202,10 +1200,9 @@ def discard_changes(episode_id: str, store: EpisodeStore | None = None,
                     repo: str | Path | None = None) -> dict[str, Any]:
     """Discard the candidate. Evidence stays."""
     if repo is not None:
-        from local_coder.general.coordinator import discard_request, project_id_for, request_dir
+        from local_coder.general.coordinator import discard_request, project_id_for, request_meta_path
 
-        meta = request_dir(project_id_for(Path(repo)), episode_id) / "meta.json"
-        if meta.exists():
+        if request_meta_path(project_id_for(Path(repo)), episode_id).exists():
             return discard_request(project_id_for(Path(repo)), episode_id)
     store = store or episode_store()
     return accept_mod.discard_episode(store, episode_id)
@@ -1250,6 +1247,11 @@ class AppRuntime:
                       continue_from: str | None = None,
                       wall_seconds: int | None = None) -> dict[str, Any]:
         """Start a request on a worker thread and return immediately."""
+        from local_coder.general.inspect import folder_problem
+
+        problem = folder_problem(repo)
+        if problem:
+            raise AppError(problem["summary"], code=problem["verdict"])
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise AppError("A request is already running.", code="busy")

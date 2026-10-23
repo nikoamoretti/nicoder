@@ -36,7 +36,7 @@ from local_coder.general.direct_write import (
     local_complete,
     reply_prose,
 )
-from local_coder.general.inspect import classify_request, inspect_project
+from local_coder.general.inspect import classify_request, folder_problem, inspect_project
 from local_coder.general.notebook import update_notebook
 from local_coder.general.preview import check_preview_health, start_preview, stop_preview, write_preview_record
 from local_coder.general.repair_context import (
@@ -141,8 +141,13 @@ def project_id_for(path: Path) -> str:
     return f"{path.resolve().name}-{digest}"
 
 
+def project_dir(project_id: str) -> Path:
+    """The project's folder under the data root. Creates nothing: reading must not leave folders behind."""
+    return data_root() / "projects" / project_id
+
+
 def work_root(project_id: str) -> Path:
-    path = data_root() / "projects" / project_id
+    path = project_dir(project_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -151,6 +156,11 @@ def request_dir(project_id: str, request_id: str) -> Path:
     path = work_root(project_id) / "requests" / request_id
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def request_meta_path(project_id: str, request_id: str) -> Path:
+    """Where a request's meta.json is, or would be. Creates nothing."""
+    return project_dir(project_id) / "requests" / request_id / "meta.json"
 
 
 def _emit(listener: EventListener | None, event_type: str, data: dict[str, Any] | None = None) -> None:
@@ -196,14 +206,20 @@ def live_dir(project_id: str) -> Path:
 
 
 def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) -> dict[str, Any]:
-    """Snapshot the current user tree, including uncommitted work."""
+    """Snapshot the current user tree, including uncommitted work.
+
+    The folder must already exist: a request never creates it. Only New Project and the welcome
+    chat make folders.
+    """
     user_path = user_path.expanduser().resolve()
+    problem = folder_problem(user_path)
+    if problem:
+        raise GeneralError(problem["summary"], code=problem["verdict"])
     pid = project_id_for(user_path)
     root = request_dir(pid, request_id)
     baseline = root / "baseline"
     candidate = root / "candidate"
     live_candidate = live_dir(pid) / "candidate"
-    user_path.mkdir(parents=True, exist_ok=True)
     empty = not any(user_path.iterdir())
     starter_used = False
     if empty and allow_starter:
@@ -341,8 +357,7 @@ def _align_continuation(meta: dict[str, Any], continue_from: str) -> None:
 
 
 def load_meta(project_id: str, request_id: str) -> dict[str, Any]:
-    path = request_dir(project_id, request_id) / "meta.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(request_meta_path(project_id, request_id).read_text(encoding="utf-8"))
 
 
 def ensure_model_server() -> dict[str, Any]:
@@ -391,6 +406,9 @@ def run_general_request(
     agent edits the working copy with tools instead of the file-block path.
     """
     folder = Path(user_path).expanduser().resolve()
+    problem = folder_problem(folder)
+    if problem:
+        raise GeneralError(problem["summary"], code=problem["verdict"])
     inspection = inspect_project(folder)
     classified = classify_request(text, inspection)
     if classified["kind"] == "empty":
@@ -1281,7 +1299,7 @@ def cancel_active() -> dict[str, Any]:
 
 def list_requests(user_path: str | Path) -> list[dict[str, Any]]:
     pid = project_id_for(Path(user_path))
-    root = work_root(pid) / "requests"
+    root = project_dir(pid) / "requests"
     rows: list[dict[str, Any]] = []
     if not root.exists():
         return rows
