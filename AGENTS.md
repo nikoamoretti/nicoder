@@ -106,7 +106,13 @@
   refuses a discarded request, `discard` refuses a kept one, and Discard puts the
   project's sticky working copy (`live/candidate`) back to the request's baseline.
   Evidence (`meta.json`, `candidate/`) stays on disk. A cancelled run ends with
-  one `stopped` event, never `done`.
+  one `stopped` event, never `done`. A request can be built on an older request that
+  still waits (`built_on` in its meta.json, found by comparing the sticky working
+  copy with that request's result; a hosted-agent run starts from the folder and has
+  none). Keeping a request closes the older ones it was built on as kept
+  (`kept_with`: "These changes went in with a later request you kept."); while a
+  newer request built on it still has changes to decide, an older one can be neither
+  kept nor discarded.
 - `src/local_coder/general/waiting.py` — a question asked while a result waits
   for Keep or Discard gets a note built from the request's own record (title,
   age, files, "not in the folder yet", and for the agent where to read the

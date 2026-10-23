@@ -17,9 +17,10 @@ from local_coder.general.coordinator import (
     _title_from_transcript,
     project_dir,
     project_id_for,
+    request_delta,
 )
 from local_coder.general.request_state import WAITING, request_state
-from local_coder.general.snapshot import Delta, compute_delta, index_tree, read_index
+from local_coder.general.snapshot import Delta
 
 # Only the newest few open requests are looked at; most have no files (a question, a stop before any write).
 LOOK_AT = 5
@@ -39,17 +40,6 @@ class WaitingResult:
     @property
     def files(self) -> list[str]:
         return sorted(self.delta.touched())
-
-
-def _delta_of(meta: dict[str, object]) -> Delta | None:
-    """What the request changed: its frozen baseline against its candidate (meta.json keeps no file list)."""
-    baseline = Path(str(meta["baseline"]))
-    candidate = Path(str(meta["candidate"]))
-    frozen = baseline.parent / "baseline.json"
-    if not candidate.is_dir() or not (frozen.is_file() or baseline.is_dir()):
-        return None
-    before = read_index(frozen) if frozen.is_file() else index_tree(baseline)
-    return compute_delta(before, index_tree(candidate))
 
 
 def find_waiting_result(user_path: str | Path) -> WaitingResult | None:
@@ -74,7 +64,7 @@ def find_waiting_result(user_path: str | Path) -> WaitingResult | None:
             open_requests.append((float(meta.get("created_ts") or 0), entry, meta))
     open_requests.sort(key=lambda row: row[0], reverse=True)
     for created, entry, meta in open_requests[:LOOK_AT]:
-        delta = _delta_of(meta)
+        delta = request_delta(meta)
         if delta is not None and delta.touched():
             title = str(meta.get("title") or "").strip() or _title_from_transcript(entry)
             return WaitingResult(

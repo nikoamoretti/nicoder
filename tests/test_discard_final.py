@@ -180,4 +180,6 @@ def test_a_running_request_marks_its_project_while_the_engine_works(project):
 
     run_general_request(project, "add b", request_id="req-new", fake_engine=engine, start_preview_after=False)
     assert seen == ["busy"]
-    assert discard_request(older["project_id"], "req-old")["discarded"] is True, "idle again afterwards"
+    # Idle again afterwards. The new request is built on the old one, so it is decided first.
+    assert discard_request(older["project_id"], "req-new")["discarded"] is True
+    assert discard_request(older["project_id"], "req-old")["discarded"] is True

@@ -51,7 +51,17 @@ from local_coder.general.repair_context import (
     invalidate_views,
     write_repair_state,
 )
-from local_coder.general.request_state import DISCARDED, KEPT, WAITING, request_outcome, request_state
+from local_coder.general.request_state import (
+    BUILT_ON,
+    DISCARDED,
+    KEPT,
+    KEPT_WITH,
+    WAITING,
+    built_on,
+    request_outcome,
+    request_state,
+    waiting_on_top,
+)
 from local_coder.general.snapshot import (
     Delta,
     TreeIndex,
@@ -264,6 +274,7 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
     baseline = root / "baseline"
     candidate = root / "candidate"
     live_candidate = live_dir(pid) / "candidate"
+    carried = _open_request_in(pid, request_id, live_candidate)
     empty = not any(user_path.iterdir())
     starter_used = False
     if empty and allow_starter:
@@ -291,6 +302,8 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
         "engine": "local",
         "pin": pin_record(),
     }
+    if carried:
+        meta[BUILT_ON] = carried
     (root / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta
 
@@ -391,6 +404,7 @@ def _align_continuation(meta: dict[str, Any], continue_from: str) -> None:
     )
     write_index(request_root / "recovery_start.json", index_tree(Path(meta["candidate"])))
     meta["continued_from"] = continue_from
+    meta[BUILT_ON] = continue_from
     meta["continuation"] = {
         "continued_from": continue_from,
         "restored_live_from_historical": restored,
@@ -402,6 +416,106 @@ def _align_continuation(meta: dict[str, Any], continue_from: str) -> None:
 
 def load_meta(project_id: str, request_id: str) -> dict[str, Any]:
     return json.loads(request_meta_path(project_id, request_id).read_text(encoding="utf-8"))
+
+
+def _project_metas(project_id: str) -> dict[str, dict[str, Any]]:
+    """The readable request records of a project, by request id. Reads only; a damaged record is skipped."""
+    metas: dict[str, dict[str, Any]] = {}
+    folder = project_dir(project_id) / "requests"
+    if not folder.is_dir():
+        return metas
+    for entry in folder.iterdir():
+        try:
+            meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict):
+            metas[entry.name] = meta
+    return metas
+
+
+def request_delta(meta: dict[str, Any]) -> Delta | None:
+    """What a request changed: its frozen baseline against its candidate (meta.json keeps no file list).
+
+    None when either is gone or cannot be read.
+    """
+    try:
+        baseline = Path(str(meta["baseline"]))
+        candidate = Path(str(meta["candidate"]))
+        frozen = baseline.parent / "baseline.json"
+        if not candidate.is_dir() or not (frozen.is_file() or baseline.is_dir()):
+            return None
+        before = read_index(frozen) if frozen.is_file() else index_tree(baseline)
+        return compute_delta(before, index_tree(candidate))
+    except (KeyError, OSError, ValueError):
+        return None
+
+
+def _created(meta: dict[str, Any]) -> float:
+    try:
+        return float(meta.get("created_ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _open_request_in(project_id: str, request_id: str, live: Path) -> str | None:
+    """The waiting request whose result the project's working copy holds right now, or None.
+
+    A request that starts from the working copy is built on it. The copy is sticky, so only the newest
+    request can be in it, and only while it waits: Keep puts it in the project and Discard puts the copy
+    back to the folder. The copy must hold every file that request changed, as it left them.
+    """
+    if not live.is_dir():
+        return None
+    others = {rid: meta for rid, meta in _project_metas(project_id).items() if rid != request_id}
+    if not others:
+        return None
+    newest_id = max(others, key=lambda rid: _created(others[rid]))
+    newest = others[newest_id]
+    delta = request_delta(newest) if request_state(newest) == WAITING else None
+    if delta is None or not delta.touched():
+        return None
+    result = index_tree(Path(str(newest["candidate"])))
+    now = index_tree(live)
+    return newest_id if all(now.sha_of(rel) == result.sha_of(rel) for rel in delta.touched()) else None
+
+
+def _newer_request_to_decide(metas: dict[str, dict[str, Any]], request_id: str) -> bool:
+    """True when a newer request built on this one still has changes to Keep or Discard.
+
+    Keeping that one puts this one's changes into the project too, so this one can not be decided alone.
+    A newer request with no files (it undid them) has nothing to keep and does not count.
+    """
+    for other in waiting_on_top(metas, request_id):
+        delta = request_delta(metas[other])
+        if delta is not None and delta.touched():
+            return True
+    return False
+
+
+def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, applied: list[str]) -> list[str]:
+    """Close the older requests that a Keep carried into the project; returns their ids, nearest first.
+
+    A request counts only if this Keep wrote every file it changed, so "went in with" is true. A record
+    that cannot be saved stays as it was: the Keep has happened and must not fail now.
+    """
+    written = set(applied)
+    closed: list[str] = []
+    for older_id in built_on(metas, request_id):
+        older = metas.get(older_id)
+        if older is None or request_state(older) != WAITING:
+            continue
+        delta = request_delta(older)
+        if delta is None or not delta.touched() or not delta.touched() <= written:
+            continue
+        older["kept"] = True
+        older[KEPT_WITH] = request_id
+        try:
+            _save_meta(older)
+        except (KeyError, OSError):
+            continue
+        closed.append(older_id)
+    return closed
 
 
 def ensure_model_server() -> dict[str, Any]:
@@ -680,6 +794,7 @@ def _run_agent_request(
     if fresh:
         # Start from the user's folder as it is now; node_modules in the live copy stay.
         sync_source_tree(baseline, engine_cwd)
+        meta.pop(BUILT_ON, None)  # so this run is not built on an older result that still waits
     session = build_session(
         project=folder,
         workdir=engine_cwd,
@@ -1214,6 +1329,8 @@ def _has_file_changes(before: Path, after: Path) -> bool:
 
 DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
 KEPT_SUMMARY = "These changes are in your project."
+KEPT_WITH_SUMMARY = "These changes went in with a later request you kept."
+NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 STOPPED_NOTHING = "Stopped. Nothing was changed."
 STOPPED_WITH_FILES = "Stopped. Review what changed so far, or discard it."
 
@@ -1331,9 +1448,10 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         # A Stop stays a Stop, whatever the model or a half-run check said before it.
         commentary = stopped_text(bool(files))
         summary = commentary
+    kept_with = meta.get(KEPT_WITH) if state == KEPT else None
     if state == KEPT:
         # What the model said before Keep ("the original project is unchanged...") is no longer true.
-        summary = KEPT_SUMMARY
+        summary = KEPT_WITH_SUMMARY if kept_with else KEPT_SUMMARY
         commentary = None
     engine = str(meta.get("engine") or "local")
     return {
@@ -1359,6 +1477,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         "can_keep": state == WAITING and bool(files),
         "can_discard": state == WAITING and bool(files),
         "outcome": request_outcome(meta),
+        "kept_with": kept_with,
         "verification": {
             "build": stored.get("build") or "not_run",
             "typecheck": stored.get("typecheck") or "not_run",
@@ -1384,6 +1503,9 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
         raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
     if state == KEPT:
         raise GeneralError("These changes are already in your project.", code="kept")
+    metas = _project_metas(project_id)
+    if _newer_request_to_decide(metas, request_id):
+        raise GeneralError(NEWER_FIRST, code="newer_waiting")
     problem = folder_problem(user_path)
     if problem:
         # Keep must never make the folder again, and must not blame "changed files" for a missing one.
@@ -1412,7 +1534,13 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     stop_owned()
     meta["kept"] = True
     _save_meta(meta)
-    return {"ok": True, **result, "request_id": request_id, "repo": str(Path(user_path).resolve())}
+    applied = result.get("applied")
+    names = [str(rel) for rel in applied] if isinstance(applied, list) else []
+    also_kept = _close_what_went_in(metas, request_id, names)
+    return {
+        "ok": True, **result, "request_id": request_id, "repo": str(Path(user_path).resolve()),
+        "also_kept": also_kept,
+    }
 
 
 def _reset_live_copy(meta: dict[str, Any]) -> None:
@@ -1442,6 +1570,9 @@ def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
             "A request is still running in this project. Wait for it to finish, or stop it, then discard.",
             code="busy",
         )
+    if _newer_request_to_decide(_project_metas(project_id), request_id):
+        # Its Keep would put this request's changes into the project after all.
+        raise GeneralError(NEWER_FIRST, code="newer_waiting")
     try:
         _reset_live_copy(meta)
     except OSError as exc:
