@@ -44,7 +44,8 @@ struct ChangesInspector: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if model.hasChanges {
+            // Only while a result still waits: after Keep or Discard the request is closed.
+            if model.canKeep || model.canDiscard {
                 ReviewBar()
             }
         }

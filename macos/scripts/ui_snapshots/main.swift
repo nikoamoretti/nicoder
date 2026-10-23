@@ -168,7 +168,7 @@ MainActor.assumeIsolated {
         steps: Array(steps(start: start).prefix(4)), started: start, ended: start.addingTimeInterval(14), cost: 0.0065)
     model.traces[prompt] = TraceRecord(steps: steps(start: start), started: start, ended: start.addingTimeInterval(66),
                                        cost: 0.041)
-    model.snapshot = [
+    let finished: [String: Any] = [
         "episode_id": "demo", "diff": diff, "can_keep": true, "can_discard": true, "cost_usd": 0.041,
         "facts": ["files": ["app/globals.css", "app/prototypes/shadow-paris/shadow-app.tsx",
                             "app/prototypes/shadow-paris/theme-toggle.tsx"],
@@ -177,9 +177,31 @@ MainActor.assumeIsolated {
                             "deleted": [String](), "renamed": [Any]()]],
         "verification": ["build": "ok", "typecheck": "ok", "tests": "not_run", "preview": "not_run"],
     ]
+    model.snapshot = finished
     model.inspectorShown = true
     let main = show(RootView(), size: CGSize(width: 1320, height: 860))
     capture(main, "10-finished-with-changes")
+
+    // 1b. After Discard: the request is closed. No "files changed" pill under the answer; the inspector
+    // says "No Changes" and has no Keep or Discard bar.
+    model.snapshot = [
+        "episode_id": "demo", "diff": "", "can_keep": false, "can_discard": false, "outcome": "discarded",
+        "summary": "Discarded. These changes were not added to your project.", "cost_usd": 0.041,
+        "facts": ["files": [String](),
+                  "delta": ["added": [String](), "modified": [String](), "deleted": [String](), "renamed": [Any]()]],
+        "verification": ["build": "not_run", "typecheck": "not_run", "tests": "not_run", "preview": "not_run"],
+    ]
+    model.inspectorShown = true
+    capture(main, "10a-after-discard")
+
+    // 1c. After Keep: the change is in the project. The diff stays, but there is no pill and no Keep or Discard bar.
+    var kept = finished
+    kept["can_keep"] = false
+    kept["can_discard"] = false
+    kept["outcome"] = "kept"
+    model.snapshot = kept
+    model.inspectorShown = true
+    capture(main, "10b-after-keep")
 
     // 2. A run in progress.
     model.inspectorShown = false

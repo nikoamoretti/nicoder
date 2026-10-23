@@ -586,7 +586,11 @@ final class AppModel: ObservableObject {
                 snapshot = try await engine.call("snapshot", params)
                 inspectorShown = hasChanges
                 if !hasChanges {
-                    banner = "That request did not change any files."
+                    switch snapshot?["outcome"] as? String {
+                    case "discarded": banner = "That request was discarded."
+                    case "kept": banner = "Those changes are already in your project."
+                    default: banner = "That request did not change any files."
+                    }
                 }
             } catch {
                 banner = error.localizedDescription
