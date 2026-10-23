@@ -153,23 +153,27 @@ class GeneralError(Exception):
 
 _Params = ParamSpec("_Params")
 _Result = TypeVar("_Result")
-_RUNNING: dict[str, int] = {}
+_RUNNING: dict[str, list[str]] = {}
 _RUNNING_LOCK = threading.Lock()
 
 
 @contextmanager
-def _request_running(project_id: str) -> Iterator[None]:
-    """Mark a project as having a request in flight, so Discard never rewrites its working copy under it."""
+def _request_running(project_id: str, request_id: str = "") -> Iterator[None]:
+    """Mark a request as in flight in its project.
+
+    Discard never rewrites the working copy under it, and Keep never puts an older result into the folder
+    under a request that is built on it.
+    """
     with _RUNNING_LOCK:
-        _RUNNING[project_id] = _RUNNING.get(project_id, 0) + 1
+        _RUNNING.setdefault(project_id, []).append(request_id)
     try:
         yield
     finally:
         with _RUNNING_LOCK:
-            remaining = _RUNNING.get(project_id, 1) - 1
-            if remaining > 0:
-                _RUNNING[project_id] = remaining
-            else:
+            flights = _RUNNING.get(project_id, [])
+            if request_id in flights:
+                flights.remove(request_id)
+            if not flights:
                 _RUNNING.pop(project_id, None)
 
 
@@ -178,13 +182,24 @@ def _request_in_flight(project_id: str) -> bool:
         return project_id in _RUNNING
 
 
+def _requests_in_flight(project_id: str) -> set[str]:
+    """The ids of the requests running in a project right now."""
+    with _RUNNING_LOCK:
+        return set(_RUNNING.get(project_id, ()))
+
+
 def _tracks_running(function: Callable[_Params, _Result]) -> Callable[_Params, _Result]:
-    """Wrap run_general_request: its first argument is the project folder."""
+    """Wrap run_general_request: its first argument is the project folder.
+
+    The request gets its id here when the caller gave none, so the marker names it from the start.
+    """
 
     @functools.wraps(function)
     def wrapper(*args: _Params.args, **kwargs: _Params.kwargs) -> _Result:
         folder = args[0] if args else kwargs["user_path"]
-        with _request_running(project_id_for(Path(str(folder)).expanduser())):
+        if not kwargs.get("request_id"):
+            kwargs["request_id"] = new_episode_id()
+        with _request_running(project_id_for(Path(str(folder)).expanduser()), str(kwargs["request_id"])):
             return function(*args, **kwargs)
 
     return wrapper
@@ -503,6 +518,16 @@ def _newer_request_to_decide(metas: dict[str, dict[str, Any]], request_id: str) 
     return _newest(metas, deciding)
 
 
+def _newer_request_running(project_id: str, metas: dict[str, dict[str, Any]], request_id: str) -> str | None:
+    """The newest request built on this one that is running right now, or None.
+
+    Keeping this one meanwhile would put its changes into the project under that request, which could then
+    no longer be kept.
+    """
+    running = _requests_in_flight(project_id)
+    return _newest(metas, [other for other in waiting_on_top(metas, request_id) if other in running])
+
+
 def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, applied: list[str]) -> list[str]:
     """Close the older requests that a Keep carried into the project; returns their ids, nearest first.
 
@@ -805,6 +830,7 @@ def _run_agent_request(
         # Start from the user's folder as it is now; node_modules in the live copy stay.
         sync_source_tree(baseline, engine_cwd)
         meta.pop(BUILT_ON, None)  # so this run is not built on an older result that still waits
+        _save_meta(meta)  # and the record says so while the agent works, not only when it is done
     session = build_session(
         project=folder,
         workdir=engine_cwd,
@@ -1341,6 +1367,9 @@ DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
 KEPT_SUMMARY = "These changes are in your project."
 KEPT_WITH_SUMMARY = "These changes went in with a later request you kept."
 NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
+NEWER_RUNNING = (
+    "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
+)
 STOPPED_NOTHING = "Stopped. Nothing was changed."
 STOPPED_WITH_FILES = "Stopped. Review what changed so far, or discard it."
 
@@ -1463,13 +1492,15 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         # What the model said before Keep ("the original project is unchanged...") is no longer true.
         summary = KEPT_WITH_SUMMARY if kept_with else KEPT_SUMMARY
         commentary = None
-    blocked_by = None
+    blocked_by, blocked_text = None, ""
     if state == WAITING and files:
-        blocked_by = _newer_request_to_decide(_project_metas(project_id), request_id)
+        metas = _project_metas(project_id)
+        running = _newer_request_running(project_id, metas, request_id)
+        blocked_by = running or _newer_request_to_decide(metas, request_id)
+        blocked_text = NEWER_RUNNING if running else NEWER_FIRST
     if blocked_by:
         # Keep and Discard would both be refused, so the review offers neither and says what to do instead.
-        summary = NEWER_FIRST
-        commentary = None
+        summary, commentary = blocked_text, None
     engine = str(meta.get("engine") or "local")
     return {
         "kind": "code",
@@ -1522,6 +1553,8 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     if state == KEPT:
         raise GeneralError("These changes are already in your project.", code="kept")
     metas = _project_metas(project_id)
+    if _newer_request_running(project_id, metas, request_id):
+        raise GeneralError(NEWER_RUNNING, code="busy")
     if _newer_request_to_decide(metas, request_id):
         raise GeneralError(NEWER_FIRST, code="newer_waiting")
     problem = folder_problem(user_path)

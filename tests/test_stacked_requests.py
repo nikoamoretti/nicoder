@@ -34,6 +34,9 @@ NEW = "def add(a, b):\n    return a + b\n"
 FURTHER = "def add(a, b):\n    # numbers only\n    return a + b\n"
 WENT_IN = "These changes went in with a later request you kept."
 DECIDE_NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
+STILL_RUNNING = (
+    "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
+)
 
 HOSTED = machine.MachineConfig(
     model_alias="nvidia/nemotron-3.5-super-vl-120b-a12b",
@@ -473,6 +476,151 @@ def test_the_blocked_snapshot_reaches_the_app_with_its_two_flags_false(calc):
     result = reply["result"]
     assert result["can_keep"] is False and result["can_discard"] is False and result["blocked_by"] == "req-2"
     assert result["facts"]["files"] == ["src/calc.py"] and result["diff"], "the Mac app still lists the files and diff"
+
+
+# --- Keep waits for a newer request that is still running ----------------------------------------------------
+
+
+def _during(project: Path, request_id: str, probe, engine=None) -> dict:
+    """Run a request whose engine first calls `probe(candidate)`: the moment the request is still running."""
+    write = engine or _write("src/extra.py", "EXTRA = 1\n")
+
+    def run(cwd: Path, text: str, cancel) -> None:
+        probe(cwd)
+        write(cwd, text, cancel)
+
+    return run_general_request(project, f"request {request_id}", request_id=request_id, fake_engine=run,
+                               start_preview_after=False)
+
+
+def _keep_outcome(project: Path, request_id: str) -> tuple[str, str]:
+    """(code, detail) of a refused Keep, or ("kept", "") when it went through."""
+    try:
+        keep_changes(request_id, project)
+    except GeneralError as exc:
+        return exc.code, exc.detail
+    return "kept", ""
+
+
+def test_keeping_the_older_request_is_refused_while_the_newer_one_runs(calc):
+    """QA round 2: Keep went through mid-run, and the newer request could then never be kept."""
+    first = _fix(calc)
+    before = _tree(calc)
+    seen: list = []
+
+    def probe(_cwd: Path) -> None:
+        seen.append(_keep_outcome(calc, "req-1"))
+        seen.append(_tree(calc) == before)
+        seen.append("kept" in load_meta(first["project_id"], "req-1"))
+
+    second = _during(calc, "req-2", probe)
+    assert seen == [("busy", STILL_RUNNING), True, False], "refused in one plain sentence; nothing was written"
+    assert load_meta(first["project_id"], "req-2")["built_on"] == "req-1"
+    # Nothing was lost: once it has finished, the newer request is kept and carries the older one in with it.
+    assert second["can_keep"] is True
+    kept = keep_changes("req-2", calc)
+    assert kept["also_kept"] == ["req-1"] and sorted(kept["applied"]) == ["src/calc.py", "src/extra.py"]
+    assert (calc / "src" / "calc.py").read_text(encoding="utf-8") == NEW
+    assert _history(calc) == [("req-2", "kept"), ("req-1", "kept")]
+
+
+def test_the_older_requests_review_agrees_while_the_newer_one_runs(calc):
+    _fix(calc)
+    seen: list[dict] = []
+    _during(calc, "req-2", lambda _cwd: seen.append(snapshot("req-1", repo=calc)))
+    during = seen[0]
+    assert during["can_keep"] is False and during["can_discard"] is False
+    assert during["blocked_by"] == "req-2" and during["summary"] == STILL_RUNNING
+    assert during["model_commentary"] is None and during["outcome"] == "review"
+    assert during["facts"]["files"] == ["src/calc.py"] and "return a + b" in during["diff"]
+    # When it has finished, the older request waits for the newer one to be decided instead.
+    after = snapshot("req-1", repo=calc)
+    assert after["can_keep"] is False and after["blocked_by"] == "req-2" and after["summary"] == DECIDE_NEWER_FIRST
+
+
+def test_the_refusal_while_the_newer_request_runs_reaches_the_app_as_a_plain_sentence(calc):
+    _fix(calc)
+    server = RpcServer(runtime=AppRuntime(), out=io.StringIO())
+    replies: list[dict] = []
+
+    def rpc(method: str) -> dict:
+        return server.dispatch({"id": method, "method": method, "params": {"episode_id": "req-1", "path": str(calc)}})
+
+    _during(calc, "req-2", lambda _cwd: replies.extend([rpc("keep"), rpc("snapshot")]))
+    kept, review = replies
+    assert kept["ok"] is False and kept["error"] == {"code": "busy", "detail": STILL_RUNNING}
+    assert review["ok"] is True and review["result"]["can_keep"] is False
+    assert review["result"]["can_discard"] is False and review["result"]["summary"] == STILL_RUNNING
+
+
+def test_a_request_given_no_id_holds_back_the_older_one_too(calc):
+    """The app always names its request; a caller that does not still gets the same protection."""
+    _fix(calc)
+    seen: list = []
+
+    def probe(_cwd: Path) -> None:
+        seen.append(_keep_outcome(calc, "req-1"))
+
+    def run(cwd: Path, text: str, cancel) -> None:
+        probe(cwd)
+        _write("src/extra.py", "EXTRA = 1\n")(cwd, text, cancel)
+
+    review = run_general_request(calc, "no id given", fake_engine=run, start_preview_after=False)
+    assert seen == [("busy", STILL_RUNNING)]
+    assert review["request_id"] and review["request_id"] != "req-1"
+
+
+def test_a_request_running_on_top_of_a_stack_holds_back_every_older_one(calc):
+    _fix(calc)
+    _extra(calc)
+    seen: list = []
+
+    def probe(_cwd: Path) -> None:
+        seen.append(_keep_outcome(calc, "req-1"))
+        seen.append(_keep_outcome(calc, "req-2"))
+        seen.append([snapshot(f"req-{n}", repo=calc)["blocked_by"] for n in (1, 2)])
+
+    _during(calc, "req-3", probe, engine=_write("src/third.py", "THIRD = 3\n"))
+    assert seen == [("busy", STILL_RUNNING), ("busy", STILL_RUNNING), ["req-3", "req-3"]]
+    assert not (calc / "src" / "extra.py").exists() and (calc / "src" / "calc.py").read_text(encoding="utf-8") == OLD
+    assert keep_changes("req-3", calc)["also_kept"] == ["req-2", "req-1"]
+
+
+def test_a_running_request_that_is_not_built_on_the_older_one_does_not_hold_back_its_keep(calc):
+    """Only a request built on it matters: a hosted-agent run starts from the folder."""
+    first = _fix(calc)
+    kept_midrun: list[dict] = []
+    steps = iter([
+        _reply(calls=[_call("write", {"path": "src/two.py", "content": "TWO = 2\n"}, "1")]),
+        _reply("I wrote src/two.py."),
+    ])
+
+    def chat(_messages, _tools):
+        if not kept_midrun:
+            kept_midrun.append(keep_changes("req-1", calc))
+        return next(steps)
+
+    second = run_general_request(calc, "request req-2", request_id="req-2", agent_chat=chat,
+                                 start_preview_after=False)
+    assert "built_on" not in load_meta(first["project_id"], "req-2")
+    assert kept_midrun and kept_midrun[0]["applied"] == ["src/calc.py"]
+    assert second["facts"]["files"] == ["src/two.py"]
+    assert keep_changes("req-2", calc)["applied"] == ["src/two.py"]
+    assert _history(calc) == [("req-2", "kept"), ("req-1", "kept")]
+
+
+def test_a_failed_run_does_not_leave_the_older_request_locked(calc):
+    first = _fix(calc)
+
+    def breaks(_cwd: Path, _text: str, _cancel) -> None:
+        raise RuntimeError("the engine fell over")
+
+    with pytest.raises(RuntimeError):
+        run_general_request(calc, "request req-2", request_id="req-2", fake_engine=breaks, start_preview_after=False)
+    assert load_meta(first["project_id"], "req-2")["built_on"] == "req-1", "a record of the failed run is left"
+    older = snapshot("req-1", repo=calc)
+    assert older["can_keep"] is True and older["can_discard"] is True, "nothing is running or waiting on top of it"
+    assert keep_changes("req-1", calc)["applied"] == ["src/calc.py"]
 
 
 # --- The working copy after a decision -----------------------------------------------------------------------
