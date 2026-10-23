@@ -1,4 +1,4 @@
-"""stacked-resync: Keep never reverts what Nico changed in the folder himself.
+"""Cut stacked-resync: Keep never reverts what Nico changed in the folder himself.
 
 A request built on a result that still waits (the local path: it runs on the project's sticky working copy)
 starts from that result, not from the folder. Its baseline has to be that result's baseline, or the diff and
@@ -320,7 +320,7 @@ def test_his_hand_edits_survive_a_stacked_keep_on_the_local_model_path(web_proje
 
 
 def test_a_stack_of_three_keeps_his_edits(project):
-    """V3 of the acceptance checks: the third request inherits from the second, which already equals the first."""
+    """V4: edits made while R1 waits, then R2, then R3. The third inherits from the second, which equals the first."""
     _fix(project)
     _hand_edits(project)
     _extra(project)
