@@ -92,7 +92,26 @@
   transactional, `discard` preserves evidence unless `--with-evidence`.
 - `src/local_coder/accept.py` — single accept/discard implementation for CLI and app.
 - `src/local_coder/app_service.py` + `app_rpc.py` — structured Mac-app API
-  (JSON-lines helper, no network server).
+  (JSON-lines helper, no network server). A request never creates its project
+  folder: `general/inspect.folder_problem` refuses a path that is gone, a file or
+  unreadable, in plain words, before any worker or model call (only `new_project`
+  and `start_chat` make folders). Errors reach the app as plain sentences:
+  `AppError` and `GeneralError` keep their own code and detail, anything
+  unexpected becomes one generic sentence, and the raw text and traceback go to
+  stderr and `<data dir>/logs/helper-errors.log` (`errorlog.py`).
+- `src/local_coder/general/request_state.py` — the one definition of where a
+  request stands: waiting (neither kept nor discarded), kept, or discarded; kept
+  wins. The review snapshot, History, Keep, Discard and `general/waiting.py` all
+  read it. Keep and Discard are final: a closed request offers neither, `keep`
+  refuses a discarded request, `discard` refuses a kept one, and Discard puts the
+  project's sticky working copy (`live/candidate`) back to the request's baseline.
+  Evidence (`meta.json`, `candidate/`) stays on disk. A cancelled run ends with
+  one `stopped` event, never `done`.
+- `src/local_coder/general/waiting.py` — a question asked while a result waits
+  for Keep or Discard gets a note built from the request's own record (title,
+  age, files, "not in the folder yet", and for the agent where to read the
+  waiting copy, read-only). It is not saved in the chat. A waiting copy is never
+  opened as a project: `open_project` refuses the data root.
 - `src/local_coder/general/harness.py` — candidate-only read / write / hash-edit
   for the local llama.cpp models. No host bash. No foreign agent CLI.
 - `src/local_coder/agent/` — the tool-calling agent for models with native tool
