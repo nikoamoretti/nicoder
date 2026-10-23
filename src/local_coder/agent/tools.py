@@ -163,7 +163,15 @@ def inside_data_root(path: Path) -> bool:
 
     root = Path(os.path.realpath(data_root()))
     real = Path(os.path.realpath(path))
-    return real == root or root in real.parents
+    for candidate in [real, *real.parents]:
+        if candidate == root:
+            return True
+        try:
+            if os.path.samefile(candidate, root):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def project_root(path: Path, home: Path) -> Path | None:

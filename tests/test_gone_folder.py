@@ -7,6 +7,7 @@ folder is gone. Folders are created only by New Project and the welcome chat.
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import time
 from pathlib import Path
@@ -219,6 +220,21 @@ def test_keep_refuses_when_the_folder_was_replaced_by_a_file(ts_project):
     assert raised.value.code == "not_a_folder"
     assert "is a file, not a folder" in raised.value.detail
     assert ts_project.read_text(encoding="utf-8") == "now a file\n"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="cannot make a folder unreadable as root")
+def test_keep_refuses_when_the_folder_is_unreadable(ts_project):
+    review = _waiting_result(ts_project, "req-keep-unreadable", add=True)
+    assert review["can_keep"] is True
+    os.chmod(ts_project, 0)
+    try:
+        with pytest.raises(GeneralError) as raised:
+            keep_request(review["project_id"], "req-keep-unreadable", ts_project)
+    finally:
+        os.chmod(ts_project, 0o755)
+    assert raised.value.code == "unreadable"
+    assert "cannot read the folder" in raised.value.detail
+    assert "is a file" not in raised.value.detail
 
 
 def test_keep_still_works_when_the_folder_is_there(ts_project):

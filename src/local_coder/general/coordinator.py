@@ -1566,8 +1566,13 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
                 f"The folder “{name}” is gone, so there is nowhere to keep these changes.",
                 code="folder_gone",
             )
+        if problem["verdict"] == "not_a_folder":
+            raise GeneralError(
+                f"“{name}” is a file, not a folder, so there is nowhere to keep these changes.",
+                code="not_a_folder",
+            )
         raise GeneralError(
-            f"“{name}” is a file, not a folder, so there is nowhere to keep these changes.",
+            f"Local Coder cannot read the folder “{name}”, so there is nowhere to keep these changes.",
             code=problem["verdict"],
         )
     result = apply_delta(Path(user_path), Path(meta["baseline"]), Path(meta["candidate"]))
