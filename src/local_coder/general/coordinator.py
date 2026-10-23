@@ -286,6 +286,10 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
     copy_snapshot(baseline, candidate)
     if not live_candidate.is_dir():
         copy_snapshot(baseline, live_candidate)
+    elif carried is None:
+        # Not built on a waiting result: start from the folder as it is now, whatever Keep, Discard or a
+        # run that never finished left in the sticky copy (else the diff would undo what was kept).
+        sync_source_tree(baseline, live_candidate)
     # Candidate-only: Keep can persist SWC so Bonsai TypeScript compiles next time.
     ensure_ts_preview(candidate)
     ensure_ts_preview(live_candidate)

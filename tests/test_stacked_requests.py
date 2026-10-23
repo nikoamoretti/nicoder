@@ -387,6 +387,31 @@ def test_the_refusal_reaches_the_app_as_a_plain_sentence(calc):
     assert kept["ok"] is True and kept["result"]["also_kept"] == ["req-1"]
 
 
+# --- The working copy after a decision -----------------------------------------------------------------------
+
+
+def test_the_next_request_does_not_undo_an_older_request_kept_after_the_newer_one_was_discarded(calc):
+    """Discard puts the working copy back to the folder; Keep then changes the folder, not the copy."""
+    _fix(calc)
+    _extra(calc)
+    discard_changes("req-2", repo=calc)
+    assert keep_changes("req-1", calc)["applied"] == ["src/calc.py"]
+    third = _run(calc, "req-3", _write("src/third.py", "THIRD = 3\n"))
+    assert third["facts"]["files"] == ["src/third.py"], "request 1's change is in the folder, not part of request 3"
+    assert "built_on" not in load_meta(third["project_id"], "req-3")
+
+
+def test_a_request_not_built_on_a_waiting_result_starts_from_the_folder_as_it_is_now(calc):
+    first = _fix(calc)
+    discard_changes("req-1", repo=calc)
+    (calc / "README.md").write_text("edited by hand\n", encoding="utf-8")
+    second = _extra(calc, "req-2")
+    assert second["facts"]["files"] == ["src/extra.py"], "the hand edit is not undone by the sticky copy"
+    assert (_live(first["project_id"]) / "README.md").read_text(encoding="utf-8") == "edited by hand\n"
+    assert keep_changes("req-2", calc)["applied"] == ["src/extra.py"]
+    assert (calc / "README.md").read_text(encoding="utf-8") == "edited by hand\n"
+
+
 # --- Where the link comes from -----------------------------------------------------------------------------
 
 
