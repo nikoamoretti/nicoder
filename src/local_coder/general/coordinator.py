@@ -586,6 +586,11 @@ def run_general_request(
                 )
             elif start_preview_after:
                 _maybe_attach_preview(meta, candidate, listener, start_preview_after=start_preview_after)
+    stopped = cancel.is_set()
+    if stopped:
+        meta["stop_reason"] = "cancelled"
+        meta["stopped_incomplete"] = True
+        meta["model_commentary"] = stopped_text(_has_file_changes(Path(meta["baseline"]), candidate))
     meta["generation_ledger"] = ledger.snapshot()
     _save_meta(meta)
     review = review_payload(meta["project_id"], request_id)
@@ -596,7 +601,8 @@ def run_general_request(
     if note:
         append_turn(folder, "assistant", note)
     review["turns"] = load_chat(folder)["turns"]
-    _emit(listener, "done", {"request_id": request_id})
+    # A Stop is not a finished attempt: say "Stopped" and let the app show what was (not) written.
+    _emit(listener, "stopped" if stopped else "done", {"request_id": request_id})
     return review
 
 
@@ -691,7 +697,7 @@ def _run_agent_request(
             _publish_candidate(engine_cwd, candidate)
             meta["model_commentary"] = run.answer
             if cancel.is_set() or run.status == "stopped":
-                meta["model_commentary"] = "Stopped. Review what changed so far, or discard it."
+                meta["model_commentary"] = stopped_text(_has_file_changes(baseline, candidate))
                 _stop(meta, "cancelled")
                 break
             if not _has_file_changes(baseline, candidate):
@@ -1206,6 +1212,13 @@ def _has_file_changes(before: Path, after: Path) -> bool:
 
 
 DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
+STOPPED_NOTHING = "Stopped. Nothing was changed."
+STOPPED_WITH_FILES = "Stopped. Review what changed so far, or discard it."
+
+
+def stopped_text(has_files: bool) -> str:
+    """What a Stop says: whether anything was written decides the second sentence."""
+    return STOPPED_WITH_FILES if has_files else STOPPED_NOTHING
 KEPT_SUMMARY = "These changes are in your project."
 
 
@@ -1313,6 +1326,10 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         stored = raw_verification
     if stored.get("preview") in {"ok", "failed", "not_run"}:
         preview_status = str(stored.get("preview") or preview_status)
+    if meta.get("stop_reason") == "cancelled":
+        # A Stop stays a Stop, whatever the model or a half-run check said before it.
+        commentary = stopped_text(bool(files))
+        summary = commentary
     if state == KEPT:
         # What the model said before Keep ("the original project is unchanged...") is no longer true.
         summary = KEPT_SUMMARY
