@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import traceback
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -58,6 +57,8 @@ from .app_service import (
     stop_owned_server,
 )
 from .catalog import list_models
+from .errorlog import NOT_FOUND, UNEXPECTED, record_error
+from .general.coordinator import GeneralError
 from .hostenv import apply_host_path
 from .profiles import DEFAULT_PROFILE
 
@@ -127,12 +128,15 @@ class RpcServer:
             return _err(req_id, "bad_request", "params must be an object")
         try:
             result = self._call(str(method), params)
-        except AppError as exc:
+        except (AppError, GeneralError) as exc:
             return _err(req_id, exc.code, exc.detail)
         except FileNotFoundError as exc:
-            return _err(req_id, "not_found", str(exc))
+            record_error(f"{method}: not found", exc)
+            return _err(req_id, "not_found", NOT_FOUND)
         except Exception as exc:  # noqa: BLE001 — helper must never die on one call
-            return _err(req_id, "internal", f"{exc}\n{traceback.format_exc()[-400:]}")
+            # One plain sentence for the app; the raw text and traceback go to stderr and logs/.
+            record_error(f"{method}: unexpected error", exc)
+            return _err(req_id, "internal", UNEXPECTED)
         return _ok(req_id, result)
 
     def _call(self, method: str, params: dict[str, Any]) -> Any:

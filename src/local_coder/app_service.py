@@ -24,6 +24,7 @@ from . import accept as accept_mod
 from .catalog import entry_by_id, list_models
 from .config import CONFIG_FILENAME, EXAMPLE_TOML, RepoConfig, load_config
 from .controller import Controller, git_is_dirty, git_revision
+from .errorlog import UNEXPECTED, record_error
 from .execution.isolated import IsolatedBackend, IsolationUnavailable
 from .hosted import HostedError, find_api_key, hosted_chat, provider_place
 from .hostenv import apply_host_path
@@ -1284,6 +1285,8 @@ class AppRuntime:
                 "engine": chosen}
 
     def _worker(self, **kwargs: Any) -> None:
+        from local_coder.general.coordinator import GeneralError
+
         started = False
         try:
             engine = str(kwargs.get("engine") or "general")
@@ -1317,13 +1320,15 @@ class AppRuntime:
                 continue_from=kwargs.get("continue_from"),
                 wall_seconds=kwargs.get("wall_seconds"),
             )
-        except AppError as exc:
+        except (AppError, GeneralError) as exc:
             self.last_error = exc.detail
             self._emit({"type": "app_error", "data": {"detail": exc.detail, "code": exc.code},
                         "seq": None})
         except Exception as exc:  # noqa: BLE001 — surface unexpected helper failures
-            self.last_error = str(exc)
-            self._emit({"type": "app_error", "data": {"detail": str(exc), "code": "runtime"},
+            # The app shows one plain sentence; the raw text and traceback go to stderr and logs/.
+            record_error("request worker: unexpected error", exc)
+            self.last_error = UNEXPECTED
+            self._emit({"type": "app_error", "data": {"detail": UNEXPECTED, "code": "runtime"},
                         "seq": None})
         finally:
             with self._lock:

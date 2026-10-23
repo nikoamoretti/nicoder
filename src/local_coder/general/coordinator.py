@@ -21,6 +21,7 @@ from local_coder.engines.opencode_client import OpenCodeError
 from local_coder.engines.opencode_config import data_root
 from local_coder.engines.opencode_pin import pin_record
 from local_coder.engines.opencode_server import client_from_record, read_record, stop_owned
+from local_coder.errorlog import record_error
 from local_coder.general.budgets import RequestBudget, budget_for
 from local_coder.general.candidate_check import (
     check_candidate,
@@ -1398,7 +1399,16 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
         )
     result = apply_delta(Path(user_path), Path(meta["baseline"]), Path(meta["candidate"]))
     if not result.get("ok"):
-        raise GeneralError(str(result.get("detail") or "Keep failed."), code=str(result.get("code") or "accept"))
+        code = str(result.get("code") or "accept")
+        if code == "apply_failed":
+            # The detail is the operating system's own text; the app gets a sentence, the log gets the text.
+            record_error("keep: could not write the changes", str(result.get("detail") or ""))
+            raise GeneralError(
+                "Local Coder could not write these changes into your project. "
+                "Check that its folder and files can be changed, then try Keep again.",
+                code=code,
+            )
+        raise GeneralError(str(result.get("detail") or "Keep failed."), code=code)
     stop_owned()
     meta["kept"] = True
     _save_meta(meta)

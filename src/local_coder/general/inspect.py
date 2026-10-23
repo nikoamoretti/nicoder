@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -70,26 +71,64 @@ def folder_problem(path: str | Path) -> dict[str, str] | None:
     """
     repo = Path(path).expanduser().resolve()
     name = repo.name or str(repo)
-    if not repo.exists():
-        return {
-            "verdict": "missing",
-            "summary": f"The folder “{name}” is gone. Open another project or start a new one.",
-        }
-    if not repo.is_dir():
-        return {
-            "verdict": "not_a_folder",
-            "summary": f"“{name}” is a file, not a folder. Open a project folder or start a new one.",
-        }
+    try:
+        if not repo.exists():
+            return {
+                "verdict": "missing",
+                "summary": f"The folder “{name}” is gone. Open another project or start a new one.",
+            }
+        if not repo.is_dir():
+            return {
+                "verdict": "not_a_folder",
+                "summary": f"“{name}” is a file, not a folder. Open a project folder or start a new one.",
+            }
+        os.listdir(repo)
+    except OSError:
+        return _unreadable(name)
     return None
 
 
+def _unreadable(name: str) -> dict[str, str]:
+    return {
+        "verdict": "unreadable",
+        "summary": (
+            f"Local Coder cannot read the folder “{name}”. Check its permissions in Finder, or open another project."
+        ),
+    }
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def inspect_project(path: str | Path) -> dict[str, Any]:
-    """Describe what this folder is and what is missing. Does not refuse JS or dirty trees."""
+    """Describe what this folder is and what is missing. Does not refuse JS or dirty trees.
+
+    A folder that cannot be used (gone, a file, unreadable) is described in plain words, never raised.
+    """
     repo = Path(path).expanduser().resolve()
+    problem = folder_problem(repo)
+    if problem is None:
+        try:
+            return _inspect_folder(repo, _blank_report(repo))
+        except OSError:
+            problem = _unreadable(repo.name or str(repo))
+    report = _blank_report(repo)
+    report["verdict"] = problem["verdict"]
+    report["summary"] = problem["summary"]
+    report["issues"].append({"code": problem["verdict"], "message": problem["summary"], "blocking": True})
+    return report
+
+
+def _blank_report(repo: Path) -> dict[str, Any]:
+    """An inspection before anything is known about the folder."""
     report: dict[str, Any] = {
         "path": str(repo),
         "name": repo.name,
-        "exists": repo.is_dir(),
+        "exists": _is_dir(repo),
         "supported": False,
         "verdict": "missing",
         "summary": "",
@@ -111,13 +150,11 @@ def inspect_project(path: str | Path) -> dict[str, Any]:
         "can_preview": False,
         "exclusions": ["node_modules", "dist", "build", ".git", ".venv", ".env", "secrets"],
     }
-    problem = folder_problem(repo)
-    if problem:
-        report["verdict"] = problem["verdict"]
-        report["summary"] = problem["summary"]
-        report["issues"].append({"code": problem["verdict"], "message": problem["summary"], "blocking": True})
-        return report
+    return report
 
+
+def _inspect_folder(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
+    """The scan of a folder that exists and can be listed."""
     python_files = _count_by_suffix(repo, (".py",))
     web_files = _count_by_suffix(repo, (".js", ".jsx", ".ts", ".tsx", ".css", ".html", ".vue"))
     test_files = 0
