@@ -407,7 +407,11 @@ def chat_request(
     preview = None
     if repo is not None and asked_to_see_ui(question):
         preview, extra = _start_preview_note(repo)
-    if agent_capable(load_machine_config()):
+    with_tools = agent_capable(load_machine_config())
+    waiting = _waiting_note(repo, can_read=with_tools)
+    if waiting:
+        extra = f"{extra}\n{waiting}".strip()
+    if with_tools:
         result = _agent_chat(repo, question, extra=extra, listener=listener, cancel=cancel)
     else:
         from local_coder.general.chat_log import recent_messages
@@ -424,6 +428,17 @@ def chat_request(
     return result
 
 
+def _waiting_note(repo: Path | None, *, can_read: bool) -> str:
+    """What a question must know when a result waits for Keep or Discard ("" when none does).
+
+    It is built from the request's own record, goes to the model with the question, and is not saved
+    in the chat.
+    """
+    from local_coder.general.waiting import waiting_note
+
+    return waiting_note(repo, can_read=can_read)
+
+
 def _agent_chat(
     repo: Path | None,
     question: str,
@@ -434,6 +449,7 @@ def _agent_chat(
 ) -> dict[str, Any]:
     """A question answered by the agent with read-only tools across the home folder."""
     from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
+    from local_coder.agent.tools import inside_data_root
     from local_coder.general.chat_log import append_turn, recent_messages
 
     cfg = load_machine_config()
@@ -452,6 +468,8 @@ def _agent_chat(
         on_step=step,
     )
     opened = asked.opened if asked.opened is not None and asked.opened != repo else None
+    if opened is not None and inside_data_root(opened):
+        opened = None  # a waiting copy is never a project: the window would switch to it
     result: dict[str, Any] = {
         "kind": "chat",
         "summary": asked.answer,
