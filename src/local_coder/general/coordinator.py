@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import shutil
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -280,7 +281,10 @@ def prepare_workspace(
     """Snapshot the current user tree, including uncommitted work.
 
     The folder must already exist: a request never creates it. Only New Project and the welcome
-    chat make folders. `carry=False` starts from the folder as it is now, whatever result still waits:
+    chat make folders. A request built on a result that still waits (`_open_request_in`) takes that
+    result's baseline as its own instead: its diff and its Keep are then measured from one starting
+    point, so what was changed in the folder meanwhile is neither shown as the model's work nor
+    reverted by Keep. `carry=False` starts from the folder as it is now, whatever result still waits:
     the hosted agent does, and so does a continuation, which brings its own copy.
     """
     user_path = user_path.expanduser().resolve()
@@ -298,7 +302,11 @@ def prepare_workspace(
     if empty and allow_starter:
         copy_starter(user_path)
         starter_used = True
-    b_index = copy_snapshot(user_path, baseline)
+    inherited = carried is not None and _inherit_baseline(pid, carried, baseline, root / "baseline.json")
+    if not inherited:
+        # Nothing waits, or not all of its baseline is there: start from the folder as it is now.
+        carried = None
+        write_index(root / "baseline.json", copy_snapshot(user_path, baseline))
     # Real copies, not hardlinks: the engine writes the live tree, and a
     # shared inode would also mutate the frozen baseline.
     copy_snapshot(baseline, candidate)
@@ -311,7 +319,6 @@ def prepare_workspace(
     # Candidate-only: Keep can persist SWC so Bonsai TypeScript compiles next time.
     ensure_ts_preview(candidate)
     ensure_ts_preview(live_candidate)
-    write_index(root / "baseline.json", b_index)
     meta = {
         "request_id": request_id,
         "project_id": pid,
@@ -328,6 +335,27 @@ def prepare_workspace(
         meta[BUILT_ON] = carried
     (root / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta
+
+
+def _inherit_baseline(project_id: str, older_id: str, baseline: Path, frozen: Path) -> bool:
+    """Copy the baseline of the waiting request this one is built on; False when it is not all there.
+
+    The copy counts only if the older `baseline/` holds exactly the files its `baseline.json` lists:
+    `copy_snapshot` of a missing or emptied folder copies nothing and raises nothing, and an empty baseline
+    would list every file as added and make Keep refuse for nothing. The frozen index is copied as it is, so
+    both requests start from byte-identical records. Nothing here may fail the request: a record that
+    cannot be read just means the caller starts from the folder instead.
+    """
+    older = request_dir(project_id, older_id)
+    try:
+        listed = read_index(older / "baseline.json")
+        copied = copy_snapshot(older / "baseline", baseline)
+        if _identity(copied) != _identity(listed):
+            return False
+        shutil.copy2(older / "baseline.json", frozen)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def prepare_recovery_workspace(historical_root: Path | str, request_id: str) -> dict[str, Any]:
@@ -363,9 +391,14 @@ def prepare_recovery_workspace(historical_root: Path | str, request_id: str) -> 
     return meta
 
 
+def _identity(index: TreeIndex) -> dict[str, str]:
+    """The files a tree index lists, with the content identity of each."""
+    return {rel: entry.sha256 for rel, entry in index.files.items()}
+
+
 def _tree_hashes(root: Path) -> dict[str, str]:
     """Content identity of every snapshotted source file (node_modules and build output excluded)."""
-    return {rel: entry.sha256 for rel, entry in index_tree(root).files.items()}
+    return _identity(index_tree(root))
 
 
 def _src_hashes(root: Path) -> dict[str, str]:
@@ -825,8 +858,6 @@ def _run_agent_request(
     start_preview_after: bool,
 ) -> None:
     """Local Coder's own agent edits the working copy; Local Coder checks what it wrote."""
-    import shutil
-
     from local_coder.agent.runner import build_session
     from local_coder.general.chat_log import recent_messages
 
