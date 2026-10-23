@@ -274,11 +274,14 @@ def live_dir(project_id: str) -> Path:
     return path
 
 
-def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) -> dict[str, Any]:
+def prepare_workspace(
+    user_path: Path, request_id: str, *, allow_starter: bool, carry: bool = True,
+) -> dict[str, Any]:
     """Snapshot the current user tree, including uncommitted work.
 
     The folder must already exist: a request never creates it. Only New Project and the welcome
-    chat make folders.
+    chat make folders. `carry=False` starts from the folder as it is now, whatever result still waits:
+    the hosted agent does, and so does a continuation, which brings its own copy.
     """
     user_path = user_path.expanduser().resolve()
     problem = folder_problem(user_path)
@@ -289,7 +292,7 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
     baseline = root / "baseline"
     candidate = root / "candidate"
     live_candidate = live_dir(pid) / "candidate"
-    carried = _open_request_in(pid, request_id, live_candidate)
+    carried = _open_request_in(pid, request_id, live_candidate) if carry else None
     empty = not any(user_path.iterdir())
     starter_used = False
     if empty and allow_starter:
@@ -622,7 +625,10 @@ def run_general_request(
     except ModelIdentityError as exc:
         raise GeneralError(exc.detail, code=exc.code) from exc
     _emit(listener, "preparing", {"request_id": request_id})
-    meta = prepare_workspace(folder, request_id, allow_starter=True)
+    # The engine is decided once, before the workspace is made: the agent starts from the folder, so its
+    # request never carries a waiting result (not even for a moment), and neither does a continuation.
+    use_agent = fake_engine is None and (agent_chat is not None or (fake_complete is None and _agent_capable()))
+    meta = prepare_workspace(folder, request_id, allow_starter=True, carry=not (use_agent or continue_from))
     meta["title"] = _title_line(text)
     _emit(listener, "activity", {"detail": "Working copy is ready."})
     candidate = Path(meta["candidate"])
@@ -645,7 +651,7 @@ def run_general_request(
                 complete=None, conversation="", start_preview_after=start_preview_after,
                 allow_repair=False,
             )
-    elif agent_chat is not None or (fake_complete is None and _agent_capable()):
+    elif use_agent:
         from local_coder.agent.runner import context_chars_for, hosted_tool_chat
 
         cfg = load_machine_config()
@@ -829,8 +835,6 @@ def _run_agent_request(
     if fresh:
         # Start from the user's folder as it is now; node_modules in the live copy stay.
         sync_source_tree(baseline, engine_cwd)
-        meta.pop(BUILT_ON, None)  # so this run is not built on an older result that still waits
-        _save_meta(meta)  # and the record says so while the agent works, not only when it is done
     session = build_session(
         project=folder,
         workdir=engine_cwd,
