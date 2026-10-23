@@ -1213,6 +1213,7 @@ def _has_file_changes(before: Path, after: Path) -> bool:
 
 
 DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
+KEPT_SUMMARY = "These changes are in your project."
 STOPPED_NOTHING = "Stopped. Nothing was changed."
 STOPPED_WITH_FILES = "Stopped. Review what changed so far, or discard it."
 
@@ -1220,7 +1221,6 @@ STOPPED_WITH_FILES = "Stopped. Review what changed so far, or discard it."
 def stopped_text(has_files: bool) -> str:
     """What a Stop says: whether anything was written decides the second sentence."""
     return STOPPED_WITH_FILES if has_files else STOPPED_NOTHING
-KEPT_SUMMARY = "These changes are in your project."
 
 
 def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -> dict[str, Any]:
