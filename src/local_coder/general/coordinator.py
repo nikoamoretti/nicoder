@@ -484,17 +484,23 @@ def _open_request_in(project_id: str, request_id: str, live: Path) -> str | None
     return newest_id if all(now.sha_of(rel) == result.sha_of(rel) for rel in delta.touched()) else None
 
 
-def _newer_request_to_decide(metas: dict[str, dict[str, Any]], request_id: str) -> bool:
-    """True when a newer request built on this one still has changes to Keep or Discard.
+def _newest(metas: dict[str, dict[str, Any]], request_ids: list[str]) -> str | None:
+    """The most recently started of these requests, or None. In a stack that is the one to decide first."""
+    return max(request_ids, key=lambda rid: (_created(metas[rid]), rid), default=None)
+
+
+def _newer_request_to_decide(metas: dict[str, dict[str, Any]], request_id: str) -> str | None:
+    """The newest request built on this one that still has changes to Keep or Discard, or None.
 
     Keeping that one puts this one's changes into the project too, so this one can not be decided alone.
     A newer request with no files (it undid them) has nothing to keep and does not count.
     """
+    deciding: list[str] = []
     for other in waiting_on_top(metas, request_id):
         delta = request_delta(metas[other])
         if delta is not None and delta.touched():
-            return True
-    return False
+            deciding.append(other)
+    return _newest(metas, deciding)
 
 
 def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, applied: list[str]) -> list[str]:
@@ -1457,6 +1463,13 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         # What the model said before Keep ("the original project is unchanged...") is no longer true.
         summary = KEPT_WITH_SUMMARY if kept_with else KEPT_SUMMARY
         commentary = None
+    blocked_by = None
+    if state == WAITING and files:
+        blocked_by = _newer_request_to_decide(_project_metas(project_id), request_id)
+    if blocked_by:
+        # Keep and Discard would both be refused, so the review offers neither and says what to do instead.
+        summary = NEWER_FIRST
+        commentary = None
     engine = str(meta.get("engine") or "local")
     return {
         "kind": "code",
@@ -1478,10 +1491,11 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "pin": meta.get("pin") or pin_record(),
             "outcome": request_outcome(meta),
         },
-        "can_keep": state == WAITING and bool(files),
-        "can_discard": state == WAITING and bool(files),
+        "can_keep": state == WAITING and bool(files) and not blocked_by,
+        "can_discard": state == WAITING and bool(files) and not blocked_by,
         "outcome": request_outcome(meta),
         "kept_with": kept_with,
+        "blocked_by": blocked_by,
         "verification": {
             "build": stored.get("build") or "not_run",
             "typecheck": stored.get("typecheck") or "not_run",

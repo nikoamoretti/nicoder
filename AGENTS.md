@@ -112,7 +112,9 @@
   hosted-agent run always starts from the folder). Keeping a request closes the older
   ones it was built on as kept (`kept_with`: "These changes went in with a later
   request you kept."); while a newer request built on it still has changes to
-  decide, an older one can be neither kept nor discarded.
+  decide, an older one can be neither kept nor discarded, and its snapshot says so
+  (`can_keep` and `can_discard` false, `blocked_by` names the newer request, the
+  summary says to Keep or Discard that one first; its files and diff still show).
 - `src/local_coder/general/waiting.py` — a question asked while a result waits
   for Keep or Discard gets a note built from the request's own record (title,
   age, files, "not in the folder yet", and for the agent where to read the

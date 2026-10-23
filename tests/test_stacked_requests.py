@@ -335,7 +335,7 @@ def test_keeping_the_older_request_is_refused_while_the_newer_one_waits(calc):
         keep_changes("req-1", calc)
     assert refused.value.code == "newer_waiting" and refused.value.detail == DECIDE_NEWER_FIRST
     assert _tree(calc) == before
-    assert snapshot("req-1", repo=calc)["can_keep"] is True
+    assert snapshot("req-1", repo=calc)["can_keep"] is False, "the review does not offer a Keep that can only fail"
     assert keep_changes("req-2", calc)["ok"] is True
 
 
@@ -364,6 +364,8 @@ def test_a_newer_request_with_nothing_to_decide_does_not_block_the_older_one(cal
     second = _run(calc, "req-2", _write("src/calc.py", OLD))
     assert second["facts"]["files"] == [] and second["can_keep"] is False
     assert load_meta(first["project_id"], "req-2")["built_on"] == "req-1"
+    older = snapshot("req-1", repo=calc)
+    assert older["can_keep"] is True and older["can_discard"] is True, "nothing newer holds it back"
     assert discard_changes("req-1", repo=calc)["discarded"] is True
 
 
@@ -385,6 +387,92 @@ def test_the_refusal_reaches_the_app_as_a_plain_sentence(calc):
     assert reply["error"]["detail"] == DECIDE_NEWER_FIRST and reply["error"]["code"] == "newer_waiting"
     kept = server.dispatch({"id": "2", "method": "keep", "params": {"episode_id": "req-2", "path": str(calc)}})
     assert kept["ok"] is True and kept["result"]["also_kept"] == ["req-1"]
+
+
+# --- The older request's snapshot says what the refusals say -------------------------------------------------
+
+
+def test_the_snapshot_of_a_blocked_older_request_offers_neither_keep_nor_discard(calc):
+    """QA round 2: both buttons failed with newer_waiting, yet the review offered them."""
+    _fix(calc)
+    _extra(calc)
+    older = snapshot("req-1", repo=calc)
+    assert older["can_keep"] is False and older["can_discard"] is False
+    assert older["blocked_by"] == "req-2", "names the newer request"
+    assert older["summary"] == DECIDE_NEWER_FIRST, "one plain sentence that says what to do"
+    assert older["outcome"] == "review" and older["facts"]["outcome"] == "review", "it still waits"
+    assert older["facts"]["files"] == ["src/calc.py"], "what it changed still shows"
+    assert "return a + b" in older["diff"]
+    newer = snapshot("req-2", repo=calc)
+    assert newer["can_keep"] is True and newer["can_discard"] is True and newer["blocked_by"] is None
+    assert newer["summary"] == "I changed 2 file(s). Review the preview, then Keep or Discard."
+
+
+def test_the_blocked_snapshot_and_the_refusals_say_the_same_thing(calc):
+    _fix(calc)
+    _extra(calc)
+    older = snapshot("req-1", repo=calc)
+    assert older["can_keep"] is False and older["can_discard"] is False
+    with pytest.raises(GeneralError) as keep:
+        keep_changes("req-1", calc)
+    with pytest.raises(GeneralError) as discard:
+        discard_changes("req-1", repo=calc)
+    assert keep.value.detail == discard.value.detail == older["summary"]
+    assert keep.value.code == discard.value.code == "newer_waiting"
+
+
+def test_a_blocked_request_shows_its_reason_instead_of_the_models_call_to_review(calc):
+    first = _fix(calc)
+    meta_file = request_dir(first["project_id"], "req-1") / "meta.json"
+    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    meta["model_commentary"] = "I fixed add. Review it, then Keep."
+    meta_file.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    alone = snapshot("req-1", repo=calc)
+    assert alone["can_keep"] is True and alone["summary"] == alone["model_commentary"] == meta["model_commentary"]
+    _extra(calc)
+    older = snapshot("req-1", repo=calc)
+    assert older["can_keep"] is False
+    assert older["summary"] == DECIDE_NEWER_FIRST and older["model_commentary"] is None, (
+        "the app shows the commentary first, so it must not repeat a call to review"
+    )
+
+
+def test_in_a_stack_of_three_the_request_to_decide_first_is_the_newest(calc):
+    _fix(calc)
+    _extra(calc)
+    _run(calc, "req-3", _write("src/third.py", "THIRD = 3\n"))
+    one, two, three = (snapshot(f"req-{n}", repo=calc) for n in (1, 2, 3))
+    assert (one["can_keep"], two["can_keep"], three["can_keep"]) == (False, False, True)
+    assert (one["can_discard"], two["can_discard"], three["can_discard"]) == (False, False, True)
+    assert (one["blocked_by"], two["blocked_by"], three["blocked_by"]) == ("req-3", "req-3", None)
+    discard_changes("req-3", repo=calc)
+    two = snapshot("req-2", repo=calc)
+    assert two["can_keep"] is True and two["can_discard"] is True and two["blocked_by"] is None
+    assert two["summary"] == "I changed 2 file(s). Review the preview, then Keep or Discard."
+    one = snapshot("req-1", repo=calc)
+    assert one["can_keep"] is False and one["blocked_by"] == "req-2", "now the next one up is the one to decide"
+
+
+def test_the_older_request_is_offered_again_once_the_newer_one_is_decided(calc):
+    _fix(calc)
+    _extra(calc)
+    assert snapshot("req-1", repo=calc)["can_keep"] is False
+    discard_changes("req-2", repo=calc)
+    older = snapshot("req-1", repo=calc)
+    assert older["can_keep"] is True and older["can_discard"] is True and older["blocked_by"] is None
+    assert older["summary"] == "I changed 1 file(s). Review the preview, then Keep or Discard."
+    assert keep_changes("req-1", calc)["applied"] == ["src/calc.py"]
+
+
+def test_the_blocked_snapshot_reaches_the_app_with_its_two_flags_false(calc):
+    _fix(calc)
+    _extra(calc)
+    server = RpcServer(runtime=AppRuntime(), out=io.StringIO())
+    reply = server.dispatch({"id": "1", "method": "snapshot", "params": {"episode_id": "req-1", "path": str(calc)}})
+    assert reply["ok"] is True
+    result = reply["result"]
+    assert result["can_keep"] is False and result["can_discard"] is False and result["blocked_by"] == "req-2"
+    assert result["facts"]["files"] == ["src/calc.py"] and result["diff"], "the Mac app still lists the files and diff"
 
 
 # --- The working copy after a decision -----------------------------------------------------------------------
