@@ -281,7 +281,8 @@ def prepare_workspace(
     """Snapshot the current user tree, including uncommitted work.
 
     The folder must already exist: a request never creates it. Only New Project and the welcome
-    chat make folders. A request built on a result that still waits (`_open_request_in`) takes that
+    chat make folders. A request built on a result that still waits (`_open_request_in`, which passes over
+    discarded requests and requests that ended with no files of their own) takes that
     result's baseline as its own instead: its diff and its Keep are then measured from one starting
     point, so what was changed in the folder meanwhile is neither shown as the model's work nor
     reverted by Keep. `carry=False` starts from the folder as it is now, whatever result still waits: a
@@ -516,23 +517,41 @@ def _created(meta: dict[str, Any]) -> float:
 def _open_request_in(project_id: str, request_id: str, live: Path) -> str | None:
     """The waiting request whose result the project's working copy holds right now, or None.
 
-    A request that starts from the working copy is built on it. The copy is sticky, so only the newest
-    request can be in it, and only while it waits: Keep puts it in the project and Discard puts the copy
-    back to the folder. The copy must hold every file that request changed, as it left them.
+    A request that starts from the working copy is built on it. The copy is sticky, so the newest request
+    that counts decides, and only while it waits and has files: Keep puts a result in the project, so a kept
+    request is never built on. Two kinds of request are passed over because they left the copy as the request
+    before them had it: a discarded one, and a waiting one built on a result that ended with no files of its own
+    (failed, stopped, answered, changed nothing; a continuation is never one). A running request is never
+    passed over.
+
+    Nothing passed over: the copy must hold every file that request changed, as it left them. Something passed
+    over: the whole source tree of the copy must equal that request's result, or the stray file of a run that
+    crashed would become part of the new request.
     """
     if not live.is_dir():
         return None
-    others = {rid: meta for rid, meta in _project_metas(project_id).items() if rid != request_id}
-    if not others:
-        return None
-    newest_id = max(others, key=lambda rid: _created(others[rid]))
-    newest = others[newest_id]
-    delta = request_delta(newest) if request_state(newest) == WAITING else None
-    if delta is None or not delta.touched():
-        return None
-    result = index_tree(Path(str(newest["candidate"])))
-    now = index_tree(live)
-    return newest_id if all(now.sha_of(rel) == result.sha_of(rel) for rel in delta.touched()) else None
+    metas = {rid: meta for rid, meta in _project_metas(project_id).items() if rid != request_id}
+    running = _requests_in_flight(project_id)
+    passed_over = False
+    for rid in sorted(metas, key=lambda other: (_created(metas[other]), other), reverse=True):
+        meta = metas[rid]
+        state = request_state(meta)
+        delta = request_delta(meta) if state == WAITING else None
+        if rid not in running:
+            if state == DISCARDED:
+                passed_over = True
+                continue
+            if delta is not None and not delta.touched() and meta.get(BUILT_ON) and not meta.get("continued_from"):
+                passed_over = True
+                continue
+        if delta is None or not delta.touched():
+            return None
+        result = Path(str(meta["candidate"]))
+        if passed_over:
+            return rid if _tree_hashes(live) == _tree_hashes(result) else None
+        held, now = index_tree(result), index_tree(live)
+        return rid if all(now.sha_of(rel) == held.sha_of(rel) for rel in delta.touched()) else None
+    return None
 
 
 def _newest(metas: dict[str, dict[str, Any]], request_ids: list[str]) -> str | None:
@@ -677,8 +696,8 @@ def run_general_request(
     cancel = cancel_event or threading.Event()
     if fake_engine is not None:
         fake_engine(engine_cwd, text, cancel)
-        _publish_candidate(engine_cwd, candidate)
-        if not cancel.is_set():
+        idle = _publish_candidate(engine_cwd, candidate, meta)
+        if not idle and not cancel.is_set():
             _verify_and_repair(
                 meta, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
                 complete=None, conversation="", start_preview_after=start_preview_after,
@@ -766,14 +785,14 @@ def run_general_request(
                         "The model was asked twice for files and did not return any."
                     )
                 _save_meta(meta)
-            _publish_candidate(engine_cwd, candidate)
-            if written and not cancel.is_set():
+            idle = _publish_candidate(engine_cwd, candidate, meta)  # idle: nothing of its own to check or preview
+            if written and not idle and not cancel.is_set():
                 _verify_and_repair(
                     meta, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
                     complete=generate, conversation=conversation,
                     start_preview_after=start_preview_after, allow_repair=True,
                 )
-            elif start_preview_after:
+            elif start_preview_after and not idle:
                 _maybe_attach_preview(meta, candidate, listener, start_preview_after=start_preview_after)
     stopped = cancel.is_set()
     if stopped:
@@ -885,7 +904,7 @@ def _run_agent_request(
     rounds = 0
     try:
         while True:
-            _publish_candidate(engine_cwd, candidate)
+            _publish_candidate(engine_cwd, candidate, meta)  # idle: no files, so the break below skips the checks
             meta["model_commentary"] = run.answer
             if cancel.is_set() or run.status == "stopped":
                 meta["model_commentary"] = stopped_text(_has_file_changes(baseline, candidate))
@@ -1072,7 +1091,8 @@ def _verify_and_repair(
             return
         if outcome.kind == "applied" and written:
             invalidate_views(views, written)
-            _publish_candidate(engine_cwd, candidate)
+            if _publish_candidate(engine_cwd, candidate, meta):
+                return  # the repair put the copy back exactly as the result this was built on: nothing left to check
             repairs += 1
             stalled = 0
             needs_check = True
@@ -1195,14 +1215,75 @@ def _record_verification(
     return verification
 
 
-def _publish_candidate(engine_cwd: Path, candidate: Path) -> None:
-    """Copy live source onto the review candidate without wiping node_modules."""
+def _result_it_was_built_on(meta: dict[str, Any]) -> Path | None:
+    """The candidate folder of the waiting result this request is built on, or None.
+
+    None for a continuation, a link that points at nothing, a result that was decided since, a record that
+    cannot be read and a candidate that is gone: the callers then work from the request's own baseline.
+    """
+    older = meta.get(BUILT_ON)
+    if not older or meta.get("continued_from"):
+        return None
+    folder = project_dir(str(meta["project_id"])) / "requests" / str(older)
+    try:
+        older_meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if request_state(older_meta) != WAITING or not (folder / "candidate").is_dir():
+        return None
+    return folder / "candidate"
+
+
+def _idle_baseline(engine_cwd: Path, meta: dict[str, Any]) -> Path | None:
+    """The request's baseline when its working copy is exactly the result it was built on, else None.
+
+    Decided from the two trees, never from the model's words or `meta["agent"]["status"]`. None too when the
+    baseline is not all there: `baseline/` must hold exactly the files its `baseline.json` lists, or an
+    empty copy of it would list every file as deleted.
+    """
+    result = _result_it_was_built_on(meta)
+    if result is None:
+        return None
+    try:
+        baseline = Path(str(meta["baseline"]))
+        if _tree_hashes(engine_cwd) != _tree_hashes(result):
+            return None
+        whole = _identity(index_tree(baseline)) == _identity(read_index(baseline.parent / "baseline.json"))
+    except (KeyError, OSError, ValueError):
+        return None
+    return baseline if whole else None
+
+
+def _forget_checks(meta: dict[str, Any]) -> None:
+    """Drop the check results of a request that has no result of its own: they describe a state it no longer has."""
+    stale = [key for key in ("verification", "preview_health") if key in meta]
+    for key in stale:
+        del meta[key]
+    if stale:
+        _save_meta(meta)
+
+
+def _publish_candidate(engine_cwd: Path, candidate: Path, meta: dict[str, Any] | None = None) -> bool:
+    """Copy live source onto the review candidate without wiping node_modules; True when the request is idle.
+
+    A request built on a result that still waits (`meta` given, not a continuation) whose working copy is exactly
+    that result has no result of its own: it publishes its baseline instead, so its review lists no files, offers
+    neither Keep nor Discard, holds the older request back no longer and runs no check (the callers skip them).
+    Its record loses the check results of earlier states of the copy. The History word stays: `error`,
+    `stopped` or `review` are what happened, not what was changed.
+    """
     if engine_cwd.resolve() == candidate.resolve():
-        return
+        return False
+    baseline = _idle_baseline(engine_cwd, meta) if meta is not None else None
+    source = baseline or engine_cwd
     if candidate.exists() and (candidate / "node_modules").is_dir():
-        sync_source_tree(engine_cwd, candidate)
-        return
-    copy_snapshot(engine_cwd, candidate)
+        sync_source_tree(source, candidate)
+    else:
+        copy_snapshot(source, candidate)
+    if baseline is None or meta is None:
+        return False
+    _forget_checks(meta)
+    return True
 
 
 def _title_line(text: str) -> str:
@@ -1653,9 +1734,13 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
 def _reset_live_copy(meta: dict[str, Any]) -> None:
     """Put the project's sticky working copy back to this request's baseline.
 
-    Without this the next request would start from the discarded work, and its diff would show it
-    again. Only source files are touched: node_modules and other excluded folders stay.
+    A request with no files of its own leaves the copy as it is: the copy then holds a newer result, and putting
+    it back would wipe that. Without this the next request would start from the discarded work, and its diff
+    would show it again. Only source files are touched: node_modules and other excluded folders stay.
     """
+    delta = request_delta(meta)
+    if delta is not None and not delta.touched():
+        return
     live = Path(meta.get("engine_cwd") or project_dir(str(meta["project_id"])) / "live" / "candidate")
     baseline = Path(meta["baseline"])
     if live.is_dir() and baseline.is_dir():

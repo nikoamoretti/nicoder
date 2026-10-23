@@ -268,19 +268,20 @@ def test_the_note_follows_the_state_of_the_project(calc, monkeypatch):
 
 
 def test_the_newest_open_request_that_changed_files_is_the_waiting_one(calc):
-    from local_coder.general.waiting import find_waiting_result
+    from local_coder.general.waiting import find_waiting_result, waiting_note
 
     _fix(calc, "req-old")
     time.sleep(0.01)
-    # A later hosted request that only answered is built on the waiting result, so it lists the same file and is the
-    # newest request with files: the note still names src/calc.py.
+    # A later hosted request that only answered is built on the waiting result but has no result of its own: it lists
+    # no file, so the waiting result is still the request that made it, and the note names that request.
     answered = run_general_request(
         calc, "Fix anything that is wrong", request_id="req-empty",
         agent_chat=Recorder(_reply("Nothing needed changing.")), start_preview_after=False,
     )
-    assert answered["facts"]["files"] == ["src/calc.py"]
+    assert answered["facts"]["files"] == []
     waiting = find_waiting_result(calc)
-    assert waiting is not None and waiting.request_id == "req-empty" and waiting.files == ["src/calc.py"]
+    assert waiting is not None and waiting.request_id == "req-old" and waiting.files == ["src/calc.py"]
+    assert "Fix add so it adds instead of subtracting." in waiting_note(calc, can_read=True), "its own title"
     time.sleep(0.01)
 
     def other(candidate: Path, _text: str, _cancel) -> None:

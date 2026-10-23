@@ -22,8 +22,10 @@ from local_coder.general.coordinator import (
 from local_coder.general.request_state import WAITING, request_state
 from local_coder.general.snapshot import Delta
 
-# Only the newest few open requests are looked at; most have no files (a question, a stop before any write).
-LOOK_AT = 5
+# Only the newest open requests are looked at; most have no files (a question, a stop before any write, a follow-up
+# that failed or changed nothing and so has no result of its own), and a run of those must not hide the result that
+# still waits behind them.
+LOOK_AT = 30
 LISTED_FILES = 8
 
 
