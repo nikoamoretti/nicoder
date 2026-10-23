@@ -1226,7 +1226,7 @@ KEPT_SUMMARY = "These changes are in your project."
 def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -> dict[str, Any]:
     """A discarded request is closed: nothing to keep or discard, no files and no diff. Its evidence stays on disk."""
     engine = str(meta.get("engine") or "local")
-    agent = meta.get("agent") if isinstance(meta.get("agent"), dict) else {}
+    agent = meta.get("agent")
     return {
         "kind": "code",
         "engine": engine,
@@ -1263,7 +1263,7 @@ def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -
         },
         "model_commentary": None,
         "accept_requires_confirmation": True,
-        "cost_usd": agent.get("cost_usd"),
+        "cost_usd": agent.get("cost_usd") if isinstance(agent, dict) else None,
     }
 
 

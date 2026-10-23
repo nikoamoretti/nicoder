@@ -37,6 +37,6 @@ def request_outcome(meta: Any) -> str:
     state = request_state(meta)
     if state != WAITING:
         return state
-    agent = meta.get("agent") if isinstance(meta, dict) and isinstance(meta.get("agent"), dict) else {}
-    status = agent.get("status")
+    agent = meta.get("agent") if isinstance(meta, dict) else None
+    status = agent.get("status") if isinstance(agent, dict) else None
     return str(status) if status in _AGENT_ENDS else "review"
