@@ -580,7 +580,7 @@ def test_a_continuation_keeps_a_baseline_of_its_own_the_folder_as_it_is_now(proj
                                 continue_from="req-1", start_preview_after=False)
     record = _record(project, "req-3")
     assert record["built_on"] == "req-1" and "notes.txt" in record["baseline_files"]
-    assert third["facts"]["files"] != [], "it still carries the request it continues"
+    assert "src/third.py" in third["facts"]["files"] and "src/calc.py" in third["facts"]["files"]
 
 
 def test_a_crash_while_the_workspace_is_made_leaves_no_half_record(project, monkeypatch):
