@@ -272,14 +272,15 @@ def test_the_newest_open_request_that_changed_files_is_the_waiting_one(calc):
 
     _fix(calc, "req-old")
     time.sleep(0.01)
-    # A later request that only answered (changed no files) does not hide the older waiting result.
+    # A later hosted request that only answered is built on the waiting result, so it lists the same file and is the
+    # newest request with files: the note still names src/calc.py.
     answered = run_general_request(
         calc, "Fix anything that is wrong", request_id="req-empty",
         agent_chat=Recorder(_reply("Nothing needed changing.")), start_preview_after=False,
     )
-    assert answered["facts"]["files"] == []
+    assert answered["facts"]["files"] == ["src/calc.py"]
     waiting = find_waiting_result(calc)
-    assert waiting is not None and waiting.request_id == "req-old" and waiting.files == ["src/calc.py"]
+    assert waiting is not None and waiting.request_id == "req-empty" and waiting.files == ["src/calc.py"]
     time.sleep(0.01)
 
     def other(candidate: Path, _text: str, _cancel) -> None:
@@ -288,6 +289,29 @@ def test_the_newest_open_request_that_changed_files_is_the_waiting_one(calc):
     run_general_request(calc, "Add other", request_id="req-new", fake_engine=other, start_preview_after=False)
     newest = find_waiting_result(calc)
     assert newest is not None and newest.request_id == "req-new"
+
+
+def test_a_request_that_only_answered_does_not_hide_a_result_it_is_not_built_on(calc):
+    """The note names a result that really has files: an open request with none is passed over. Here the answering
+    request is built on nothing, because a Discard of the request built on req-old put the working copy back."""
+    from local_coder.general.waiting import find_waiting_result
+
+    _fix(calc, "req-old")
+    time.sleep(0.01)
+
+    def other(candidate: Path, _text: str, _cancel) -> None:
+        (candidate / "src" / "other.py").write_text("y = 2\n", encoding="utf-8")
+
+    run_general_request(calc, "Add other", request_id="req-mid", fake_engine=other, start_preview_after=False)
+    discard_changes("req-mid", repo=calc)
+    time.sleep(0.01)
+    answered = run_general_request(
+        calc, "Fix anything that is wrong", request_id="req-empty",
+        agent_chat=Recorder(_reply("Nothing needed changing.")), start_preview_after=False,
+    )
+    assert answered["facts"]["files"] == []
+    waiting = find_waiting_result(calc)
+    assert waiting is not None and waiting.request_id == "req-old" and waiting.files == ["src/calc.py"]
 
 
 def test_nothing_is_waiting_while_a_request_is_still_running(calc):

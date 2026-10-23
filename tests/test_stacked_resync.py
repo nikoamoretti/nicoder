@@ -1,10 +1,10 @@
 """Cut stacked-resync: Keep never reverts what Nico changed in the folder himself.
 
-A request built on a result that still waits (the local path: it runs on the project's sticky working copy)
-starts from that result, not from the folder. Its baseline has to be that result's baseline, or the diff and
-Keep would measure from two different starting points, and whatever Nico changed in the folder meanwhile
-would show up as the model's work and be reverted by Keep. The hosted agent is the other way round: it starts
-from the folder (his edits included), so it must never carry or inherit anything from a waiting result.
+A request built on a result that still waits (it runs on the project's sticky working copy, whichever engine:
+the local model or the hosted agent) starts from that result, not from the folder. Its baseline has to be that
+result's baseline, or the diff and Keep would measure from two different starting points, and whatever Nico
+changed in the folder meanwhile would show up as the model's work and be reverted by Keep. A continuation
+(`continue_from`) is the exception: it brings its own copy and never inherits a baseline.
 
 Every scenario here edits the folder by hand while a result waits.
 """
@@ -153,7 +153,7 @@ class _Script:
 
 
 def _agent_fix(project: Path, request_id: str = "req-1") -> dict:
-    """A hosted-agent run that fixes add(): it starts from the folder."""
+    """A hosted-agent run that fixes add(). Nothing waits in these tests when it runs, so it starts from the folder."""
     script = _Script(
         _reply(calls=[_call("write", {"path": "src/calc.py", "content": NEW}, "w")]), _reply("Fixed add()."),
     )
@@ -161,11 +161,12 @@ def _agent_fix(project: Path, request_id: str = "req-1") -> dict:
                                start_preview_after=False)
 
 
-# --- The hosted agent starts from the folder, with his edits, and never carries a waiting result ---------------
+# --- The hosted agent builds on a waiting result like every other engine ------------------------------------
 
 
-def test_a_hosted_follow_up_starts_from_the_folder_with_his_edits(project):
-    """H1: the follow-up works on another file. It sees his notes.txt, not the waiting fix, and its Keep is clean."""
+def test_a_hosted_follow_up_builds_on_the_waiting_result_and_his_edits_survive(project):
+    """H1: the follow-up works on another file. It reads the waiting fix, its review is the stack's, and one Keep
+    takes both. The known limit of building on the result: it does not see what he edited after R1 started."""
     _agent_fix(project)
     _hand_edits(project)
     script = _Script(
@@ -178,45 +179,47 @@ def test_a_hosted_follow_up_starts_from_the_folder_with_his_edits(project):
     second = run_general_request(project, "request req-2", request_id="req-2", agent_chat=script,
                                  start_preview_after=False)
     seen = script.tool_text()
-    assert "notes.txt" in seen, "the agent works on the folder as it is now"
-    assert "return a - b" in seen and "return a + b" not in seen, "it does not see the fix that still waits"
-    assert at_first_call["built_on"] is None, "not built on the waiting result"
-    assert "notes.txt" in at_first_call["baseline_files"], "its baseline is the folder as it is now"
-    assert second["facts"]["files"] == ["src/extra.py"]
+    assert "return a + b" in seen and "return a - b" not in seen, "it reads the fix that still waits"
+    assert "notes.txt" not in seen, "his later edits are not in the copy it starts from (the known limit)"
+    assert at_first_call["built_on"] == "req-1"
+    assert "notes.txt" not in at_first_call["baseline_files"], "R1's baseline: his edits are not the model's work"
+    assert second["facts"]["files"] == ["src/calc.py", "src/extra.py"]
     older = snapshot("req-1", repo=project)
-    assert older["can_keep"] is True and older["outcome"] == "review", "nothing holds the older request back"
+    assert older["can_keep"] is False and older["blocked_by"] == "req-2", "R1 is decided with the newer request"
     kept = keep_changes("req-2", project)
-    assert kept["applied"] == ["src/extra.py"] and kept["also_kept"] == []
+    assert kept["applied"] == ["src/calc.py", "src/extra.py"] and kept["also_kept"] == ["req-1"]
     assert (project / "README.md").read_text(encoding="utf-8") == HIS_README
     assert (project / "notes.txt").read_text(encoding="utf-8") == HIS_NOTES
-    assert keep_changes("req-1", project)["applied"] == ["src/calc.py"]
     assert _history(project) == [("req-2", "kept"), ("req-1", "kept")]
 
 
-def test_a_hosted_follow_up_on_the_same_file_does_not_see_the_waiting_fix(project):
-    """H2 documents today's hosted behaviour, left alone by this cut: the older Keep is still offered, and fails."""
+def test_a_hosted_follow_up_on_the_same_file_sees_the_waiting_fix_and_one_keep_takes_both(project):
+    """H2: the same-file follow-up edits the fixed line, so the newer Keep closes the older request; no Keep is
+    offered that can only fail."""
     _agent_fix(project)
     script = _Script(
         _reply(calls=[_call("read", {"path": "src/calc.py"}, "a")]),
-        _reply(calls=[_call("write", {"path": "src/calc.py", "content": OLD + "# documented\n"}, "b")]),
+        _reply(calls=[_call("write", {"path": "src/calc.py", "content": NEW + "# documented\n"}, "b")]),
         _reply("Documented add()."),
     )
     second = run_general_request(project, "request req-2", request_id="req-2", agent_chat=script,
                                  start_preview_after=False)
-    assert "return a - b" in script.tool_text(), "it reads the folder, which still has the old code"
+    seen = script.tool_text()
+    assert "return a + b" in seen and "return a - b" not in seen, "it reads the fix that still waits"
     assert second["facts"]["files"] == ["src/calc.py"]
-    assert keep_changes("req-2", project)["applied"] == ["src/calc.py"]
-    assert snapshot("req-1", repo=project)["can_keep"] is True
+    kept = keep_changes("req-2", project)
+    assert kept["applied"] == ["src/calc.py"] and kept["also_kept"] == ["req-1"]
     before = _tree(project)
-    with pytest.raises(GeneralError) as refused:
+    with pytest.raises(GeneralError) as closed:
         keep_changes("req-1", project)
-    assert refused.value.code == "conflict" and refused.value.detail == CONFLICT
-    assert _tree(project) == before, "a refused Keep writes nothing"
-    assert _history(project) == [("req-2", "kept"), ("req-1", "review")]
+    assert closed.value.code == "kept", "the older request is closed, not refused as a conflict"
+    assert _tree(project) == before
+    assert _history(project) == [("req-2", "kept"), ("req-1", "kept")]
 
 
-def test_a_hosted_run_is_never_built_on_a_waiting_result_not_even_for_a_moment(project, monkeypatch):
-    """The link must not be recorded and taken back: for that moment the older request would be held back."""
+def test_a_hosted_run_is_built_on_a_waiting_result_before_its_first_model_call(project, monkeypatch):
+    """The link and the inherited baseline are on disk when the workspace is made, so the older request is held back
+    from that moment and the working copy the agent starts in already holds the waiting result."""
     _fix(project)
     _hand_edits(project)
     made: dict = {}
@@ -233,15 +236,20 @@ def test_a_hosted_run_is_never_built_on_a_waiting_result_not_even_for_a_moment(p
     during: dict = {}
     script = _Script(_reply(calls=[_call("write", {"path": "src/extra.py", "content": "EXTRA = 1\n"}, "a")]),
                      _reply("Added extra.py."))
-    script.hook = lambda: during.update(snapshot("req-1", repo=project))
+    working_copy = coordinator.live_dir(coordinator.project_id_for(project)) / "candidate"
+    script.hook = lambda: during.update(
+        snapshot("req-1", repo=project), copy=(working_copy / "src" / "calc.py").read_text(encoding="utf-8"),
+    )
     run_general_request(project, "request req-2", request_id="req-2", agent_chat=script, start_preview_after=False)
-    assert made["in_memory"] is None and made["on_disk"] is None
-    assert "notes.txt" in made["baseline_files"]
-    assert during["can_keep"] is True and during["blocked_by"] is None, "the older request is not held back"
+    assert made["in_memory"] == "req-1" and made["on_disk"] == "req-1"
+    assert "notes.txt" not in made["baseline_files"], "the baseline is the waiting result's, inherited whole"
+    assert during["can_keep"] is False and during["blocked_by"] == "req-2", "the older request is held back"
+    assert during["copy"] == NEW, "the agent starts in the working copy as the waiting result left it"
 
 
 def test_the_engine_is_decided_once_for_the_workspace_and_the_run(project, monkeypatch):
-    """With a hosted model selected the request reads the engine choice one time and never carries."""
+    """With a hosted model selected the request reads the engine choice one time; its workspace and its run agree:
+    both build on the waiting result."""
     from local_coder.agent import runner
 
     machine.write_machine_config(HOSTED)
@@ -250,17 +258,21 @@ def test_the_engine_is_decided_once_for_the_workspace_and_the_run(project, monke
     asked: list[bool] = []
     real = coordinator._agent_capable
     monkeypatch.setattr(coordinator, "_agent_capable", lambda: asked.append(True) or real())
-    script = _Script(_reply(calls=[_call("write", {"path": "src/extra.py", "content": "EXTRA = 1\n"}, "a")]),
-                     _reply("Added extra.py."))
+    script = _Script(
+        _reply(calls=[_call("read", {"path": "src/calc.py"}, "r"),
+                      _call("write", {"path": "src/extra.py", "content": "EXTRA = 1\n"}, "a")]),
+        _reply("Added extra.py."),
+    )
     at_first_call: dict = {}
     script.hook = lambda: at_first_call.update(_record(project, "req-2"))
     monkeypatch.setattr(runner, "hosted_tool_chat", lambda _cfg, cancel=None: script)
     review = run_general_request(project, "request req-2", request_id="req-2", start_preview_after=False)
     assert asked == [True], "one decision, not one for the workspace and another for the run"
     assert review["engine"] == "agent"
-    assert at_first_call["built_on"] is None and "notes.txt" in at_first_call["baseline_files"]
-    assert review["facts"]["files"] == ["src/extra.py"]
-    assert keep_changes("req-2", project)["applied"] == ["src/extra.py"]
+    assert at_first_call["built_on"] == "req-1" and "notes.txt" not in at_first_call["baseline_files"]
+    assert "return a + b" in script.tool_text(), "the agent read the waiting fix"
+    assert review["facts"]["files"] == ["src/calc.py", "src/extra.py"]
+    assert keep_changes("req-2", project)["applied"] == ["src/calc.py", "src/extra.py"]
 
 
 # --- His hand edits survive a stacked Keep (the High) ---------------------------------------------------------
