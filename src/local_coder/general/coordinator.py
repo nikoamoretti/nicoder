@@ -5,14 +5,16 @@ onto a disposable copy. The original tree changes only on Keep.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 from local_coder.engines.model_identity import ModelIdentityError, assert_identity, resolve_model_id
 from local_coder.engines.opencode_client import OpenCodeError
@@ -48,7 +50,9 @@ from local_coder.general.repair_context import (
     invalidate_views,
     write_repair_state,
 )
+from local_coder.general.request_state import DISCARDED, WAITING, request_outcome, request_state
 from local_coder.general.snapshot import (
+    Delta,
     TreeIndex,
     apply_delta,
     compute_delta,
@@ -134,6 +138,45 @@ class GeneralError(Exception):
         super().__init__(detail)
         self.detail = detail
         self.code = code
+
+
+_Params = ParamSpec("_Params")
+_Result = TypeVar("_Result")
+_RUNNING: dict[str, int] = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+@contextmanager
+def _request_running(project_id: str) -> Iterator[None]:
+    """Mark a project as having a request in flight, so Discard never rewrites its working copy under it."""
+    with _RUNNING_LOCK:
+        _RUNNING[project_id] = _RUNNING.get(project_id, 0) + 1
+    try:
+        yield
+    finally:
+        with _RUNNING_LOCK:
+            remaining = _RUNNING.get(project_id, 1) - 1
+            if remaining > 0:
+                _RUNNING[project_id] = remaining
+            else:
+                _RUNNING.pop(project_id, None)
+
+
+def _request_in_flight(project_id: str) -> bool:
+    with _RUNNING_LOCK:
+        return project_id in _RUNNING
+
+
+def _tracks_running(function: Callable[_Params, _Result]) -> Callable[_Params, _Result]:
+    """Wrap run_general_request: its first argument is the project folder."""
+
+    @functools.wraps(function)
+    def wrapper(*args: _Params.args, **kwargs: _Params.kwargs) -> _Result:
+        folder = args[0] if args else kwargs["user_path"]
+        with _request_running(project_id_for(Path(str(folder)).expanduser())):
+            return function(*args, **kwargs)
+
+    return wrapper
 
 
 def project_id_for(path: Path) -> str:
@@ -383,6 +426,7 @@ def ensure_model_server() -> dict[str, Any]:
     return {"ok": True, "started": True, "status": server_status(cfg), "start": result}
 
 
+@_tracks_running
 def run_general_request(
     user_path: str | Path,
     text: str,
@@ -1161,8 +1205,58 @@ def _has_file_changes(before: Path, after: Path) -> bool:
     return bool(compute_delta(_frozen_baseline(before), index_tree(after)).touched())
 
 
+DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
+
+
+def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -> dict[str, Any]:
+    """A discarded request is closed: nothing to keep or discard, no files and no diff. Its evidence stays on disk."""
+    engine = str(meta.get("engine") or "local")
+    agent = meta.get("agent") if isinstance(meta.get("agent"), dict) else {}
+    return {
+        "kind": "code",
+        "engine": engine,
+        "request_id": request_id,
+        "episode_id": request_id,
+        "preview": {},
+        "project_id": project_id,
+        "repo_path": meta["user_path"],
+        "summary": DISCARDED_SUMMARY,
+        "diff": "",
+        "outcome": DISCARDED,
+        "facts": {
+            "files": [],
+            "delta": Delta(added=[], modified=[], deleted=[], renamed=[]).as_dict(),
+            "complete": False,
+            "engine": engine,
+            "model_id": meta.get("model_id"),
+            "provider": meta.get("provider") or "local",
+            "pin": meta.get("pin") or pin_record(),
+            "outcome": DISCARDED,
+        },
+        "can_keep": False,
+        "can_discard": False,
+        "verification": {
+            "build": "not_run",
+            "typecheck": "not_run",
+            "tests": "not_run",
+            "browser": "not_run",
+            "preview": "not_run",
+            "page_mounted": False,
+            "behavior_verified": False,
+            "stopped_incomplete": False,
+            "files_written": False,
+        },
+        "model_commentary": None,
+        "accept_requires_confirmation": True,
+        "cost_usd": agent.get("cost_usd"),
+    }
+
+
 def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
     meta = load_meta(project_id, request_id)
+    state = request_state(meta)
+    if state == DISCARDED:
+        return _discarded_payload(meta, project_id, request_id)
     baseline = Path(meta["baseline"])
     candidate = Path(meta["candidate"])
     frozen = baseline.parent / "baseline.json"
@@ -1238,8 +1332,9 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "provider": meta.get("provider") or "local",
             "pin": meta.get("pin") or pin_record(),
         },
-        "can_keep": bool(files),
-        "can_discard": True,
+        "can_keep": state == WAITING and bool(files),
+        "can_discard": state == WAITING and bool(files),
+        "outcome": request_outcome(meta),
         "verification": {
             "build": stored.get("build") or "not_run",
             "typecheck": stored.get("typecheck") or "not_run",
@@ -1260,6 +1355,8 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
 def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dict[str, Any]:
     """Apply B→C onto the current user tree. Not an OpenCode revert."""
     meta = load_meta(project_id, request_id)
+    if request_state(meta) == DISCARDED:
+        raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
     result = apply_delta(Path(user_path), Path(meta["baseline"]), Path(meta["candidate"]))
     if not result.get("ok"):
         raise GeneralError(str(result.get("detail") or "Keep failed."), code=str(result.get("code") or "accept"))
@@ -1269,15 +1366,39 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     return {"ok": True, **result, "request_id": request_id, "repo": str(Path(user_path).resolve())}
 
 
+def _reset_live_copy(meta: dict[str, Any]) -> None:
+    """Put the project's sticky working copy back to this request's baseline.
+
+    Without this the next request would start from the discarded work, and its diff would show it
+    again. Only source files are touched: node_modules and other excluded folders stay.
+    """
+    live = Path(meta.get("engine_cwd") or project_dir(str(meta["project_id"])) / "live" / "candidate")
+    baseline = Path(meta["baseline"])
+    if live.is_dir() and baseline.is_dir():
+        sync_source_tree(baseline, live)
+
+
 def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
-    """Drop the candidate. Evidence remains. Session is not reused."""
+    """Close the request without keeping it. Evidence (meta.json, candidate/) stays on disk."""
+    meta = load_meta(project_id, request_id)
+    if request_state(meta) == DISCARDED:
+        return {"ok": True, "discarded": True, "request_id": request_id, "detail": "Already discarded."}
+    if _request_in_flight(project_id):
+        raise GeneralError(
+            "A request is still running in this project. Wait for it to finish, or stop it, then discard.",
+            code="busy",
+        )
+    try:
+        _reset_live_copy(meta)
+    except OSError as exc:
+        raise GeneralError(
+            "Local Coder could not clear this request's working copy, so it was not discarded. Try again.",
+            code="discard_failed",
+        ) from exc
     stop_owned()
     stop_preview()
-    meta = load_meta(project_id, request_id)
     meta["discarded"] = True
-    (request_dir(project_id, request_id) / "meta.json").write_text(
-        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
-    )
+    _save_meta(meta)
     return {
         "ok": True,
         "discarded": True,
@@ -1311,19 +1432,10 @@ def list_requests(user_path: str | Path) -> list[dict[str, Any]]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        agent = meta.get("agent") if isinstance(meta.get("agent"), dict) else {}
-        if meta.get("discarded"):
-            outcome = "discarded"
-        elif meta.get("kept"):
-            outcome = "kept"
-        elif agent.get("status") in {"stopped", "time_limit", "step_limit", "error"}:
-            outcome = str(agent["status"])
-        else:
-            outcome = "review"
         rows.append({
             "episode_id": meta.get("request_id") or entry.name,
             "request_id": meta.get("request_id") or entry.name,
-            "outcome": outcome,
+            "outcome": request_outcome(meta),
             "request": (meta.get("title") or _title_from_transcript(entry))[:160],
             "updated_ts": meta.get("created_ts"),
             "created_ts": meta.get("created_ts"),
