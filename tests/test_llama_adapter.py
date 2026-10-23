@@ -140,6 +140,12 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+@pytest.fixture(autouse=True)
+def host_binary_is_never_run(monkeypatch):
+    """These tests must not depend on the host's llama-server (a cold start took 18 s and failed 30 of them)."""
+    monkeypatch.setattr("local_coder.inference.llama_cpp.llama_server_version", lambda *_a, **_k: "stand-in 0")
+
+
 @pytest.fixture
 def mock_server():
     """Running mock llama.cpp server plus its observable state."""

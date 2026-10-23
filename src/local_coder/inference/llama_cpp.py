@@ -95,11 +95,22 @@ class LlamaCppAdapter(ModelAdapter):
         self.last_request: dict | None = None
         self.last_failure: dict | None = None
         self.server_props: dict = {}
-        self.local_binary_version = llama_server_version()
+        self._local_binary_version: str | None = None
         self._cancel = threading.Event()
         self._active_lock = threading.Lock()
         self._active_response: httpx.Response | None = None
         self._stream_progress: dict = {}
+
+    @property
+    def local_binary_version(self) -> str:
+        """`llama-server --version` of the installed binary, asked once and only when a record needs it.
+
+        Building an adapter must not run the binary: a cold start took 18 s on this Mac. 'unknown' when
+        it does not answer in time.
+        """
+        if self._local_binary_version is None:
+            self._local_binary_version = llama_server_version()
+        return self._local_binary_version
 
     def _client(self) -> httpx.Client:
         timeout = httpx.Timeout(connect=10.0, read=float(self.read_timeout_s),
