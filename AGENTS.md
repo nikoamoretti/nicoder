@@ -109,7 +109,15 @@
   one `stopped` event, never `done`. A request starts the sticky copy from the folder
   as it is now, unless it is built on an older request that still waits (`built_on`
   in its meta.json, found by comparing the copy with that request's result; a
-  hosted-agent run always starts from the folder). Keeping a request closes the older
+  hosted-agent run always starts from the folder). Such a request takes that
+  result's baseline as its own (`baseline/` and `baseline.json` copied whole; if
+  either is damaged it starts from the folder instead), so its diff and its Keep
+  are measured from one starting point: what Nico changed in the folder meanwhile
+  is not shown as the model's work and Keep never reverts it, and a file he and
+  the stack both changed makes Keep refuse (`conflict`) and write nothing. The
+  hosted agent and `continue_from` never inherit a baseline, and
+  `run_general_request` decides the engine once, before the workspace is made
+  (`prepare_workspace(carry=...)`). Keeping a request closes the older
   ones it was built on as kept (`kept_with`: "These changes went in with a later
   request you kept."); while a newer request built on it is running or still has
   changes to decide, an older one can be neither kept nor discarded, and its
