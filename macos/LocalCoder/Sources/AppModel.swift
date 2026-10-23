@@ -589,6 +589,8 @@ final class AppModel: ObservableObject {
     }
 
     func openHistory(_ row: HistoryRow) {
+        // The last row's notice does not belong over this one.
+        banner = nil
         Task {
             do {
                 var params: [String: Any] = ["episode_id": row.episodeID]
@@ -597,10 +599,10 @@ final class AppModel: ObservableObject {
                 }
                 snapshot = try await engine.call("snapshot", params)
                 inspectorShown = hasChanges
+                // A kept request keeps its files and diff, so it has changes to show and never reaches the notice.
                 if !hasChanges {
                     switch snapshot?["outcome"] as? String {
                     case "discarded": banner = "That request was discarded."
-                    case "kept": banner = "Those changes are already in your project."
                     default: banner = "That request did not change any files."
                     }
                 }

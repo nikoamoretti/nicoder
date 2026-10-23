@@ -223,6 +223,13 @@ MainActor.assumeIsolated {
     model.snapshot = blocked
     capture(main, "10c-blocked-older-request-running")
 
+    // 1f. A History row opened for a discarded request: no files, so a notice says so and the inspector stays closed.
+    model.snapshot = discarded
+    model.inspectorShown = false
+    model.banner = "That request was discarded."
+    capture(main, "10d-history-notice")
+    model.banner = nil
+
     // 2. A run in progress.
     model.inspectorShown = false
     model.snapshot = nil
