@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from local_coder.agent.access import AccessPolicy
-from local_coder.agent.tools import ToolBox, expand_braces, glob_match
+from local_coder.agent.tools import ToolBox, expand_braces, glob_match, inside_data_root
 
 darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")
 
@@ -60,6 +60,20 @@ def test_brace_and_glob_matching():
     assert glob_match("App.tsx", "**/*.tsx")
     assert glob_match("projects/Shadow-Paris", "*shadow*")
     assert not glob_match("src/App.css", "*.{ts,tsx}")
+
+
+def test_inside_data_root_matches_case_differently_on_case_insensitive_volume(tmp_path):
+    from local_coder.engines.opencode_config import data_root
+
+    data_root().mkdir(parents=True, exist_ok=True)
+    root = Path(os.path.realpath(data_root()))
+    parts = root.parts
+    if len(parts) < 2:
+        pytest.skip("data root has no component to swap")
+    swapped = Path(*parts[:-1]) / parts[-1].swapcase()
+    if not swapped.exists():
+        pytest.skip("volume is case-sensitive; swapped path does not exist")
+    assert inside_data_root(swapped) is True
 
 
 def test_tool_names_depend_on_the_mode(home, tmp_path):

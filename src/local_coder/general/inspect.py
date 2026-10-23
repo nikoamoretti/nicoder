@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -61,13 +62,73 @@ _QUESTION = re.compile(
 _MOBILE_HINT = ("swiftui", "uikit", "xcode project", "android studio", "kotlin android")
 
 
-def inspect_project(path: str | Path) -> dict[str, Any]:
-    """Describe what this folder is and what is missing. Does not refuse JS or dirty trees."""
+def folder_problem(path: str | Path) -> dict[str, str] | None:
+    """Why this path cannot be a project folder, in plain words, or None when it can be one.
+
+    Cheap on purpose (no scan of the project), so a request can ask before it starts anything.
+    Local Coder never creates a folder for an old project: only New Project and the welcome
+    chat make folders.
+    """
     repo = Path(path).expanduser().resolve()
+    name = repo.name or str(repo)
+    try:
+        if not repo.exists():
+            return {
+                "verdict": "missing",
+                "summary": f"The folder “{name}” is gone. Open another project or start a new one.",
+            }
+        if not repo.is_dir():
+            return {
+                "verdict": "not_a_folder",
+                "summary": f"“{name}” is a file, not a folder. Open a project folder or start a new one.",
+            }
+        os.listdir(repo)
+    except OSError:
+        return _unreadable(name)
+    return None
+
+
+def _unreadable(name: str) -> dict[str, str]:
+    return {
+        "verdict": "unreadable",
+        "summary": (
+            f"Local Coder cannot read the folder “{name}”. Check its permissions in Finder, or open another project."
+        ),
+    }
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def inspect_project(path: str | Path) -> dict[str, Any]:
+    """Describe what this folder is and what is missing. Does not refuse JS or dirty trees.
+
+    A folder that cannot be used (gone, a file, unreadable) is described in plain words, never raised.
+    """
+    repo = Path(path).expanduser().resolve()
+    problem = folder_problem(repo)
+    if problem is None:
+        try:
+            return _inspect_folder(repo, _blank_report(repo))
+        except OSError:
+            problem = _unreadable(repo.name or str(repo))
+    report = _blank_report(repo)
+    report["verdict"] = problem["verdict"]
+    report["summary"] = problem["summary"]
+    report["issues"].append({"code": problem["verdict"], "message": problem["summary"], "blocking": True})
+    return report
+
+
+def _blank_report(repo: Path) -> dict[str, Any]:
+    """An inspection before anything is known about the folder."""
     report: dict[str, Any] = {
         "path": str(repo),
         "name": repo.name,
-        "exists": repo.is_dir(),
+        "exists": _is_dir(repo),
         "supported": False,
         "verdict": "missing",
         "summary": "",
@@ -89,16 +150,11 @@ def inspect_project(path: str | Path) -> dict[str, Any]:
         "can_preview": False,
         "exclusions": ["node_modules", "dist", "build", ".git", ".venv", ".env", "secrets"],
     }
-    if not repo.exists():
-        report["can_create"] = True
-        report["summary"] = "This folder does not exist yet. You can create a new project here."
-        report["issues"].append({"code": "missing", "message": report["summary"], "blocking": False})
-        return report
-    if not repo.is_dir():
-        report["summary"] = "That path is a file, not a folder."
-        report["issues"].append({"code": "not_a_folder", "message": report["summary"], "blocking": True})
-        return report
+    return report
 
+
+def _inspect_folder(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
+    """The scan of a folder that exists and can be listed."""
     python_files = _count_by_suffix(repo, (".py",))
     web_files = _count_by_suffix(repo, (".js", ".jsx", ".ts", ".tsx", ".css", ".html", ".vue"))
     test_files = 0
@@ -219,11 +275,8 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
     if not request:
         return {"kind": "empty", "summary": "Write what you would like to build or change.",
                 "detail": "The request box is empty."}
-    if inspection and inspection.get("verdict") == "missing" and not inspection.get("can_create"):
-        if inspection.get("exists") is False:
-            return {"kind": "code", "summary": "This will create a new project from your description.",
-                    "detail": "A blank starter can be prepared; the local model writes the application."}
-        return {"kind": "empty", "summary": inspection.get("summary") or "That folder is not available.",
+    if inspection and inspection.get("supported") is False:
+        return {"kind": "unsupported", "summary": inspection.get("summary") or "That folder is not available.",
                 "detail": inspection.get("verdict")}
     if asked_to_see_ui(request):
         return {"kind": "chat", "summary": "This will answer in chat without editing files.",
@@ -241,9 +294,6 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
             )
             result["detail"] = "The request will still be attempted, with that limit shown."
             result["limited"] = True
-        elif inspection and not inspection.get("exists"):
-            result["summary"] = "This will create a new project from your description."
-            result["detail"] = "A blank starter can be prepared; the local model writes the application."
         return result
     if _LOOK.search(request):
         return {"kind": "explain", "summary": "This will look up the selected code and stay read-only.",

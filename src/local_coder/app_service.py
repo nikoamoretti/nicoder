@@ -24,6 +24,7 @@ from . import accept as accept_mod
 from .catalog import entry_by_id, list_models
 from .config import CONFIG_FILENAME, EXAMPLE_TOML, RepoConfig, load_config
 from .controller import Controller, git_is_dirty, git_revision
+from .errorlog import UNEXPECTED, record_error
 from .execution.isolated import IsolatedBackend, IsolationUnavailable
 from .hosted import HostedError, find_api_key, hosted_chat, provider_place
 from .hostenv import apply_host_path
@@ -406,7 +407,11 @@ def chat_request(
     preview = None
     if repo is not None and asked_to_see_ui(question):
         preview, extra = _start_preview_note(repo)
-    if agent_capable(load_machine_config()):
+    with_tools = agent_capable(load_machine_config())
+    waiting = _waiting_note(repo, can_read=with_tools)
+    if waiting:
+        extra = f"{extra}\n{waiting}".strip()
+    if with_tools:
         result = _agent_chat(repo, question, extra=extra, listener=listener, cancel=cancel)
     else:
         from local_coder.general.chat_log import recent_messages
@@ -423,6 +428,17 @@ def chat_request(
     return result
 
 
+def _waiting_note(repo: Path | None, *, can_read: bool) -> str:
+    """What a question must know when a result waits for Keep or Discard ("" when none does).
+
+    It is built from the request's own record, goes to the model with the question, and is not saved
+    in the chat.
+    """
+    from local_coder.general.waiting import waiting_note
+
+    return waiting_note(repo, can_read=can_read)
+
+
 def _agent_chat(
     repo: Path | None,
     question: str,
@@ -433,6 +449,7 @@ def _agent_chat(
 ) -> dict[str, Any]:
     """A question answered by the agent with read-only tools across the home folder."""
     from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
+    from local_coder.agent.tools import inside_data_root
     from local_coder.general.chat_log import append_turn, recent_messages
 
     cfg = load_machine_config()
@@ -451,6 +468,8 @@ def _agent_chat(
         on_step=step,
     )
     opened = asked.opened if asked.opened is not None and asked.opened != repo else None
+    if opened is not None and inside_data_root(opened):
+        opened = None  # a waiting copy is never a project: the window would switch to it
     result: dict[str, Any] = {
         "kind": "chat",
         "summary": asked.answer,
@@ -986,10 +1005,9 @@ def snapshot(episode_id: str, store: EpisodeStore | None = None,
              repo: str | Path | None = None) -> dict[str, Any]:
     """Controller-owned review payload for the UI."""
     if repo is not None:
-        from local_coder.general.coordinator import project_id_for, request_dir, review_payload
+        from local_coder.general.coordinator import project_id_for, request_meta_path, review_payload
 
-        meta = request_dir(project_id_for(Path(repo)), episode_id) / "meta.json"
-        if meta.exists():
+        if request_meta_path(project_id_for(Path(repo)), episode_id).exists():
             return review_payload(project_id_for(Path(repo)), episode_id)
     store = store or episode_store()
     state = store.load_state(episode_id)
@@ -1185,11 +1203,10 @@ def run_request(
 
 def keep_changes(episode_id: str, repo: str | Path, store: EpisodeStore | None = None) -> dict[str, Any]:
     """Accept a general request or a legacy episode."""
-    from local_coder.general.coordinator import keep_request, project_id_for, request_dir
+    from local_coder.general.coordinator import keep_request, project_id_for, request_meta_path
 
     folder = Path(repo)
-    meta = request_dir(project_id_for(folder), episode_id) / "meta.json"
-    if meta.exists():
+    if request_meta_path(project_id_for(folder), episode_id).exists():
         return keep_request(project_id_for(folder), episode_id, folder)
     store = store or episode_store()
     result = accept_mod.accept_episode(store, episode_id, Path(repo))
@@ -1202,10 +1219,9 @@ def discard_changes(episode_id: str, store: EpisodeStore | None = None,
                     repo: str | Path | None = None) -> dict[str, Any]:
     """Discard the candidate. Evidence stays."""
     if repo is not None:
-        from local_coder.general.coordinator import discard_request, project_id_for, request_dir
+        from local_coder.general.coordinator import discard_request, project_id_for, request_meta_path
 
-        meta = request_dir(project_id_for(Path(repo)), episode_id) / "meta.json"
-        if meta.exists():
+        if request_meta_path(project_id_for(Path(repo)), episode_id).exists():
             return discard_request(project_id_for(Path(repo)), episode_id)
     store = store or episode_store()
     return accept_mod.discard_episode(store, episode_id)
@@ -1250,6 +1266,11 @@ class AppRuntime:
                       continue_from: str | None = None,
                       wall_seconds: int | None = None) -> dict[str, Any]:
         """Start a request on a worker thread and return immediately."""
+        from local_coder.general.inspect import folder_problem
+
+        problem = folder_problem(repo)
+        if problem:
+            raise AppError(problem["summary"], code=problem["verdict"])
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise AppError("A request is already running.", code="busy")
@@ -1282,6 +1303,8 @@ class AppRuntime:
                 "engine": chosen}
 
     def _worker(self, **kwargs: Any) -> None:
+        from local_coder.general.coordinator import GeneralError
+
         started = False
         try:
             engine = str(kwargs.get("engine") or "general")
@@ -1315,13 +1338,15 @@ class AppRuntime:
                 continue_from=kwargs.get("continue_from"),
                 wall_seconds=kwargs.get("wall_seconds"),
             )
-        except AppError as exc:
+        except (AppError, GeneralError) as exc:
             self.last_error = exc.detail
             self._emit({"type": "app_error", "data": {"detail": exc.detail, "code": exc.code},
                         "seq": None})
         except Exception as exc:  # noqa: BLE001 — surface unexpected helper failures
-            self.last_error = str(exc)
-            self._emit({"type": "app_error", "data": {"detail": str(exc), "code": "runtime"},
+            # The app shows one plain sentence; the raw text and traceback go to stderr and logs/.
+            record_error("request worker: unexpected error", exc)
+            self.last_error = UNEXPECTED
+            self._emit({"type": "app_error", "data": {"detail": UNEXPECTED, "code": "runtime"},
                         "seq": None})
         finally:
             with self._lock:

@@ -157,6 +157,23 @@ def is_empty_starter(path: Path) -> bool:
     return False
 
 
+def inside_data_root(path: Path) -> bool:
+    """True for Local Coder's own data folder or anything in it (the waiting copies live there)."""
+    from local_coder.engines.opencode_config import data_root
+
+    root = Path(os.path.realpath(data_root()))
+    real = Path(os.path.realpath(path))
+    for candidate in [real, *real.parents]:
+        if candidate == root:
+            return True
+        try:
+            if os.path.samefile(candidate, root):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def project_root(path: Path, home: Path) -> Path | None:
     """The repo (or, without git, the project folder) a file belongs to, below the home folder."""
     folders = [folder for folder in path.parents if home in folder.parents]
@@ -780,6 +797,10 @@ class ToolBox:
             raise ValueError(f"{shown} is not a folder.")
         if path == self.policy.home_real:
             raise ValueError("That is the whole home folder. Open the project's own folder.")
+        if inside_data_root(path):
+            raise ValueError(
+                "That is Local Coder's own working copy of a result, not a project. Open the project's own folder."
+            )
         if not looks_like_project(path):
             raise ValueError(
                 f"{shown} does not look like a project (no .git, package.json, pyproject.toml, …). "

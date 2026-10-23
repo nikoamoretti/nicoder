@@ -103,16 +103,18 @@ def _fmt(value: float | None) -> str:
     return str(value) if value is not None else "unknown"
 
 
-def llama_server_version(binary: str = "llama-server") -> str:
-    """Local `llama-server --version` output, or 'unknown' (never invented).
+def llama_server_version(binary: str = "llama-server", timeout_s: float = 3.0) -> str:
+    """Local `llama-server --version` output, or 'unknown' (never invented, never raises).
 
     This describes the locally installed binary, which may differ from the
-    actually serving server; the two are labeled separately in records.
+    actually serving server; the two are labeled separately in records. A warm
+    call takes about 0.2 s; a cold start can take far longer (Homebrew's took
+    18 s once), and that is 'unknown' rather than a wait.
     """
     try:
-        out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=15,
+        out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=timeout_s,
                              stdin=subprocess.DEVNULL)
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return "unknown"
     text = (out.stdout.strip() or out.stderr.strip())[:200]
     return text if text and out.returncode == 0 else "unknown"

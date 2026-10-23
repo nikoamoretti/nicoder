@@ -92,7 +92,35 @@
   transactional, `discard` preserves evidence unless `--with-evidence`.
 - `src/local_coder/accept.py` — single accept/discard implementation for CLI and app.
 - `src/local_coder/app_service.py` + `app_rpc.py` — structured Mac-app API
-  (JSON-lines helper, no network server).
+  (JSON-lines helper, no network server). A request never creates its project
+  folder: `general/inspect.folder_problem` refuses a path that is gone, a file or
+  unreadable, in plain words, before any worker or model call (only `new_project`
+  and `start_chat` make folders). Errors reach the app as plain sentences:
+  `AppError` and `GeneralError` keep their own code and detail, anything
+  unexpected becomes one generic sentence, and the raw text and traceback go to
+  stderr and `<data dir>/logs/helper-errors.log` (`errorlog.py`).
+- `src/local_coder/general/request_state.py` — the one definition of where a
+  request stands: waiting (neither kept nor discarded), kept, or discarded; kept
+  wins. The review snapshot, History, Keep, Discard and `general/waiting.py` all
+  read it. Keep and Discard are final: a closed request offers neither, `keep`
+  refuses a discarded request, `discard` refuses a kept one, and Discard puts the
+  project's sticky working copy (`live/candidate`) back to the request's baseline.
+  Evidence (`meta.json`, `candidate/`) stays on disk. A cancelled run ends with
+  one `stopped` event, never `done`. A request starts the sticky copy from the folder
+  as it is now, unless it is built on an older request that still waits (`built_on`
+  in its meta.json, found by comparing the copy with that request's result; a
+  hosted-agent run always starts from the folder). Keeping a request closes the older
+  ones it was built on as kept (`kept_with`: "These changes went in with a later
+  request you kept."); while a newer request built on it is running or still has
+  changes to decide, an older one can be neither kept nor discarded, and its
+  snapshot says so (`can_keep` and `can_discard` false, `blocked_by` names the
+  newer request, the summary says to let it finish or to Keep or Discard it first;
+  its files and diff still show).
+- `src/local_coder/general/waiting.py` — a question asked while a result waits
+  for Keep or Discard gets a note built from the request's own record (title,
+  age, files, "not in the folder yet", and for the agent where to read the
+  waiting copy, read-only). It is not saved in the chat. A waiting copy is never
+  opened as a project: `open_project` refuses the data root.
 - `src/local_coder/general/harness.py` — candidate-only read / write / hash-edit
   for the local llama.cpp models. No host bash. No foreign agent CLI.
 - `src/local_coder/agent/` — the tool-calling agent for models with native tool
@@ -117,8 +145,10 @@
   summary with cost, the answer as prose), a Changes inspector (files, diff,
   checks, preview, Keep/Discard), a glass composer with the model menu and the
   reasoning switch, the OrcaRouter model browser and connect sheet, and a
-  Settings window. New Chat archives the old transcript
-  (`chats/archive/`); closing a project never stops a run or clears its chat.
+  Settings window. A kept request, or one held back by a newer request, has no
+  Keep/Discard bar: a strip with the engine's sentence and the cost takes its
+  place. New Chat archives the old transcript (`chats/archive/`); closing a
+  project never stops a run or clears its chat.
   `LOCAL_CODER_UI_PROBE=1` at launch lets a script open views (never change
   state); `macos/scripts/ui_snapshots/snapshots.sh <dir>` renders every screen
   offscreen with sample data.

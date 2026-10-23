@@ -5,20 +5,23 @@ onto a disposable copy. The original tree changes only on Keep.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 from local_coder.engines.model_identity import ModelIdentityError, assert_identity, resolve_model_id
 from local_coder.engines.opencode_client import OpenCodeError
 from local_coder.engines.opencode_config import data_root
 from local_coder.engines.opencode_pin import pin_record
 from local_coder.engines.opencode_server import client_from_record, read_record, stop_owned
+from local_coder.errorlog import record_error
 from local_coder.general.budgets import RequestBudget, budget_for
 from local_coder.general.candidate_check import (
     check_candidate,
@@ -36,7 +39,7 @@ from local_coder.general.direct_write import (
     local_complete,
     reply_prose,
 )
-from local_coder.general.inspect import classify_request, inspect_project
+from local_coder.general.inspect import classify_request, folder_problem, inspect_project
 from local_coder.general.notebook import update_notebook
 from local_coder.general.preview import check_preview_health, start_preview, stop_preview, write_preview_record
 from local_coder.general.repair_context import (
@@ -48,7 +51,19 @@ from local_coder.general.repair_context import (
     invalidate_views,
     write_repair_state,
 )
+from local_coder.general.request_state import (
+    BUILT_ON,
+    DISCARDED,
+    KEPT,
+    KEPT_WITH,
+    WAITING,
+    built_on,
+    request_outcome,
+    request_state,
+    waiting_on_top,
+)
 from local_coder.general.snapshot import (
+    Delta,
     TreeIndex,
     apply_delta,
     compute_delta,
@@ -136,13 +151,72 @@ class GeneralError(Exception):
         self.code = code
 
 
+_Params = ParamSpec("_Params")
+_Result = TypeVar("_Result")
+_RUNNING: dict[str, list[str]] = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+@contextmanager
+def _request_running(project_id: str, request_id: str = "") -> Iterator[None]:
+    """Mark a request as in flight in its project.
+
+    Discard never rewrites the working copy under it, and Keep never puts an older result into the folder
+    under a request that is built on it.
+    """
+    with _RUNNING_LOCK:
+        _RUNNING.setdefault(project_id, []).append(request_id)
+    try:
+        yield
+    finally:
+        with _RUNNING_LOCK:
+            flights = _RUNNING.get(project_id, [])
+            if request_id in flights:
+                flights.remove(request_id)
+            if not flights:
+                _RUNNING.pop(project_id, None)
+
+
+def _request_in_flight(project_id: str) -> bool:
+    with _RUNNING_LOCK:
+        return project_id in _RUNNING
+
+
+def _requests_in_flight(project_id: str) -> set[str]:
+    """The ids of the requests running in a project right now."""
+    with _RUNNING_LOCK:
+        return set(_RUNNING.get(project_id, ()))
+
+
+def _tracks_running(function: Callable[_Params, _Result]) -> Callable[_Params, _Result]:
+    """Wrap run_general_request: its first argument is the project folder.
+
+    The request gets its id here when the caller gave none, so the marker names it from the start.
+    """
+
+    @functools.wraps(function)
+    def wrapper(*args: _Params.args, **kwargs: _Params.kwargs) -> _Result:
+        folder = args[0] if args else kwargs["user_path"]
+        if not kwargs.get("request_id"):
+            kwargs["request_id"] = new_episode_id()
+        with _request_running(project_id_for(Path(str(folder)).expanduser()), str(kwargs["request_id"])):
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
 def project_id_for(path: Path) -> str:
     digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
     return f"{path.resolve().name}-{digest}"
 
 
+def project_dir(project_id: str) -> Path:
+    """The project's folder under the data root. Creates nothing: reading must not leave folders behind."""
+    return data_root() / "projects" / project_id
+
+
 def work_root(project_id: str) -> Path:
-    path = data_root() / "projects" / project_id
+    path = project_dir(project_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -151,6 +225,11 @@ def request_dir(project_id: str, request_id: str) -> Path:
     path = work_root(project_id) / "requests" / request_id
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def request_meta_path(project_id: str, request_id: str) -> Path:
+    """Where a request's meta.json is, or would be. Creates nothing."""
+    return project_dir(project_id) / "requests" / request_id / "meta.json"
 
 
 def _emit(listener: EventListener | None, event_type: str, data: dict[str, Any] | None = None) -> None:
@@ -196,14 +275,21 @@ def live_dir(project_id: str) -> Path:
 
 
 def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) -> dict[str, Any]:
-    """Snapshot the current user tree, including uncommitted work."""
+    """Snapshot the current user tree, including uncommitted work.
+
+    The folder must already exist: a request never creates it. Only New Project and the welcome
+    chat make folders.
+    """
     user_path = user_path.expanduser().resolve()
+    problem = folder_problem(user_path)
+    if problem:
+        raise GeneralError(problem["summary"], code=problem["verdict"])
     pid = project_id_for(user_path)
     root = request_dir(pid, request_id)
     baseline = root / "baseline"
     candidate = root / "candidate"
     live_candidate = live_dir(pid) / "candidate"
-    user_path.mkdir(parents=True, exist_ok=True)
+    carried = _open_request_in(pid, request_id, live_candidate)
     empty = not any(user_path.iterdir())
     starter_used = False
     if empty and allow_starter:
@@ -215,6 +301,10 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
     copy_snapshot(baseline, candidate)
     if not live_candidate.is_dir():
         copy_snapshot(baseline, live_candidate)
+    elif carried is None:
+        # Not built on a waiting result: start from the folder as it is now, whatever Keep, Discard or a
+        # run that never finished left in the sticky copy (else the diff would undo what was kept).
+        sync_source_tree(baseline, live_candidate)
     # Candidate-only: Keep can persist SWC so Bonsai TypeScript compiles next time.
     ensure_ts_preview(candidate)
     ensure_ts_preview(live_candidate)
@@ -231,6 +321,8 @@ def prepare_workspace(user_path: Path, request_id: str, *, allow_starter: bool) 
         "engine": "local",
         "pin": pin_record(),
     }
+    if carried:
+        meta[BUILT_ON] = carried
     (root / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta
 
@@ -331,6 +423,7 @@ def _align_continuation(meta: dict[str, Any], continue_from: str) -> None:
     )
     write_index(request_root / "recovery_start.json", index_tree(Path(meta["candidate"])))
     meta["continued_from"] = continue_from
+    meta[BUILT_ON] = continue_from
     meta["continuation"] = {
         "continued_from": continue_from,
         "restored_live_from_historical": restored,
@@ -341,8 +434,123 @@ def _align_continuation(meta: dict[str, Any], continue_from: str) -> None:
 
 
 def load_meta(project_id: str, request_id: str) -> dict[str, Any]:
-    path = request_dir(project_id, request_id) / "meta.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(request_meta_path(project_id, request_id).read_text(encoding="utf-8"))
+
+
+def _project_metas(project_id: str) -> dict[str, dict[str, Any]]:
+    """The readable request records of a project, by request id. Reads only; a damaged record is skipped."""
+    metas: dict[str, dict[str, Any]] = {}
+    folder = project_dir(project_id) / "requests"
+    if not folder.is_dir():
+        return metas
+    for entry in folder.iterdir():
+        try:
+            meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict):
+            metas[entry.name] = meta
+    return metas
+
+
+def request_delta(meta: dict[str, Any]) -> Delta | None:
+    """What a request changed: its frozen baseline against its candidate (meta.json keeps no file list).
+
+    None when either is gone or cannot be read.
+    """
+    try:
+        baseline = Path(str(meta["baseline"]))
+        candidate = Path(str(meta["candidate"]))
+        frozen = baseline.parent / "baseline.json"
+        if not candidate.is_dir() or not (frozen.is_file() or baseline.is_dir()):
+            return None
+        before = read_index(frozen) if frozen.is_file() else index_tree(baseline)
+        return compute_delta(before, index_tree(candidate))
+    except (KeyError, OSError, ValueError):
+        return None
+
+
+def _created(meta: dict[str, Any]) -> float:
+    try:
+        return float(meta.get("created_ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _open_request_in(project_id: str, request_id: str, live: Path) -> str | None:
+    """The waiting request whose result the project's working copy holds right now, or None.
+
+    A request that starts from the working copy is built on it. The copy is sticky, so only the newest
+    request can be in it, and only while it waits: Keep puts it in the project and Discard puts the copy
+    back to the folder. The copy must hold every file that request changed, as it left them.
+    """
+    if not live.is_dir():
+        return None
+    others = {rid: meta for rid, meta in _project_metas(project_id).items() if rid != request_id}
+    if not others:
+        return None
+    newest_id = max(others, key=lambda rid: _created(others[rid]))
+    newest = others[newest_id]
+    delta = request_delta(newest) if request_state(newest) == WAITING else None
+    if delta is None or not delta.touched():
+        return None
+    result = index_tree(Path(str(newest["candidate"])))
+    now = index_tree(live)
+    return newest_id if all(now.sha_of(rel) == result.sha_of(rel) for rel in delta.touched()) else None
+
+
+def _newest(metas: dict[str, dict[str, Any]], request_ids: list[str]) -> str | None:
+    """The most recently started of these requests, or None. In a stack that is the one to decide first."""
+    return max(request_ids, key=lambda rid: (_created(metas[rid]), rid), default=None)
+
+
+def _newer_request_to_decide(metas: dict[str, dict[str, Any]], request_id: str) -> str | None:
+    """The newest request built on this one that still has changes to Keep or Discard, or None.
+
+    Keeping that one puts this one's changes into the project too, so this one can not be decided alone.
+    A newer request with no files (it undid them) has nothing to keep and does not count.
+    """
+    deciding: list[str] = []
+    for other in waiting_on_top(metas, request_id):
+        delta = request_delta(metas[other])
+        if delta is not None and delta.touched():
+            deciding.append(other)
+    return _newest(metas, deciding)
+
+
+def _newer_request_running(project_id: str, metas: dict[str, dict[str, Any]], request_id: str) -> str | None:
+    """The newest request built on this one that is running right now, or None.
+
+    Keeping this one meanwhile would put its changes into the project under that request, which could then
+    no longer be kept.
+    """
+    running = _requests_in_flight(project_id)
+    return _newest(metas, [other for other in waiting_on_top(metas, request_id) if other in running])
+
+
+def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, applied: list[str]) -> list[str]:
+    """Close the older requests that a Keep carried into the project; returns their ids, nearest first.
+
+    A request counts only if this Keep wrote every file it changed, so "went in with" is true. A record
+    that cannot be saved stays as it was: the Keep has happened and must not fail now.
+    """
+    written = set(applied)
+    closed: list[str] = []
+    for older_id in built_on(metas, request_id):
+        older = metas.get(older_id)
+        if older is None or request_state(older) != WAITING:
+            continue
+        delta = request_delta(older)
+        if delta is None or not delta.touched() or not delta.touched() <= written:
+            continue
+        older["kept"] = True
+        older[KEPT_WITH] = request_id
+        try:
+            _save_meta(older)
+        except (KeyError, OSError):
+            continue
+        closed.append(older_id)
+    return closed
 
 
 def ensure_model_server() -> dict[str, Any]:
@@ -368,6 +576,7 @@ def ensure_model_server() -> dict[str, Any]:
     return {"ok": True, "started": True, "status": server_status(cfg), "start": result}
 
 
+@_tracks_running
 def run_general_request(
     user_path: str | Path,
     text: str,
@@ -391,6 +600,9 @@ def run_general_request(
     agent edits the working copy with tools instead of the file-block path.
     """
     folder = Path(user_path).expanduser().resolve()
+    problem = folder_problem(folder)
+    if problem:
+        raise GeneralError(problem["summary"], code=problem["verdict"])
     inspection = inspect_project(folder)
     classified = classify_request(text, inspection)
     if classified["kind"] == "empty":
@@ -524,6 +736,11 @@ def run_general_request(
                 )
             elif start_preview_after:
                 _maybe_attach_preview(meta, candidate, listener, start_preview_after=start_preview_after)
+    stopped = cancel.is_set()
+    if stopped:
+        meta["stop_reason"] = "cancelled"
+        meta["stopped_incomplete"] = True
+        meta["model_commentary"] = stopped_text(_has_file_changes(Path(meta["baseline"]), candidate))
     meta["generation_ledger"] = ledger.snapshot()
     _save_meta(meta)
     review = review_payload(meta["project_id"], request_id)
@@ -534,7 +751,8 @@ def run_general_request(
     if note:
         append_turn(folder, "assistant", note)
     review["turns"] = load_chat(folder)["turns"]
-    _emit(listener, "done", {"request_id": request_id})
+    # A Stop is not a finished attempt: say "Stopped" and let the app show what was (not) written.
+    _emit(listener, "stopped" if stopped else "done", {"request_id": request_id})
     return review
 
 
@@ -611,6 +829,8 @@ def _run_agent_request(
     if fresh:
         # Start from the user's folder as it is now; node_modules in the live copy stay.
         sync_source_tree(baseline, engine_cwd)
+        meta.pop(BUILT_ON, None)  # so this run is not built on an older result that still waits
+        _save_meta(meta)  # and the record says so while the agent works, not only when it is done
     session = build_session(
         project=folder,
         workdir=engine_cwd,
@@ -629,7 +849,7 @@ def _run_agent_request(
             _publish_candidate(engine_cwd, candidate)
             meta["model_commentary"] = run.answer
             if cancel.is_set() or run.status == "stopped":
-                meta["model_commentary"] = "Stopped. Review what changed so far, or discard it."
+                meta["model_commentary"] = stopped_text(_has_file_changes(baseline, candidate))
                 _stop(meta, "cancelled")
                 break
             if not _has_file_changes(baseline, candidate):
@@ -1143,8 +1363,71 @@ def _has_file_changes(before: Path, after: Path) -> bool:
     return bool(compute_delta(_frozen_baseline(before), index_tree(after)).touched())
 
 
+DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
+KEPT_SUMMARY = "These changes are in your project."
+KEPT_WITH_SUMMARY = "These changes went in with a later request you kept."
+NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
+NEWER_RUNNING = (
+    "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
+)
+STOPPED_NOTHING = "Stopped. Nothing was changed."
+STOPPED_WITH_FILES = "Stopped. Review what changed so far, or discard it."
+
+
+def stopped_text(has_files: bool) -> str:
+    """What a Stop says: whether anything was written decides the second sentence."""
+    return STOPPED_WITH_FILES if has_files else STOPPED_NOTHING
+
+
+def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -> dict[str, Any]:
+    """A discarded request is closed: nothing to keep or discard, no files and no diff. Its evidence stays on disk."""
+    engine = str(meta.get("engine") or "local")
+    agent = meta.get("agent")
+    return {
+        "kind": "code",
+        "engine": engine,
+        "request_id": request_id,
+        "episode_id": request_id,
+        "preview": {},
+        "project_id": project_id,
+        "repo_path": meta["user_path"],
+        "summary": DISCARDED_SUMMARY,
+        "diff": "",
+        "outcome": DISCARDED,
+        "facts": {
+            "files": [],
+            "delta": Delta(added=[], modified=[], deleted=[], renamed=[]).as_dict(),
+            "complete": False,
+            "engine": engine,
+            "model_id": meta.get("model_id"),
+            "provider": meta.get("provider") or "local",
+            "pin": meta.get("pin") or pin_record(),
+            "outcome": DISCARDED,
+        },
+        "can_keep": False,
+        "can_discard": False,
+        "verification": {
+            "build": "not_run",
+            "typecheck": "not_run",
+            "tests": "not_run",
+            "browser": "not_run",
+            "preview": "not_run",
+            "page_mounted": False,
+            "behavior_verified": False,
+            "stopped_incomplete": False,
+            "files_written": False,
+        },
+        "model_commentary": None,
+        "accept_requires_confirmation": True,
+        "cost_usd": agent.get("cost_usd") if isinstance(agent, dict) else None,
+    }
+
+
 def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
     meta = load_meta(project_id, request_id)
+    state = request_state(meta)
+    if state == DISCARDED:
+        return _discarded_payload(meta, project_id, request_id)
     baseline = Path(meta["baseline"])
     candidate = Path(meta["candidate"])
     frozen = baseline.parent / "baseline.json"
@@ -1200,6 +1483,24 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         stored = raw_verification
     if stored.get("preview") in {"ok", "failed", "not_run"}:
         preview_status = str(stored.get("preview") or preview_status)
+    if meta.get("stop_reason") == "cancelled":
+        # A Stop stays a Stop, whatever the model or a half-run check said before it.
+        commentary = stopped_text(bool(files))
+        summary = commentary
+    kept_with = meta.get(KEPT_WITH) if state == KEPT else None
+    if state == KEPT:
+        # What the model said before Keep ("the original project is unchanged...") is no longer true.
+        summary = KEPT_WITH_SUMMARY if kept_with else KEPT_SUMMARY
+        commentary = None
+    blocked_by, blocked_text = None, ""
+    if state == WAITING and files:
+        metas = _project_metas(project_id)
+        running = _newer_request_running(project_id, metas, request_id)
+        blocked_by = running or _newer_request_to_decide(metas, request_id)
+        blocked_text = NEWER_RUNNING if running else NEWER_FIRST
+    if blocked_by:
+        # Keep and Discard would both be refused, so the review offers neither and says what to do instead.
+        summary, commentary = blocked_text, None
     engine = str(meta.get("engine") or "local")
     return {
         "kind": "code",
@@ -1219,9 +1520,13 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "model_id": meta.get("model_id"),
             "provider": meta.get("provider") or "local",
             "pin": meta.get("pin") or pin_record(),
+            "outcome": request_outcome(meta),
         },
-        "can_keep": bool(files),
-        "can_discard": True,
+        "can_keep": state == WAITING and bool(files) and not blocked_by,
+        "can_discard": state == WAITING and bool(files) and not blocked_by,
+        "outcome": request_outcome(meta),
+        "kept_with": kept_with,
+        "blocked_by": blocked_by,
         "verification": {
             "build": stored.get("build") or "not_run",
             "typecheck": stored.get("typecheck") or "not_run",
@@ -1242,24 +1547,99 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
 def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dict[str, Any]:
     """Apply B→C onto the current user tree. Not an OpenCode revert."""
     meta = load_meta(project_id, request_id)
+    state = request_state(meta)
+    if state == DISCARDED:
+        raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
+    if state == KEPT:
+        raise GeneralError("These changes are already in your project.", code="kept")
+    metas = _project_metas(project_id)
+    if _newer_request_running(project_id, metas, request_id):
+        raise GeneralError(NEWER_RUNNING, code="busy")
+    if _newer_request_to_decide(metas, request_id):
+        raise GeneralError(NEWER_FIRST, code="newer_waiting")
+    problem = folder_problem(user_path)
+    if problem:
+        # Keep must never make the folder again, and must not blame "changed files" for a missing one.
+        name = Path(user_path).expanduser().resolve().name
+        if problem["verdict"] == "missing":
+            raise GeneralError(
+                f"The folder “{name}” is gone, so there is nowhere to keep these changes.",
+                code="folder_gone",
+            )
+        if problem["verdict"] == "not_a_folder":
+            raise GeneralError(
+                f"“{name}” is a file, not a folder, so there is nowhere to keep these changes.",
+                code="not_a_folder",
+            )
+        raise GeneralError(
+            f"Local Coder cannot read the folder “{name}”, so there is nowhere to keep these changes.",
+            code=problem["verdict"],
+        )
     result = apply_delta(Path(user_path), Path(meta["baseline"]), Path(meta["candidate"]))
     if not result.get("ok"):
-        raise GeneralError(str(result.get("detail") or "Keep failed."), code=str(result.get("code") or "accept"))
+        code = str(result.get("code") or "accept")
+        if code == "apply_failed":
+            # The detail is the operating system's own text; the app gets a sentence, the log gets the text.
+            record_error("keep: could not write the changes", str(result.get("detail") or ""))
+            raise GeneralError(
+                "Local Coder could not write these changes into your project. "
+                "Check that its folder and files can be changed, then try Keep again.",
+                code=code,
+            )
+        raise GeneralError(str(result.get("detail") or "Keep failed."), code=code)
     stop_owned()
     meta["kept"] = True
     _save_meta(meta)
-    return {"ok": True, **result, "request_id": request_id, "repo": str(Path(user_path).resolve())}
+    applied = result.get("applied")
+    names = [str(rel) for rel in applied] if isinstance(applied, list) else []
+    also_kept = _close_what_went_in(metas, request_id, names)
+    return {
+        "ok": True, **result, "request_id": request_id, "repo": str(Path(user_path).resolve()),
+        "also_kept": also_kept,
+    }
+
+
+def _reset_live_copy(meta: dict[str, Any]) -> None:
+    """Put the project's sticky working copy back to this request's baseline.
+
+    Without this the next request would start from the discarded work, and its diff would show it
+    again. Only source files are touched: node_modules and other excluded folders stay.
+    """
+    live = Path(meta.get("engine_cwd") or project_dir(str(meta["project_id"])) / "live" / "candidate")
+    baseline = Path(meta["baseline"])
+    if live.is_dir() and baseline.is_dir():
+        sync_source_tree(baseline, live)
 
 
 def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
-    """Drop the candidate. Evidence remains. Session is not reused."""
+    """Close the request without keeping it. Evidence (meta.json, candidate/) stays on disk."""
+    meta = load_meta(project_id, request_id)
+    state = request_state(meta)
+    if state == KEPT:
+        raise GeneralError(
+            "These changes are already in your project, so they cannot be discarded.", code="kept",
+        )
+    if state == DISCARDED:
+        return {"ok": True, "discarded": True, "request_id": request_id, "detail": "Already discarded."}
+    if _request_in_flight(project_id):
+        raise GeneralError(
+            "A request is still running in this project. Wait for it to finish, or stop it, then discard.",
+            code="busy",
+        )
+    if _newer_request_to_decide(_project_metas(project_id), request_id):
+        # Its Keep would put this request's changes into the project after all.
+        raise GeneralError(NEWER_FIRST, code="newer_waiting")
+    try:
+        _reset_live_copy(meta)
+    except OSError as exc:
+        raise GeneralError(
+            "Local Coder could not clear this request's working copy, so it was not discarded. Try again.",
+            code="discard_failed",
+        ) from exc
     stop_owned()
     stop_preview()
-    meta = load_meta(project_id, request_id)
     meta["discarded"] = True
-    (request_dir(project_id, request_id) / "meta.json").write_text(
-        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
-    )
+    _save_meta(meta)
     return {
         "ok": True,
         "discarded": True,
@@ -1281,7 +1661,7 @@ def cancel_active() -> dict[str, Any]:
 
 def list_requests(user_path: str | Path) -> list[dict[str, Any]]:
     pid = project_id_for(Path(user_path))
-    root = work_root(pid) / "requests"
+    root = project_dir(pid) / "requests"
     rows: list[dict[str, Any]] = []
     if not root.exists():
         return rows
@@ -1293,19 +1673,10 @@ def list_requests(user_path: str | Path) -> list[dict[str, Any]]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        agent = meta.get("agent") if isinstance(meta.get("agent"), dict) else {}
-        if meta.get("discarded"):
-            outcome = "discarded"
-        elif meta.get("kept"):
-            outcome = "kept"
-        elif agent.get("status") in {"stopped", "time_limit", "step_limit", "error"}:
-            outcome = str(agent["status"])
-        else:
-            outcome = "review"
         rows.append({
             "episode_id": meta.get("request_id") or entry.name,
             "request_id": meta.get("request_id") or entry.name,
-            "outcome": outcome,
+            "outcome": request_outcome(meta),
             "request": (meta.get("title") or _title_from_transcript(entry))[:160],
             "updated_ts": meta.get("created_ts"),
             "created_ts": meta.get("created_ts"),
