@@ -658,9 +658,8 @@ def run_general_request(
     except ModelIdentityError as exc:
         raise GeneralError(exc.detail, code=exc.code) from exc
     _emit(listener, "preparing", {"request_id": request_id})
-    # The engine is decided once, before the workspace is made, so the workspace and the run agree on it. Every
-    # engine builds on the result that still waits in the working copy, the hosted agent included; only a
-    # continuation does not (it brings its own copy and inherits no baseline).
+    # The engine is decided once. Every engine builds on the result that still waits in the working copy, the
+    # hosted agent included; only a continuation does not (it brings its own copy and inherits no baseline).
     use_agent = fake_engine is None and (agent_chat is not None or (fake_complete is None and _agent_capable()))
     meta = prepare_workspace(folder, request_id, allow_starter=True, carry=not continue_from)
     meta["title"] = _title_line(text)

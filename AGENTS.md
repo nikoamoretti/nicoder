@@ -113,7 +113,8 @@
   result left it (`_run_agent_request` re-syncs the copy from that request's
   candidate, copied and never linked, else from the baseline; the re-sync stays
   because it undoes the preview's SWC rewrite of `package.json` and
-  `vite.config.ts`, which Keep must never write). Such a request takes that
+  `vite.config.ts`, which the agent's review and Keep must not carry; the local
+  path still does, until the `swc-rewrite` cut). Such a request takes that
   result's baseline as its own (`baseline/` and `baseline.json` copied whole; if
   either is damaged it starts from the folder instead), so its diff and its Keep
   are measured from one starting point: what Nico changed in the folder meanwhile
@@ -122,9 +123,8 @@
   renames excepted until the `keep-renames` cut). Known limit: what he edited
   after the first request started is not in the copy a follow-up's agent works
   on (Keep still refuses a real clash). A continuation (`continue_from`) never
-  inherits a baseline, and
-  `run_general_request` decides the engine once, before the workspace is made
-  (`prepare_workspace(carry=...)`). Keeping a request closes the older
+  inherits a baseline (`prepare_workspace(carry=not continue_from)`), and
+  `run_general_request` decides the engine once. Keeping a request closes the older
   ones it was built on as kept (`kept_with`: "These changes went in with a later
   request you kept."); while a newer request built on it is running or still has
   changes to decide, an older one can be neither kept nor discarded, and its
