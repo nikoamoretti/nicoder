@@ -114,7 +114,8 @@
   either is damaged it starts from the folder instead), so its diff and its Keep
   are measured from one starting point: what Nico changed in the folder meanwhile
   is not shown as the model's work and Keep never reverts it, and a file he and
-  the stack both changed makes Keep refuse (`conflict`) and write nothing. The
+  the stack both changed makes Keep refuse (`conflict`) and write nothing (file
+  renames excepted until the `keep-renames` cut). The
   hosted agent and `continue_from` never inherit a baseline, and
   `run_general_request` decides the engine once, before the workspace is made
   (`prepare_workspace(carry=...)`). Keeping a request closes the older
