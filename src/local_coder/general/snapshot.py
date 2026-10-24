@@ -7,7 +7,11 @@ Three states:
 
 Only the delta B→C is applied. A touched path that changed between B and U
 is a conflict. Unrelated user edits survive. Newly created candidate paths
-that now exist in U are also conflicts.
+that now exist in U are also conflicts, and so is a rename's destination when
+U holds other text there than the request wrote. A rename is checked at both
+ends: its source must still be there unchanged, or the move must already have
+been made by hand. Everything Keep can know to refuse is found before the
+first write, and the refusal is a sentence that names the files.
 """
 from __future__ import annotations
 
@@ -251,22 +255,60 @@ def compute_delta(before: TreeIndex, after: TreeIndex) -> Delta:
 
 
 def find_conflicts(baseline: TreeIndex, candidate: TreeIndex, user: TreeIndex) -> list[Conflict]:
-    """Conflicts between B→C and the current user tree U."""
+    """Conflicts between B→C and the current user tree U, sorted by path, at most one for each path.
+
+    A rename is looked at once, at both ends (`_rename_conflicts`). Every other touched path is a conflict when
+    it is added and U holds other text there, or when it changed or was removed in U since B.
+    """
     delta = compute_delta(baseline, candidate)
-    conflicts: list[Conflict] = []
+    moves = dict(delta.renamed)
+    destinations = set(moves.values())
+    found: dict[str, str] = {}
     for rel in delta.touched():
+        if rel in destinations:
+            continue  # looked at together with its source
+        if rel in moves:
+            found.update(_rename_conflicts(rel, moves[rel], baseline, candidate, user))
+            continue
         b = baseline.sha_of(rel)
         u = user.sha_of(rel)
-        if rel in delta.added and u is not None and u != candidate.sha_of(rel):
-            conflicts.append(Conflict(rel, REASON_ADDED))
-            continue
         if rel in delta.added:
-            continue
-        if b is not None and u is not None and u != b:
-            conflicts.append(Conflict(rel, REASON_CHANGED))
-        elif b is not None and u is None and rel not in {old for old, _ in delta.renamed}:
-            conflicts.append(Conflict(rel, REASON_REMOVED))
-    return conflicts
+            if u is not None and u != candidate.sha_of(rel):
+                found[rel] = REASON_ADDED
+        elif b is not None and u is not None and u != b:
+            found[rel] = REASON_CHANGED
+        elif b is not None and u is None:
+            found[rel] = REASON_REMOVED
+    return [Conflict(path, found[path]) for path in sorted(found)]
+
+
+def _rename_conflicts(
+    old: str, new: str, baseline: TreeIndex, candidate: TreeIndex, user: TreeIndex,
+) -> dict[str, str]:
+    """The conflicts at the two ends of one rename, as {path: reason}.
+
+    The destination is free, or already holds exactly the text the request wrote there; otherwise it is a file he
+    made and counts as added. The source is still there unchanged, or he made the move himself (the destination
+    holds the request's text); otherwise it changed, or it is gone and Keep would report a write it never made.
+    Both are decided from the indexes and never from `Path.exists()`: the disk ignores case, so a rename that
+    only changes the case of a name would clash with itself. The indexes skip links, so those are seen on the
+    disk: a link at the destination is a file he made, one at the source is a changed file.
+    """
+    wrote = candidate.sha_of(new)
+    at_old = user.sha_of(old)
+    at_new = user.sha_of(new)
+    found: dict[str, str] = {}
+    if at_new is not None and at_new != wrote:
+        found[new] = REASON_ADDED
+    if at_old is not None and at_old != baseline.sha_of(old):
+        found[old] = REASON_CHANGED
+    elif at_old is None and at_new != wrote:
+        found[old] = REASON_REMOVED
+    if (user.root / new).is_symlink():
+        found[new] = REASON_ADDED
+    if (user.root / old).is_symlink():
+        found[old] = REASON_CHANGED
+    return found
 
 
 def conflict_sentence(conflicts: Iterable[Mapping[str, object]]) -> str:
@@ -343,7 +385,14 @@ def _read_lines(path: Path) -> list[str]:
 
 
 def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object]:
-    """Apply B→C onto U transactionally. Refuses on conflict or path escape."""
+    """Apply B→C onto U transactionally. Refuses on conflict or path escape.
+
+    Everything that can be known to refuse is found before the first delete or write, in one pass: a clash with
+    what he changed (both ends of every rename included) and a link or folder in the way. A refusal found halfway
+    would be rolled back, but `_rollback` restores bytes only: a deleted executable would come back as a new
+    file with mode 0644. The `detail` of a conflict stays as it is for the MCP apply, which prints it with the
+    list; Keep builds Nico's sentence from that list (`conflict_sentence`).
+    """
     user = user.resolve()
     baseline = baseline.resolve()
     candidate = candidate.resolve()
@@ -360,6 +409,9 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
             "applied": [],
         }
     delta = compute_delta(b_index, c_index)
+    blocked = _blocked_before_writing(user, candidate, delta)
+    if blocked:
+        return {"ok": False, "code": "apply_failed", "detail": blocked, "applied": []}
     journal: dict[str, bytes | None] = {}
     applied: list[str] = []
     try:
@@ -396,6 +448,21 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
         _rollback(user, journal)
         return {"ok": False, "code": "apply_failed", "detail": str(exc), "applied": []}
     return {"ok": True, "applied": sorted(set(applied)), "delta": delta.as_dict()}
+
+
+def _blocked_before_writing(user: Path, candidate: Path, delta: Delta) -> str | None:
+    """Why the writes would fail halfway, found before the first one, or None.
+
+    A link where a file is to be written is never followed or replaced, and a folder where a renamed file is to
+    land cannot be replaced by a file. The write loop checks links again at each file.
+    """
+    for rel in delta.added + delta.modified:
+        if (candidate / rel).is_symlink() or (user / rel).is_symlink():
+            return f"refusing symlink: {rel}"
+    for _old, new in delta.renamed:
+        if (user / new).is_dir():
+            return f"refusing folder: {new}"
+    return None
 
 
 def _assert_inside(root: Path, rel: str) -> None:

@@ -123,9 +123,13 @@
   either is damaged it starts from the folder instead), so its diff and its Keep
   are measured from one starting point: what Nico changed in the folder meanwhile
   is not shown as the model's work and Keep never reverts it, and a file he and
-  the stack both changed makes Keep refuse (`conflict`) and write nothing (file
-  renames excepted until the `keep-renames` cut). The refusal names the files and
-  what happened to each (`snapshot.conflict_sentence`: "Not kept: since these changes
+  the stack both changed makes Keep refuse (`conflict`) and write nothing. A file
+  rename is checked at both ends from the snapshot indexes (never `Path.exists()`:
+  the disk ignores case): a destination holding other text than the request wrote,
+  a source that is gone (unless the destination already holds the request's text:
+  he made the move himself) or changed, and a link at either end all refuse. Every
+  such refusal is found before the first write and names the files and what
+  happened to each (`snapshot.conflict_sentence`: "Not kept: since these changes
   were started, src/a.ts was changed in your project. Your project was not
   changed."; at most three names, then a count). Known limit: what he edited
   after the first request started is not in the copy a follow-up's agent works

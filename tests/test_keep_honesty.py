@@ -24,8 +24,14 @@ from local_coder.general.coordinator import GeneralError, list_requests, run_gen
 
 HEAD = "Not kept: since these changes were started, "
 TAIL = "Your project was not changed."
+GENERIC = (
+    "Local Coder could not write these changes into your project. "
+    "Check that its folder and files can be changed, then try Keep again."
+)
+WENT_IN = "These changes went in with a later request you kept."
 MOVED = "export const moved = 'X'\n"
 HIS = "export const nico = 'MINE'\n"
+HIS_README = "# p\nNico's own paragraph\n"
 RED = "export const a = 'RED'\n"
 BLUE = "export const b = 'BLUE'\n"
 
@@ -63,6 +69,14 @@ def local(project: Path, request_id: str, engine) -> dict:
     )
 
 
+def move(source: str, destination: str):
+    def engine(cwd: Path) -> None:
+        (cwd / destination).parent.mkdir(parents=True, exist_ok=True)
+        (cwd / source).rename(cwd / destination)
+
+    return engine
+
+
 def write(path: str, body: str):
     def engine(cwd: Path) -> None:
         (cwd / path).parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +107,12 @@ def state(root: Path) -> dict[str, tuple]:
     return found
 
 
+def is_moved(project: Path) -> bool:
+    """src/new.ts holds the moved text and src/old.ts is gone."""
+    new, old = project / "src" / "new.ts", project / "src" / "old.ts"
+    return new.is_file() and new.read_text(encoding="utf-8") == MOVED and not old.exists()
+
+
 def history(project: Path) -> list[tuple[str, str]]:
     return [(row["request_id"], row["outcome"]) for row in list_requests(project)]
 
@@ -115,6 +135,166 @@ def refused_as_a_conflict(project: Path, request_id: str, what: str) -> None:
 def can_still_be_decided(project: Path, request_id: str) -> None:
     review = snapshot(request_id, repo=project)
     assert review["can_keep"] is True and review["can_discard"] is True and review["outcome"] == "review"
+
+
+# --- Check 1: a file he made at a rename's destination is never overwritten ---------------------------------------
+
+
+def test_rn1_a_file_he_made_at_the_destination_is_not_replaced(project):
+    """The request moves src/old.ts to src/new.ts; he writes his own src/new.ts while the result waits."""
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "new.ts").write_text(HIS, encoding="utf-8")
+    refused_as_a_conflict(project, "r1", "src/new.ts was added to your project")
+    assert (project / "src" / "new.ts").read_text(encoding="utf-8") == HIS
+    assert (project / "src" / "old.ts").read_text(encoding="utf-8") == MOVED
+    can_still_be_decided(project, "r1")
+    assert history(project) == [("r1", "review")]
+
+
+def test_rn7_in_a_stack_the_clash_is_refused_and_the_newer_request_can_still_be_discarded(project):
+    """R1 moves; he writes src/new.ts; R2 adds src/b.ts. Keep R2 is refused. Discard R2: Keep R1 alone is refused the
+    same way, because the clash is R1's own."""
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "new.ts").write_text(HIS, encoding="utf-8")
+    local(project, "r2", write("src/b.ts", BLUE))
+    refused_as_a_conflict(project, "r2", "src/new.ts was added to your project")
+    can_still_be_decided(project, "r2")
+    assert discard_changes("r2", repo=project)["discarded"] is True
+    before = state(project)
+    refused_as_a_conflict(project, "r1", "src/new.ts was added to your project")
+    assert state(project) == before and not (project / "src" / "b.ts").exists(), "src/b.ts never lands"
+    assert (project / "src" / "new.ts").read_text(encoding="utf-8") == HIS
+    assert history(project) == [("r2", "discarded"), ("r1", "review")]
+
+
+def test_rn9_when_the_move_is_the_second_requests_own_the_clash_is_refused_too(project):
+    local(project, "r1", write("src/a.ts", RED))
+    local(project, "r2", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "new.ts").write_text(HIS, encoding="utf-8")
+    refused_as_a_conflict(project, "r2", "src/new.ts was added to your project")
+    assert (project / "src" / "new.ts").read_text(encoding="utf-8") == HIS
+    assert history(project) == [("r2", "review"), ("r1", "review")]
+
+
+def test_rn12_a_link_he_made_at_the_destination_is_not_replaced(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "new.ts").symlink_to("../README.md")
+    refused_as_a_conflict(project, "r1", "src/new.ts was added to your project")
+    assert os.readlink(project / "src" / "new.ts") == "../README.md" and (project / "src" / "old.ts").is_file()
+    can_still_be_decided(project, "r1")
+
+
+def test_rn12b_a_link_he_put_where_the_source_was_is_a_conflict_too(project):
+    """He replaced src/old.ts with a link. Moving it would move his link: refused, and it reads as changed."""
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "old.ts").unlink()
+    (project / "src" / "old.ts").symlink_to("../README.md")
+    refused_as_a_conflict(project, "r1", "src/old.ts was changed in your project")
+    assert os.readlink(project / "src" / "old.ts") == "../README.md" and not (project / "src" / "new.ts").exists()
+
+
+# --- Check 2: Keep never says ok for a destination it did not write ------------------------------------------------
+
+
+def test_rn3_a_source_he_deleted_is_refused_and_the_destination_is_not_made_up(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "old.ts").unlink()
+    refused_as_a_conflict(project, "r1", "src/old.ts was removed from your project")
+    assert not (project / "src" / "new.ts").exists()
+    can_still_be_decided(project, "r1")
+    assert history(project) == [("r1", "review")]
+
+
+def test_rn6_a_source_he_moved_elsewhere_is_refused_and_stays_where_he_put_it(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "old.ts").rename(project / "src" / "elsewhere.ts")
+    refused_as_a_conflict(project, "r1", "src/old.ts was removed from your project")
+    assert (project / "src" / "elsewhere.ts").read_text(encoding="utf-8") == MOVED
+    assert not (project / "src" / "new.ts").exists()
+
+
+def test_rn8_in_a_stack_a_deleted_source_refuses_the_keep_and_closes_no_older_request(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "old.ts").unlink()
+    local(project, "r2", write("src/b.ts", BLUE))
+    refused_as_a_conflict(project, "r2", "src/old.ts was removed from your project")
+    assert not (project / "src" / "new.ts").exists() and not (project / "src" / "b.ts").exists()
+    assert history(project) == [("r2", "review"), ("r1", "review")]
+    can_still_be_decided(project, "r2")
+
+
+# --- Check 3: a move that is no clash still goes through -------------------------------------------------------
+
+
+def test_rn2_a_destination_holding_exactly_the_requests_text_is_no_clash(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "new.ts").write_text(MOVED, encoding="utf-8")
+    kept = keep_changes("r1", project)
+    assert kept["ok"] is True and kept["applied"] == ["src/new.ts", "src/old.ts"]
+    assert is_moved(project)
+    assert history(project) == [("r1", "kept")]
+
+
+def test_rn4_a_move_he_made_by_hand_still_goes_through_and_the_rest_lands(project):
+    local(project, "r1", several(move("src/old.ts", "src/new.ts"), write("README.md", "# p\nrenamed old to new\n")))
+    (project / "src" / "old.ts").rename(project / "src" / "new.ts")
+    assert keep_changes("r1", project)["ok"] is True
+    assert is_moved(project)
+    assert (project / "README.md").read_text(encoding="utf-8") == "# p\nrenamed old to new\n"
+    assert history(project) == [("r1", "kept")]
+
+
+def test_rn4b_in_a_stack_a_move_he_made_by_hand_goes_through_and_closes_the_older_request(project):
+    """R1 moves the file; he does the same move himself; R2 adds src/b.ts. Keep R2 takes it all: the pair is in the
+    folder as R1 wants it, so R1 'went in with' R2 is true."""
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "old.ts").rename(project / "src" / "new.ts")
+    local(project, "r2", write("src/b.ts", BLUE))
+    kept = keep_changes("r2", project)
+    assert kept["ok"] is True and kept["also_kept"] == ["r1"]
+    assert kept["applied"] == ["src/b.ts", "src/new.ts", "src/old.ts"]
+    assert is_moved(project)
+    assert (project / "src" / "b.ts").read_text(encoding="utf-8") == BLUE
+    assert history(project) == [("r2", "kept"), ("r1", "kept")]
+    assert snapshot("r1", repo=project)["summary"] == WENT_IN
+
+
+def test_rn5_a_source_he_edited_is_refused_and_nothing_is_written(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "old.ts").write_text("export const moved = 'EDITED BY NICO'\n", encoding="utf-8")
+    before = state(project)
+    assert refusal(project, "r1").code == "conflict"
+    assert state(project) == before
+
+
+def test_rn10_a_plain_move_in_a_stack_lands_and_his_unrelated_edit_survives(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "README.md").write_text(HIS_README, encoding="utf-8")
+    local(project, "r2", write("src/b.ts", BLUE))
+    kept = keep_changes("r2", project)
+    assert kept["ok"] is True and kept["also_kept"] == ["r1"]
+    assert is_moved(project)
+    assert (project / "src" / "b.ts").is_file()
+    assert (project / "README.md").read_text(encoding="utf-8") == HIS_README
+    assert history(project) == [("r2", "kept"), ("r1", "kept")]
+
+
+def test_rn11_a_case_only_rename_goes_through_on_a_disk_that_ignores_case(project):
+    (project / "src" / "Widget.ts").write_text("export const widget = 1\n", encoding="utf-8")
+    local(project, "r1", move("src/Widget.ts", "src/widget.ts"))
+    assert keep_changes("r1", project)["ok"] is True
+    names = sorted(path.name for path in (project / "src").iterdir())
+    assert "widget.ts" in names and "Widget.ts" not in names
+
+
+def test_rn13_a_folder_at_the_destination_keeps_the_generic_refusal_and_writes_nothing(project):
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "new.ts").mkdir()
+    (project / "src" / "new.ts" / "keep.txt").write_text("his\n", encoding="utf-8")
+    before = state(project)
+    error = refusal(project, "r1")
+    assert error.code == "apply_failed" and error.detail == GENERIC
+    assert state(project) == before
 
 
 # --- Check 4: the refusal names the files and is true ------------------------------------------------------------
@@ -179,6 +359,16 @@ def test_wd6_each_file_is_named_with_its_own_verb(project):
     (project / "src" / "util.ts").unlink()
     refused_as_a_conflict(
         project, "r1", "src/a.ts was changed in your project and src/util.ts was removed from your project",
+    )
+
+
+def test_a_moved_file_he_edited_reads_as_changed_and_one_he_made_at_the_destination_as_added(project):
+    """The two ends of a rename in one sentence: he edited the source and wrote his own destination."""
+    local(project, "r1", move("src/old.ts", "src/new.ts"))
+    (project / "src" / "old.ts").write_text("export const moved = 'EDITED BY NICO'\n", encoding="utf-8")
+    (project / "src" / "new.ts").write_text(HIS, encoding="utf-8")
+    refused_as_a_conflict(
+        project, "r1", "src/old.ts was changed in your project and src/new.ts was added to your project",
     )
 
 
