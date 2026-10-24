@@ -12,10 +12,11 @@ U holds other text there than the request wrote. A rename is checked at both
 ends: its source must still be there unchanged, or the move must already have
 been made by hand. Found before the first write: a result that lists no files
 while its baseline lists some (Keep would empty the project), a clash at either
-end of a rename, a link, a folder at a rename's destination and a path leaving
-the project. Found only while writing (then rolled back, bytes only, so a
-deleted file comes back with mode 0644): a plain file where a folder must be
-made, a folder where an added file goes, a looping link and disk errors. Only a
+end of a rename, a link, a folder where a file goes or where a rename's source
+was, a plain file or a link that is not a folder where a folder must be made
+(unless this Keep removes it first), a looping link, a folder he cannot search
+and a path leaving the project. Found only while writing (then rolled back,
+bytes only, so a deleted file comes back with mode 0644): a disk error. Only a
 clash refusal names the files; the others keep the generic sentence.
 """
 from __future__ import annotations
@@ -410,12 +411,12 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
     """Apply B→C onto U transactionally. Refuses on conflict or path escape.
 
     Found before the first delete or write, in one pass: a result with no files left while the baseline lists some
-    (`would_empty_project`), a clash with what he changed (both ends of every rename included), a link, a folder at
-    a rename's destination and a path leaving the project. Found only while writing: a plain file where a folder
-    must be made, a folder where an added file goes, a looping link and disk errors. Those are rolled back, but
-    `_rollback` restores bytes only: a deleted executable comes back as a new file with mode 0644. The `detail` of
-    a conflict stays as it is for the MCP apply, which prints it with the list; Keep builds Nico's sentence from
-    that list (`conflict_sentence`).
+    (`would_empty_project`), a clash with what he changed (both ends of every rename included) and whatever else
+    `_blocked_before_writing` can know (a link, a folder or a file in the way, a looping link, a folder he cannot
+    search, a path leaving the project). Found only while writing: a disk error (a full disk, a folder that is
+    read-only). It is rolled back, but `_rollback` restores bytes only: a deleted executable comes back as a new
+    file with mode 0644. The `detail` of a conflict stays as it is for the MCP apply, which prints it with the
+    list; Keep builds Nico's sentence from that list (`conflict_sentence`).
     """
     user = user.resolve()
     baseline = baseline.resolve()
@@ -470,32 +471,68 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
             dst.parent.mkdir(parents=True, exist_ok=True)
             _atomic_copy(src, dst)
             applied.append(rel)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:  # RuntimeError: `resolve()` on a link that loops (Python 3.12)
         _rollback(user, journal)
         return {"ok": False, "code": "apply_failed", "detail": str(exc), "applied": []}
     return {"ok": True, "applied": sorted(set(applied)), "delta": delta.as_dict()}
 
 
 def _blocked_before_writing(user: Path, candidate: Path, delta: Delta) -> str | None:
-    """Some of the reasons the writes would fail halfway, found before the first one, or None.
+    """The reason the writes would fail halfway, found before the first one, or None.
 
     A path that leaves the project (a folder of his that became a link elsewhere), a link where a file is to be
-    written (never followed or replaced), and a folder where a renamed file is to land (a file cannot replace it).
-    The write loop checks the first two again at each file.
+    written (never followed or replaced), and whatever else stands in the way of a write (`_in_the_way`): a folder
+    where a file goes, a plain file or a link that is not a folder where a parent folder must be made, and a folder
+    where a rename's source was (he made the move himself and put a folder there). The check follows the order of
+    the writes: deletes, then each rename (the folder of its destination first, then the move), then the rest. So a
+    file this Keep removes before it makes the folder on its name is no obstacle.
+
+    All of it runs inside one `try`. A looping link makes `resolve()` raise RuntimeError (Python 3.12) and a folder
+    he cannot search makes the checks themselves raise PermissionError: both are refusals found before the first
+    write, not unhandled errors. The write loop checks the first two again at each file.
     """
     try:
         for rel in sorted(delta.touched()):
             _assert_inside(user, rel)
         for rel in delta.added + delta.modified:
             _assert_inside(candidate, rel)
-    except OSError as exc:
+        for rel in delta.added + delta.modified:
+            if (candidate / rel).is_symlink() or (user / rel).is_symlink():
+                return f"refusing symlink: {rel}"
+        gone = {name.casefold() for name in delta.deleted}  # the first writes delete these
+        for old, new in delta.renamed:  # then each rename makes the folder of its destination, then moves its source
+            blocker = _in_the_way(user, new, gone)
+            if blocker:
+                return blocker
+            gone.add(old.casefold())
+        for rel in delta.added + delta.modified:  # then the added and modified files
+            blocker = _in_the_way(user, rel, gone)
+            if blocker:
+                return blocker
+        for old, _new in delta.renamed:
+            if (user / old).is_dir():
+                return f"refusing folder: {old}"
+    except (OSError, RuntimeError) as exc:
         return str(exc)
-    for rel in delta.added + delta.modified:
-        if (candidate / rel).is_symlink() or (user / rel).is_symlink():
-            return f"refusing symlink: {rel}"
-    for _old, new in delta.renamed:
-        if (user / new).is_dir():
-            return f"refusing folder: {new}"
+    return None
+
+
+def _in_the_way(user: Path, rel: str, gone: set[str]) -> str | None:
+    """What stops `rel` from being written, or None: a folder at the path itself, or a plain file or a link that is
+    not a folder (dangling or looping too) where one of its parent folders must be made.
+
+    A parent in `gone` (names in lower case) is a file this Keep has already deleted or moved away by the time of
+    this write: a file replaced by a folder of the same name. Names are compared without regard to case because the
+    disk may not tell `Docs` from `docs` (macOS does not): a file replaced by a folder that only differs in case is
+    the same replacement. Where the disk does tell them apart, a file of his that differs only in case from a removed
+    one is left to the write, which is rolled back as before. A link to a folder is a fine parent: the write goes
+    through it, and `_assert_inside` has already kept it inside the project.
+    """
+    if (user / rel).is_dir():
+        return f"refusing folder: {rel}"
+    for parent in list(Path(rel).parents)[:-1]:
+        if parent.as_posix().casefold() not in gone and os.path.lexists(user / parent) and not (user / parent).is_dir():
+            return f"not a folder: {parent}"
     return None
 
 

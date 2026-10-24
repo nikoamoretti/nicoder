@@ -128,12 +128,14 @@
   the disk ignores case): the destination must be free or hold the text the request
   wrote, the source must still be there unchanged unless he already made the move
   himself, and a link at either end refuses. `apply_delta` finds a result with no
-  files left while its baseline lists some, clashes, a link, a folder at a
-  rename's destination and a path leaving the project before its first write,
-  because `_rollback` restores bytes only; a plain file where a folder
-  must be made, a folder where an added file goes, a looping link and disk errors
-  are found only while writing and rolled back (a deleted file comes back 0644,
-  until the `keep-late-failures` cut). A clash refusal names the
+  files left while its baseline lists some, clashes, a link, a folder where a file
+  goes or where a rename's source was, a plain file (or a link that is not a
+  folder) where a folder must be made unless that Keep removes it first (checked
+  in the order of the writes), a looping link, a folder he cannot search and a
+  path leaving the project before its first write, because `_rollback` restores
+  bytes only; a disk error is the one thing found only while writing, and it is
+  rolled back (a deleted file comes back 0644, until the `rollback-keeps-modes`
+  cut). Those refusals keep the generic sentence. A clash refusal names the
   files and what happened to each (`snapshot.conflict_sentence`: "Not kept: since
   these changes were started, src/a.ts was changed in your project. Your project
   was not changed."; at most three names, then a count); `apply_delta`'s own
