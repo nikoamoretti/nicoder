@@ -197,10 +197,26 @@
   does not hold the older one back, its card forgets the check verdicts (the check log stays as evidence), and it keeps its
   History word (`error`, `stopped`, `review`). The next request passes over such
   requests and over discarded ones, and a question still finds the waiting result
-  behind them (`waiting.LOOK_AT`, 30). Known limits: a visible junk file (such as
-  `.coverage`), or a local request after a hosted one on a Babel project (the local
-  path's SWC rewrite), makes it a real stack as before; a run that crashes leaves its
-  stray files in the copy, so the next request starts from the folder.
+  behind them (`waiting.LOOK_AT`, 30). A request built on a waiting result that ends
+  normally with the working copy exactly as the stack started (no files of its own,
+  and the copy is the start of its baseline, not the result it was built on) closes
+  every waiting request it was built on, nearest first, as discarded with `undone_by`
+  (`coordinator._close_what_was_undone`, once, at the end of the run, from the two
+  trees and the run's recorded end, never the model's words; the walk stops at the
+  first request with no files; a request that is not waiting, a result that cannot be
+  read and a record that cannot be saved are left as they were; the folder is never
+  written). The card, Keep (code `discarded`) and Discard (ok) say "A later request
+  undid these changes, so they were not added to your project."
+  (`request_state.UNDONE_SENTENCE`); a request he discarded himself keeps his words.
+  A run that was stopped, failed or cut short closes nothing: the copy is then at the
+  stack's start, so the next request is not built on that result, which stays
+  keepable on its own (a named limit, the `undo-stopped` cut). Known limits: a
+  visible junk file (such as `.coverage`), or a local request after a hosted one on a
+  Babel project (the local path's SWC rewrite), makes it a real stack as before; a
+  run that crashes leaves its stray files in the copy, so the next request starts
+  from the folder; a local undo on a project without `src/` ends `not_repaired` (the
+  start state fails Local Coder's own checks), which counts as cut short, so the old
+  request stays keepable there.
 - `src/local_coder/general/waiting.py` — a question asked while a result waits
   for Keep or Discard gets a note built from the request's own record (title,
   age, files, "not in the folder yet", and for the agent where to read the

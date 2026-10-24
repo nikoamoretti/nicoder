@@ -35,6 +35,7 @@ OLD = "def add(a, b):\n    return a - b\n"
 NEW = "def add(a, b):\n    return a + b\n"
 FURTHER = "def add(a, b):\n    # numbers only\n    return a + b\n"
 WENT_IN = "These changes went in with a later request you kept."
+UNDONE = "A later request undid these changes, so they were not added to your project."
 REPLACED_CALC = (
     "These changes were replaced by a later request you kept. Nothing from them went into src/calc.py."
 )
@@ -413,14 +414,33 @@ def test_the_older_request_can_be_kept_once_the_newer_one_is_discarded(calc):
 
 
 def test_a_newer_request_with_nothing_to_decide_does_not_block_the_older_one(calc):
-    """Request 2 undid request 1's change: it has no files, so its Keep can not bring anything back."""
+    """Request 2 changed nothing (the copy stays request 1's result): it has no files, so its Keep can not bring
+    anything back, and the older request is still keepable and discardable.
+
+    Changed by the `undo-closes` cut: this was an undo (request 2 put the old text back). That now closes request 1
+    (the next test); a request that changes nothing is what keeps this protection, so it is the one used here."""
     first = _fix(calc)
-    second = _run(calc, "req-2", _write("src/calc.py", OLD))
+    second = _run(calc, "req-2", lambda _cwd, _text, _cancel: None)
     assert second["facts"]["files"] == [] and second["can_keep"] is False
     assert load_meta(first["project_id"], "req-2")["built_on"] == "req-1"
     older = snapshot("req-1", repo=calc)
     assert older["can_keep"] is True and older["can_discard"] is True, "nothing newer holds it back"
     assert discard_changes("req-1", repo=calc)["discarded"] is True
+
+
+def test_a_newer_request_that_undid_the_older_one_closes_it(calc):
+    """Request 2 undid request 1's change and ended normally: request 1 is closed as undone, with the true sentence.
+    Discard of it still answers ok, with that sentence rather than "Already discarded."."""
+    first = _fix(calc)
+    second = _run(calc, "req-2", _write("src/calc.py", OLD))
+    assert second["facts"]["files"] == [] and second["can_keep"] is False
+    assert load_meta(first["project_id"], "req-2")["built_on"] == "req-1"
+    older = snapshot("req-1", repo=calc)
+    assert older["can_keep"] is False and older["can_discard"] is False and older["outcome"] == "discarded"
+    assert older["summary"] == UNDONE
+    answer = discard_changes("req-1", repo=calc)
+    assert answer["discarded"] is True and answer["detail"] == UNDONE
+    assert _history(calc) == [("req-2", "review"), ("req-1", "discarded")]
 
 
 def test_two_hosted_results_in_a_stack_are_decided_newest_first(calc):

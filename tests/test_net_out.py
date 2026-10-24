@@ -55,6 +55,7 @@ WENT_IN = "These changes went in with a later request you kept."
 ALREADY_KEPT = "These changes are already in your project."
 ALREADY_KEPT_DISCARD = "These changes are already in your project, so they cannot be discarded."
 NOTHING_TO_KEEP = "This request changed nothing, so there is nothing to keep."
+UNDONE = "A later request undid these changes, so they were not added to your project."
 REPLACED = "These changes were replaced by a later request you kept. Nothing from them went into "
 
 darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="the agent's bash runs in sandbox-exec: macOS only")
@@ -592,15 +593,28 @@ def test_ng1b_a_new_file_next_to_a_new_file_went_in(project):
     assert_closed_as_went_in(project, "r1", "r2")
 
 
-def test_ng3_a_full_undo_leaves_the_older_request_keepable_for_the_next_cut(project):
-    """R2 only removes R1's gen.py: R2 has no files, R1 is open and keepable (`undo-closes` changes this, not this)."""
+def test_ng3_a_full_undo_closes_the_older_request(project):
+    """R2 only removes R1's gen.py: R2 has no files and R1 is closed for good, as discarded, with the true sentence.
+
+    Flipped by the `undo-closes` cut: R1 used to stay open and keepable, and its Keep put gen.py back into the
+    project (the file he had asked to remove). Keep of it is now refused, Discard answers ok with the same sentence,
+    and neither writes anything."""
+    folder = state(project)
     local(project, "r1", write("src/gen.py", "GEN = 1\n"))
     local(project, "r2", remove("src/gen.py"))
     follow_up = card(project, "r2")
     assert follow_up["files"] == [] and follow_up["can_keep"] is False and follow_up["can_discard"] is False
     older = card(project, "r1")
-    assert older["can_keep"] is True and older["blocked_by"] is None and older["outcome"] == "review"
-    assert keep_changes("r1", project)["applied"] == ["src/gen.py"]
+    assert older["can_keep"] is False and older["can_discard"] is False and older["blocked_by"] is None
+    assert older["outcome"] == "discarded" and older["files"] == [] and older["summary"] == UNDONE
+    meta = load_meta(project_id_for(project), "r1")
+    assert meta["discarded"] is True and meta["undone_by"] == "r2" and "kept" not in meta
+    assert history(project) == [("r2", "review"), ("r1", "discarded")]
+    assert keep_refusal(project, "r1") == ("discarded", UNDONE)
+    answer = discard_changes("r1", repo=project)
+    assert answer["ok"] is True and answer["discarded"] is True and answer["detail"] == UNDONE
+    assert state(project) == folder and not (project / "src" / "gen.py").exists(), "modes too: nothing was written"
+    assert find_waiting_result(project) is None
 
 
 def test_ng4_a_continuation_of_a_discarded_request_does_not_turn_it_into_a_kept_one(project):

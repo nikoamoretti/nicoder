@@ -59,6 +59,7 @@ NEWER_RUNNING = (
 )
 STILL_RUNNING = "A request is still running in this project. Wait for it to finish, or stop it, then discard."
 STOPPED_NOTHING = "Stopped. Nothing was changed."
+UNDONE = "A later request undid these changes, so they were not added to your project."
 DISCARDED_NOTHING_TO_KEEP = "This request was discarded, so there is nothing to keep."
 R1_TITLE = "Fix add so it adds instead of subtracting."
 
@@ -605,16 +606,23 @@ def test_a_follow_up_that_is_still_running_holds_the_older_request_back_in_plain
 # --- Check 8: unchanged corners ---------------------------------------------------------------------------------
 
 
-def test_a_follow_up_that_undoes_the_older_request_is_unchanged(project):
-    """GU2: its result equals the folder, so it has no files; R1 stays keepable and the next request starts from
-    the folder as it is now (undoing R1 is not something to build on)."""
+def test_a_follow_up_that_undoes_the_older_request_closes_it(project):
+    """GU2: its result equals the folder, so it has no files; R1 is closed as undone and the next request starts from
+    the folder as it is now (undoing R1 is not something to build on).
+
+    Flipped by the `undo-closes` cut: R1 used to stay keepable, and its Keep put the fix back into the folder. Its
+    second half is unchanged: the next request is built on nothing and lists only its own file."""
+    folder = tree(project)
     fix(project)
     undo = Script(reply(calls=[call("edit", {"path": "src/calc.py", "old_string": FIXED, "new_string": BUG}, "u")]),
                   reply("Undone."))
     second = run(project, "req-2", "Undo that fix.", undo)
     assert second["facts"]["files"] == [] and snapshot("req-2", repo=project)["can_keep"] is False
     older = snapshot("req-1", repo=project)
-    assert older["can_keep"] is True and older["blocked_by"] is None
+    assert older["can_keep"] is False and older["can_discard"] is False and older.get("blocked_by") is None
+    assert older["outcome"] == "discarded" and older["summary"] == UNDONE
+    assert refusal(lambda: keep_changes("req-1", project)) == ("discarded", UNDONE)
+    assert tree(project) == folder, "the fix never landed"
     third = run(project, "req-3", "Add an extra module.", adds("src/extra.py", "EXTRA = 1\n"))
     assert built_on(project, "req-3") is None, "not built on the request that undid R1"
     assert third["facts"]["files"] == ["src/extra.py"]
