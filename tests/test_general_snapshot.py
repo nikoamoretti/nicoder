@@ -320,6 +320,28 @@ def test_a_link_where_the_request_adds_a_file_is_refused_before_anything_is_writ
     assert _state(u) == before and (u / "run.sh").stat().st_mtime_ns == LONG_AGO
 
 
+def test_a_path_that_leaves_the_project_is_refused_before_anything_is_written(tmp_path):
+    """His `src` became a link to a folder elsewhere: writing src/new.ts would land outside the project. The request
+    also deletes an executable, and the refusal must come before that delete."""
+    b, c, u = _trees(
+        tmp_path,
+        {**README, "run.sh": "#!/bin/sh\necho hi\n"},
+        {**README, "src/new.ts": MOVED},
+        {**README, "run.sh": "#!/bin/sh\necho hi\n"},
+    )
+    (b / "run.sh").chmod(0o755)
+    (u / "run.sh").chmod(0o755)
+    os.utime(u / "run.sh", ns=(LONG_AGO, LONG_AGO))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (u / "src").symlink_to(elsewhere)
+    before = _state(u)
+    result = apply_delta(u, b, c)
+    assert result["ok"] is False and result["code"] == "apply_failed" and result["applied"] == []
+    assert _state(u) == before and (u / "run.sh").stat().st_mtime_ns == LONG_AGO
+    assert list(elsewhere.iterdir()) == [], "nothing landed outside the project"
+
+
 def test_a_folder_at_a_renames_destination_is_refused_before_anything_is_written(tmp_path):
     """Not a clash he can see in a file list: the refusal stays the generic one, and nothing is touched."""
     b, c, u = _rename_trees(tmp_path, {"src/old.ts": MOVED})

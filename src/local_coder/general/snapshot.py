@@ -453,9 +453,17 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
 def _blocked_before_writing(user: Path, candidate: Path, delta: Delta) -> str | None:
     """Why the writes would fail halfway, found before the first one, or None.
 
-    A link where a file is to be written is never followed or replaced, and a folder where a renamed file is to
-    land cannot be replaced by a file. The write loop checks links again at each file.
+    A path that leaves the project (a folder of his that became a link elsewhere), a link where a file is to be
+    written (never followed or replaced), and a folder where a renamed file is to land (a file cannot replace it).
+    The write loop checks the first two again at each file.
     """
+    try:
+        for rel in sorted(delta.touched()):
+            _assert_inside(user, rel)
+        for rel in delta.added + delta.modified:
+            _assert_inside(candidate, rel)
+    except OSError as exc:
+        return str(exc)
     for rel in delta.added + delta.modified:
         if (candidate / rel).is_symlink() or (user / rel).is_symlink():
             return f"refusing symlink: {rel}"
