@@ -68,6 +68,7 @@ from local_coder.general.snapshot import (
     TreeIndex,
     apply_delta,
     compute_delta,
+    conflict_sentence,
     copy_snapshot,
     index_tree,
     read_index,
@@ -1718,6 +1719,11 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
                 "Check that its folder and files can be changed, then try Keep again.",
                 code=code,
             )
+        if code == "conflict":
+            # The sentence names the files and what happened to each, built from the list apply_delta returns.
+            # apply_delta's own detail stays as it is: the MCP apply prints it with that list.
+            rows = result.get("conflicts")
+            raise GeneralError(conflict_sentence(rows if isinstance(rows, list) else []), code=code)
         raise GeneralError(str(result.get("detail") or "Keep failed."), code=code)
     stop_owned()
     meta["kept"] = True

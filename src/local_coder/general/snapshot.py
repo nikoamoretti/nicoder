@@ -7,7 +7,15 @@ Three states:
 
 Only the delta B→C is applied. A touched path that changed between B and U
 is a conflict. Unrelated user edits survive. Newly created candidate paths
-that now exist in U are also conflicts.
+that now exist in U are also conflicts, and so is a rename's destination when
+U holds other text there than the request wrote. A rename is checked at both
+ends: its source must still be there unchanged, or the move must already have
+been made by hand. Found before the first write: a clash at either end of a
+rename, a link, a folder at a rename's destination and a path leaving the
+project. Found only while writing (then rolled back, bytes only, so a deleted
+file comes back with mode 0644): a plain file where a folder must be made, a
+folder where an added file goes, a looping link and disk errors. Only a clash
+refusal names the files; the others keep the generic sentence.
 """
 from __future__ import annotations
 
@@ -16,6 +24,7 @@ import os
 import shutil
 import stat
 import tempfile
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,6 +49,22 @@ NOISE_NAMES = {
     "bun.lock",
     "bun.lockb",
 }
+
+
+# Why a path is a conflict. `Conflict.reason` carries one of these as it is: the MCP apply prints them, and
+# `conflict_sentence` reads them back, so both sides use the same constants.
+REASON_CHANGED = "this file changed in the project after the request started"
+REASON_REMOVED = "this file was removed from the project after the request started"
+REASON_ADDED = "a new file now exists in the project"
+NAMES_SHOWN = 3
+SENTENCE_HEAD = "Not kept: since these changes were started, "
+SENTENCE_TAIL = "Your project was not changed."
+# (reason, how the sentence says it), in the order the clauses are written.
+_CLAUSES = (
+    (REASON_CHANGED, "changed in"),
+    (REASON_REMOVED, "removed from"),
+    (REASON_ADDED, "added to"),
+)
 
 
 @dataclass
@@ -234,22 +259,97 @@ def compute_delta(before: TreeIndex, after: TreeIndex) -> Delta:
 
 
 def find_conflicts(baseline: TreeIndex, candidate: TreeIndex, user: TreeIndex) -> list[Conflict]:
-    """Conflicts between B→C and the current user tree U."""
+    """Conflicts between B→C and the current user tree U, sorted by path, at most one for each path.
+
+    A rename is looked at once, at both ends (`_rename_conflicts`). Every other touched path is a conflict when
+    it is added and U holds other text there, or when it changed or was removed in U since B.
+    """
     delta = compute_delta(baseline, candidate)
-    conflicts: list[Conflict] = []
+    moves = dict(delta.renamed)
+    destinations = set(moves.values())
+    found: dict[str, str] = {}
     for rel in delta.touched():
+        if rel in destinations:
+            continue  # looked at together with its source
+        if rel in moves:
+            found.update(_rename_conflicts(rel, moves[rel], baseline, candidate, user))
+            continue
         b = baseline.sha_of(rel)
         u = user.sha_of(rel)
-        if rel in delta.added and u is not None and u != candidate.sha_of(rel):
-            conflicts.append(Conflict(rel, "a new file now exists in the project"))
-            continue
         if rel in delta.added:
-            continue
-        if b is not None and u is not None and u != b:
-            conflicts.append(Conflict(rel, "this file changed in the project after the request started"))
-        elif b is not None and u is None and rel not in {old for old, _ in delta.renamed}:
-            conflicts.append(Conflict(rel, "this file was removed from the project after the request started"))
-    return conflicts
+            if u is not None and u != candidate.sha_of(rel):
+                found[rel] = REASON_ADDED
+        elif b is not None and u is not None and u != b:
+            found[rel] = REASON_CHANGED
+        elif b is not None and u is None:
+            found[rel] = REASON_REMOVED
+    return [Conflict(path, found[path]) for path in sorted(found)]
+
+
+def _rename_conflicts(
+    old: str, new: str, baseline: TreeIndex, candidate: TreeIndex, user: TreeIndex,
+) -> dict[str, str]:
+    """The conflicts at the two ends of one rename, as {path: reason}.
+
+    The destination is free, or already holds exactly the text the request wrote there; otherwise it is a file he
+    made and counts as added. The source is still there unchanged, or he made the move himself (the destination
+    holds the request's text); otherwise it changed, or it is gone and Keep would report a write it never made.
+    Both are decided from the indexes and never from `Path.exists()`: the disk ignores case, so a rename that
+    only changes the case of a name would clash with itself. The indexes skip links, so those are seen on the
+    disk: a link at the destination is a file he made, one at the source is a changed file.
+    """
+    wrote = candidate.sha_of(new)
+    at_old = user.sha_of(old)
+    at_new = user.sha_of(new)
+    found: dict[str, str] = {}
+    if at_new is not None and at_new != wrote:
+        found[new] = REASON_ADDED
+    if at_old is not None and at_old != baseline.sha_of(old):
+        found[old] = REASON_CHANGED
+    elif at_old is None and at_new != wrote:
+        found[old] = REASON_REMOVED
+    if (user.root / new).is_symlink():
+        found[new] = REASON_ADDED
+    if (user.root / old).is_symlink():
+        found[old] = REASON_CHANGED
+    return found
+
+
+def conflict_sentence(conflicts: Iterable[Mapping[str, object]]) -> str:
+    """Nico's sentence for a refused Keep, built from the conflict list `apply_delta` returns.
+
+    Every file is named once (a path listed twice counts once), sorted, with what happened to it: changed,
+    removed or added. Past three files the first three are named and the rest counted, all as changed: in that
+    long form "changed" also covers removed and added files. Project-relative paths and nothing else about the
+    files, and never any text from a model.
+    """
+    order = [reason for reason, _verb in _CLAUSES]
+    kind_of: dict[str, int] = {}
+    for row in conflicts:
+        path = str(row.get("path"))
+        reason = str(row.get("reason"))
+        kind = order.index(reason) if reason in order else 0
+        kind_of[path] = min(kind, kind_of.get(path, kind))
+    paths = sorted(kind_of)
+    if not paths:
+        return f"{SENTENCE_HEAD}some files were changed in your project. {SENTENCE_TAIL}"
+    if len(paths) > NAMES_SHOWN:
+        more = len(paths) - NAMES_SHOWN
+        shown = f"{', '.join(paths[:NAMES_SHOWN])} and {more} more file{'' if more == 1 else 's'}"
+        return f"{SENTENCE_HEAD}{shown} were changed in your project. {SENTENCE_TAIL}"
+    clauses = []
+    for kind, (_reason, verb) in enumerate(_CLAUSES):
+        named = [path for path in paths if kind_of[path] == kind]
+        if named:
+            clauses.append(f"{_name_list(named)} {'was' if len(named) == 1 else 'were'} {verb} your project")
+    return f"{SENTENCE_HEAD}{' and '.join(clauses)}. {SENTENCE_TAIL}"
+
+
+def _name_list(names: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def unified_diff(baseline: Path, candidate: Path, *, limit: int = 200_000) -> str:
@@ -289,7 +389,15 @@ def _read_lines(path: Path) -> list[str]:
 
 
 def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object]:
-    """Apply B→C onto U transactionally. Refuses on conflict or path escape."""
+    """Apply B→C onto U transactionally. Refuses on conflict or path escape.
+
+    Found before the first delete or write, in one pass: a clash with what he changed (both ends of every rename
+    included), a link, a folder at a rename's destination and a path leaving the project. Found only while
+    writing: a plain file where a folder must be made, a folder where an added file goes, a looping link and disk
+    errors. Those are rolled back, but `_rollback` restores bytes only: a deleted executable comes back as a new
+    file with mode 0644. The `detail` of a conflict stays as it is for the MCP apply, which prints it with the
+    list; Keep builds Nico's sentence from that list (`conflict_sentence`).
+    """
     user = user.resolve()
     baseline = baseline.resolve()
     candidate = candidate.resolve()
@@ -306,6 +414,9 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
             "applied": [],
         }
     delta = compute_delta(b_index, c_index)
+    blocked = _blocked_before_writing(user, candidate, delta)
+    if blocked:
+        return {"ok": False, "code": "apply_failed", "detail": blocked, "applied": []}
     journal: dict[str, bytes | None] = {}
     applied: list[str] = []
     try:
@@ -342,6 +453,29 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
         _rollback(user, journal)
         return {"ok": False, "code": "apply_failed", "detail": str(exc), "applied": []}
     return {"ok": True, "applied": sorted(set(applied)), "delta": delta.as_dict()}
+
+
+def _blocked_before_writing(user: Path, candidate: Path, delta: Delta) -> str | None:
+    """Some of the reasons the writes would fail halfway, found before the first one, or None.
+
+    A path that leaves the project (a folder of his that became a link elsewhere), a link where a file is to be
+    written (never followed or replaced), and a folder where a renamed file is to land (a file cannot replace it).
+    The write loop checks the first two again at each file.
+    """
+    try:
+        for rel in sorted(delta.touched()):
+            _assert_inside(user, rel)
+        for rel in delta.added + delta.modified:
+            _assert_inside(candidate, rel)
+    except OSError as exc:
+        return str(exc)
+    for rel in delta.added + delta.modified:
+        if (candidate / rel).is_symlink() or (user / rel).is_symlink():
+            return f"refusing symlink: {rel}"
+    for _old, new in delta.renamed:
+        if (user / new).is_dir():
+            return f"refusing folder: {new}"
+    return None
 
 
 def _assert_inside(root: Path, rel: str) -> None:

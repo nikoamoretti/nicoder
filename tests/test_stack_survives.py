@@ -49,7 +49,6 @@ DOCUMENTED = FIXED + "  # documented"
 NICO_TEST_LINE = "# Nico's own edit while the result waits\n"
 NICO_NOTES = "Nico's notes\n"
 HIS_CALC = "def add(a, b):\n    return 0  # Nico's own version\n"
-CONFLICT = "Some files changed in the project while this request was running."
 WENT_IN = "These changes went in with a later request you kept."
 NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 NEWER_RUNNING = (
@@ -59,6 +58,11 @@ STILL_RUNNING = "A request is still running in this project. Wait for it to fini
 STOPPED_NOTHING = "Stopped. Nothing was changed."
 DISCARDED_NOTHING_TO_KEEP = "This request was discarded, so there is nothing to keep."
 R1_TITLE = "Fix add so it adds instead of subtracting."
+
+
+def conflict(what: str) -> str:
+    """Nico's sentence for a refused Keep: which file, and what happened to it."""
+    return f"Not kept: since these changes were started, {what}. Your project was not changed."
 
 
 @pytest.fixture
@@ -315,13 +319,17 @@ def test_a_clash_after_the_discard_is_refused_and_writes_nothing(project):
     run(project, "req-3", "Now also document add().", documenting())
     (project / "src" / "calc.py").write_text(HIS_CALC, encoding="utf-8")
     folder = tree(project)
-    assert refusal(lambda: keep_changes("req-3", project)) == ("conflict", CONFLICT)
+    assert refusal(lambda: keep_changes("req-3", project)) == (
+        "conflict", conflict("src/calc.py was changed in your project"),
+    )
     assert tree(project) == folder, "a refused Keep writes nothing"
     still = snapshot("req-3", repo=project)
     assert still["can_keep"] is True and still["can_discard"] is True and still["outcome"] == "review"
     assert discard_changes("req-3", repo=project)["discarded"] is True
     assert snapshot("req-1", repo=project)["can_keep"] is True
-    assert refusal(lambda: keep_changes("req-1", project)) == ("conflict", CONFLICT), "he edited a file R1 changed"
+    assert refusal(lambda: keep_changes("req-1", project)) == (
+        "conflict", conflict("src/calc.py was changed in your project"),
+    ), "he edited a file R1 changed"
     assert tree(project) == folder and (project / "src" / "calc.py").read_text(encoding="utf-8") == HIS_CALC
     assert refusal(lambda: keep_changes("req-2", project)) == ("discarded", DISCARDED_NOTHING_TO_KEEP)
     assert discard_changes("req-3", repo=project)["detail"] == "Already discarded.", "a Discard is final and repeatable"
@@ -624,7 +632,8 @@ def test_a_continuation_still_brings_its_own_copy_and_inherits_no_baseline(proje
 
 def test_a_later_request_that_removes_a_file_an_earlier_one_created_is_unchanged(project):
     """Net-out, the known limit (Later cut 1): R2 removes the gen.py that R1 created. Keep R2 takes calc.py only, R1
-    stays keepable and its Keep is then refused as a conflict. The same output on Base and on this cut."""
+    stays keepable and its Keep is then refused as a conflict. The same behaviour as before the cut; the sentence
+    now names the file."""
 
     def creates_gen(cwd: Path, text: str, cancel) -> None:
         fixes_calc(cwd, text, cancel)
@@ -645,7 +654,9 @@ def test_a_later_request_that_removes_a_file_an_earlier_one_created_is_unchanged
     assert history(project) == [("req-2", "kept"), ("req-1", "review")]
     folder = tree(project)
     assert snapshot("req-1", repo=project)["can_keep"] is True
-    assert refusal(lambda: keep_changes("req-1", project)) == ("conflict", CONFLICT)
+    assert refusal(lambda: keep_changes("req-1", project)) == (
+        "conflict", conflict("src/calc.py was changed in your project"),
+    )
     assert tree(project) == folder and not (project / "src" / "gen.py").exists()
 
 

@@ -236,7 +236,10 @@ def test_keep_after_a_hand_edit_says_so_instead_of_internal(ts_project):
     reply = _call(server, "keep", episode_id="req-conflict", path=str(ts_project))
     assert reply["ok"] is False
     assert reply["error"]["code"] == "conflict"
-    assert reply["error"]["detail"] == "Some files changed in the project while this request was running."
+    assert reply["error"]["detail"] == (
+        "Not kept: since these changes were started, src/a.ts was changed in your project. "
+        "Your project was not changed."
+    )
     assert (ts_project / "src" / "a.ts").read_text(encoding="utf-8") == "HAND-EDIT\n"
 
 

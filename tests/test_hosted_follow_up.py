@@ -42,7 +42,6 @@ FIXED = "return a + b"
 DOCUMENTED = FIXED + "  # documented"
 NICO_TEST_LINE = "# Nico's own edit while the result waits\n"
 NICO_NOTES = "Nico's notes\n"
-CONFLICT = "Some files changed in the project while this request was running."
 WENT_IN = "These changes went in with a later request you kept."
 NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 NEWER_RUNNING = (
@@ -51,6 +50,11 @@ NEWER_RUNNING = (
 STILL_RUNNING = "A request is still running in this project. Wait for it to finish, or stop it, then discard."
 OUTSIDE = "outside the project's working copy"
 STARTER_TEXT = "<h1>New app</h1>\n      <p>This starter is empty on purpose. Describe what you want to build.</p>"
+
+
+def conflict(what: str) -> str:
+    """Nico's sentence for a refused Keep: which file, and what happened to it."""
+    return f"Not kept: since these changes were started, {what}. Your project was not changed."
 
 
 @pytest.fixture
@@ -516,14 +520,18 @@ def test_keep_refuses_a_file_he_edited_that_the_stack_changed_and_writes_nothing
     calc.write_text(calc.read_text(encoding="utf-8").replace("def mul", "# Nico was here\ndef mul"), encoding="utf-8")
     add_extra(project)
     folder = tree(project)
-    assert refusal(lambda: keep_changes("req-2", project)) == ("conflict", CONFLICT)
+    assert refusal(lambda: keep_changes("req-2", project)) == (
+        "conflict", conflict("src/calc.py was changed in your project"),
+    )
     assert tree(project) == folder, "a refused Keep writes nothing"
     still = snapshot("req-2", repo=project)
     assert still["can_keep"] is True and still["can_discard"] is True and still["outcome"] == "review"
     assert discard_changes("req-2", repo=project)["discarded"] is True
     freed = snapshot("req-1", repo=project)
     assert freed["can_keep"] is True and freed["blocked_by"] is None
-    assert refusal(lambda: keep_changes("req-1", project)) == ("conflict", CONFLICT), "R1 changed the file he edited"
+    assert refusal(lambda: keep_changes("req-1", project)) == (
+        "conflict", conflict("src/calc.py was changed in your project"),
+    ), "R1 changed the file he edited"
     assert tree(project) == folder and "# Nico was here" in calc.read_text(encoding="utf-8")
 
 
@@ -533,7 +541,9 @@ def test_keep_refuses_a_file_he_created_where_the_follow_up_adds_one(project):
     (project / "src" / "extra.py").write_text("EXTRA = 'Nico'\n", encoding="utf-8")
     add_extra(project)
     folder = tree(project)
-    assert refusal(lambda: keep_changes("req-2", project)) == ("conflict", CONFLICT)
+    assert refusal(lambda: keep_changes("req-2", project)) == (
+        "conflict", conflict("src/extra.py was added to your project"),
+    )
     assert tree(project) == folder
     still = snapshot("req-2", repo=project)
     assert still["can_keep"] is True and still["outcome"] == "review"
