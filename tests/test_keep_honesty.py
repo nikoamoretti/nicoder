@@ -11,9 +11,11 @@ Every refusal compares the folder before and after, file mode and links included
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -34,6 +36,8 @@ HIS = "export const nico = 'MINE'\n"
 HIS_README = "# p\nNico's own paragraph\n"
 RED = "export const a = 'RED'\n"
 BLUE = "export const b = 'BLUE'\n"
+
+darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="the agent's bash runs in sandbox-exec: macOS only")
 
 
 @pytest.fixture
@@ -411,3 +415,84 @@ def test_the_helper_error_object_for_a_clash_has_only_a_code_and_a_detail(projec
         "code": "conflict",
         "detail": f"{HEAD}src/a.ts was changed in your project. {TAIL}",
     }
+
+
+# --- The hosted agent's real `bash` tool makes the rename (HM1 to HM4) --------------------------------------------
+
+
+def call(name: str, args: dict, call_id: str) -> dict:
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+def reply(content: str = "", calls: list[dict] | None = None) -> dict:
+    message: dict = {"role": "assistant", "content": content}
+    if calls:
+        message["tool_calls"] = calls
+    return {"choices": [{"message": message, "finish_reason": "tool_calls" if calls else "stop"}]}
+
+
+class Script:
+    """A scripted hosted model: it answers in order, whatever it is sent."""
+
+    def __init__(self, *replies: dict) -> None:
+        self.replies = list(replies)
+
+    def __call__(self, _messages: list[dict], _tools: list[dict]) -> dict:
+        return self.replies.pop(0)
+
+
+def hosted(project: Path, request_id: str, text: str, *replies: dict) -> dict:
+    return run_general_request(
+        project, text, request_id=request_id, agent_chat=Script(*replies), start_preview_after=False,
+    )
+
+
+def agent_moves(project: Path, request_id: str = "r1") -> dict:
+    return hosted(
+        project, request_id, "Rename old.ts to new.ts",
+        reply(calls=[call("bash", {"command": "mv src/old.ts src/new.ts"}, "m")]), reply("Moved old.ts to new.ts."),
+    )
+
+
+def agent_adds(project: Path, request_id: str, path: str, body: str) -> dict:
+    return hosted(
+        project, request_id, f"Add {path}",
+        reply(calls=[call("write", {"path": path, "content": body}, "w")]), reply("Added it."),
+    )
+
+
+@darwin_only
+def test_hm1_the_agents_mv_then_a_file_he_made_at_the_destination_is_refused(project):
+    review = agent_moves(project)
+    assert review["facts"]["delta"]["renamed"] == [{"from": "src/old.ts", "to": "src/new.ts"}], "the real tool made it"
+    (project / "src" / "new.ts").write_text(HIS, encoding="utf-8")
+    refused_as_a_conflict(project, "r1", "src/new.ts was added to your project")
+    assert (project / "src" / "new.ts").read_text(encoding="utf-8") == HIS
+
+
+@darwin_only
+def test_hm2_the_agents_mv_then_the_source_he_deleted_is_refused(project):
+    agent_moves(project)
+    (project / "src" / "old.ts").unlink()
+    refused_as_a_conflict(project, "r1", "src/old.ts was removed from your project")
+    assert not (project / "src" / "new.ts").exists() and history(project) == [("r1", "review")]
+
+
+@darwin_only
+def test_hm3_the_agents_plain_mv_in_a_stack_is_kept_with_the_follow_up(project):
+    agent_moves(project)
+    (project / "README.md").write_text(HIS_README, encoding="utf-8")
+    agent_adds(project, "r2", "src/b.ts", BLUE)
+    kept = keep_changes("r2", project)
+    assert kept["ok"] is True and kept["also_kept"] == ["r1"]
+    assert is_moved(project)
+    assert (project / "src" / "b.ts").is_file() and (project / "README.md").read_text(encoding="utf-8") == HIS_README
+
+
+@darwin_only
+def test_hm4_a_follow_up_after_the_agents_mv_is_refused_when_he_made_the_destination(project):
+    agent_moves(project)
+    (project / "src" / "new.ts").write_text(HIS, encoding="utf-8")
+    agent_adds(project, "r2", "src/b.ts", BLUE)
+    refused_as_a_conflict(project, "r2", "src/new.ts was added to your project")
+    assert (project / "src" / "new.ts").read_text(encoding="utf-8") == HIS and not (project / "src" / "b.ts").exists()
