@@ -125,13 +125,15 @@
   is not shown as the model's work and Keep never reverts it, and a file he and
   the stack both changed makes Keep refuse (`conflict`) and write nothing. A file
   rename is checked at both ends from the snapshot indexes (never `Path.exists()`:
-  the disk ignores case): a destination holding other text than the request wrote,
-  a source that is gone (unless the destination already holds the request's text:
-  he made the move himself) or changed, and a link at either end all refuse. Every
-  such refusal is found before the first write and names the files and what
-  happened to each (`snapshot.conflict_sentence`: "Not kept: since these changes
-  were started, src/a.ts was changed in your project. Your project was not
-  changed."; at most three names, then a count). Known limit: what he edited
+  the disk ignores case): the destination must be free or hold the text the request
+  wrote, the source must still be there unchanged unless he already made the move
+  himself, and a link at either end refuses. `apply_delta` finds every refusal it
+  can (clashes, a link, a folder or a path leaving the project in the way) before
+  its first write, because `_rollback` restores bytes only. The refusal names the
+  files and what happened to each (`snapshot.conflict_sentence`: "Not kept: since
+  these changes were started, src/a.ts was changed in your project. Your project
+  was not changed."; at most three names, then a count); `apply_delta`'s own
+  `detail` stays as it is for the MCP apply. Known limit: what he edited
   after the first request started is not in the copy a follow-up's agent works
   on (Keep still refuses a real clash). A continuation (`continue_from`) never
   inherits a baseline (`prepare_workspace(carry=not continue_from)`), and
