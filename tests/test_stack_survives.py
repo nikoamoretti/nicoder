@@ -1049,3 +1049,35 @@ def test_discarding_the_older_request_while_an_idle_follow_up_waits_behind_it_is
     assert at_first_call["built_on"] is None, "R1 was discarded: nothing waits to be built on"
     assert "BUG" in look.result("a"), "the discarded fix is not in the copy"
     assert history(project) == [("req-3", "review"), ("req-2", "error"), ("req-1", "discarded")]
+
+
+def test_local_repair_that_restores_r1_text_is_idle(home):
+    """A local repair that writes R1's exact text back leaves nothing to check: no second check, no extra calls."""
+    import local_coder
+
+    folder = home / "Local Coder Projects" / "board"
+    folder.mkdir(parents=True)
+    pid = project_id_for(folder)
+    starter_app = (
+        Path(local_coder.__file__).parent.parent.parent / "starters" / "vite-react-ts" / "src" / "App.tsx"
+    ).read_text()
+    good = "export default function App(){return <main><h1>Tasks</h1></main>}\n"
+    replies = iter(
+        [f"Done.\n\n```src/App.tsx\n{good}```\n", f"Done.\n\n```src/App.tsx\n{starter_app}```\n"]
+        + [f"Fixed.\n\n```src/App.tsx\n{good}```\n"] * 6
+    )
+    prompts: list[str] = []
+
+    def model(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(replies)
+
+    kwargs = {"model_id": "Qwen3.5-4B-Q4_K_M", "fake_complete": model, "start_preview_after": False}
+    run_general_request(folder, "Make the page show Tasks", request_id="req-1", **kwargs)
+    before = len(prompts)
+    run_general_request(folder, "Make it blue", request_id="req-2", **kwargs)
+    meta = load_meta(pid, "req-2")
+    assert len(prompts) - before == 2
+    assert len(meta.get("checks") or []) == 1
+    assert "verification" not in meta
+    assert_no_result_of_its_own(folder)

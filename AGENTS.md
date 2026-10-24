@@ -138,7 +138,7 @@
   working copy exactly as that result has no result of its own (decided from the two
   source trees in `_publish_candidate`, never from the model's words; its baseline is
   published instead): no files, no Keep or Discard, no Local Coder check or preview, it
-  does not hold the older one back, its check results are dropped, and it keeps its
+  does not hold the older one back, its card forgets the check verdicts (the check log stays as evidence), and it keeps its
   History word (`error`, `stopped`, `review`). The next request passes over such
   requests and over discarded ones, and a question still finds the waiting result
   behind them (`waiting.LOOK_AT`, 30). Known limits: a visible junk file (such as
