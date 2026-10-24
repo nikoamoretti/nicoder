@@ -1732,19 +1732,21 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
 
 
 def _reset_live_copy(meta: dict[str, Any]) -> None:
-    """Put the project's sticky working copy back to this request's baseline.
+    """Put the project's sticky working copy back to where this request started.
 
-    A request with no files of its own leaves the copy as it is: the copy then holds a newer result, and putting
-    it back would wipe that. Without this the next request would start from the discarded work, and its diff
-    would show it again. Only source files are touched: node_modules and other excluded folders stay.
+    That is the result it was built on while that still waits (copied, never linked: it is evidence), else its
+    own baseline, which is the start of a stack and lacks that result. A request with no files of its own leaves
+    the copy as it is: the copy then holds a newer result, and putting it back would wipe that. Without this the
+    next request would start from the discarded work, and its diff would show it again. Only source files are
+    touched: node_modules and other excluded folders stay.
     """
     delta = request_delta(meta)
     if delta is not None and not delta.touched():
         return
     live = Path(meta.get("engine_cwd") or project_dir(str(meta["project_id"])) / "live" / "candidate")
-    baseline = Path(meta["baseline"])
-    if live.is_dir() and baseline.is_dir():
-        sync_source_tree(baseline, live)
+    start = _result_it_was_built_on(meta) or Path(meta["baseline"])
+    if live.is_dir() and start.is_dir():
+        sync_source_tree(start, live)
 
 
 def discard_request(project_id: str, request_id: str) -> dict[str, Any]:

@@ -327,7 +327,135 @@ def test_a_clash_after_the_discard_is_refused_and_writes_nothing(project):
     assert discard_changes("req-3", repo=project)["detail"] == "Already discarded.", "a Discard is final and repeatable"
 
 
+# --- Check 2: other ways the top is discarded: stopped with a file, a stack of three, the local path -------------
+
+
+def test_a_follow_up_stopped_after_writing_a_file_is_discarded_and_the_retry_builds_on_the_result(project):
+    """SS2: R2 is stopped after writing src/extra.py. Discarding it takes the file out of the copy only."""
+    pid = project_id_for(project)
+    fix(project)
+    hand_edits(project)
+    cancel = threading.Event()
+    second = Script(
+        add_module("src/extra.py", "EXTRA = 1\n"), reply(calls=[call("read", {"path": "src/calc.py"}, "x")]),
+        reply("never reached"), on_call=lambda n: cancel.set() if n == 1 else None,
+    )
+    run(project, "req-2", "Now also add an extra module.", second, cancel_event=cancel)
+    stopped = snapshot("req-2", repo=project)
+    assert stopped["outcome"] == "stopped" and "src/extra.py" in stopped["facts"]["files"], "a real result"
+    assert (working_copy(project) / "src" / "extra.py").exists()
+    folder, r1_folder = tree(project), tree(request_dir(pid, "req-1"))
+    assert discard_changes("req-2", repo=project)["discarded"] is True
+    assert not (working_copy(project) / "src" / "extra.py").exists(), "the Discard takes R2's file out of the copy"
+    assert tree(project) == folder and tree(request_dir(pid, "req-1")) == r1_folder, "and writes nothing else"
+    third = Script(reply(calls=[call("list", {"path": "src"}, "l"), call("read", {"path": "src/calc.py"}, "a")]),
+                   document, reply("Documented add()."))
+    at_first_call: dict = {}
+    third.hook = lambda: at_first_call.update(record(project, "req-3"))
+    review = run(project, "req-3", "Now also document add().", third)
+    assert at_first_call["built_on"] == "req-1"
+    assert "extra.py" not in third.result("l") and FIXED in third.result("a")
+    assert review["facts"]["files"] == ["src/calc.py"]
+    assert not (request_dir(pid, "req-3") / "candidate" / "src" / "extra.py").exists()
+    kept = keep_changes("req-3", project)
+    assert kept["applied"] == ["src/calc.py"] and kept["also_kept"] == ["req-1"]
+    assert not (project / "src" / "extra.py").exists() and hand_edits_survive(project)
+
+
+def test_the_top_of_a_stack_of_three_is_discarded_and_the_next_request_builds_on_the_middle_one(project):
+    """SS3: one Keep of the fourth request takes the three files and closes the second and the first."""
+    fix(project)
+    hand_edits(project)
+    run(project, "req-2", "Now also add an extra module.", adds("src/extra.py", "EXTRA = 1\n", "Added extra.py."))
+    run(project, "req-3", "And a third one.", adds("src/third.py", "THIRD = 3\n", "Added third.py."))
+    assert discard_changes("req-3", repo=project)["discarded"] is True
+    middle = snapshot("req-2", repo=project)
+    assert middle["can_keep"] is True and middle["blocked_by"] is None, "the middle request is free to be decided"
+    fourth = Script(reply(calls=[call("list", {"path": "src"}, "l"), call("read", {"path": "src/calc.py"}, "a")]),
+                    add_module("src/fourth.py", "FOURTH = 4\n"), reply("Added fourth.py."))
+    at_first_call: dict = {}
+    fourth.hook = lambda: at_first_call.update(record(project, "req-4"))
+    review = run(project, "req-4", "And a different third one.", fourth)
+    assert at_first_call["built_on"] == "req-2"
+    assert "extra.py" in fourth.result("l") and "third.py" not in fourth.result("l") and FIXED in fourth.result("a")
+    assert review["facts"]["files"] == ["src/calc.py", "src/extra.py", "src/fourth.py"]
+    assert [snapshot(f"req-{n}", repo=project)["blocked_by"] for n in (1, 2)] == ["req-4", "req-4"]
+    kept = keep_changes("req-4", project)
+    assert kept["applied"] == ["src/calc.py", "src/extra.py", "src/fourth.py"]
+    assert kept["also_kept"] == ["req-2", "req-1"]
+    assert not (project / "src" / "third.py").exists() and hand_edits_survive(project)
+    assert history(project) == [("req-4", "kept"), ("req-3", "discarded"), ("req-2", "kept"), ("req-1", "kept")]
+
+
+def test_the_same_on_the_local_path_with_fake_engines(project):
+    """SS4: a Discard of the top request does not cut the stack on the local path either."""
+    local(project, "req-1", fixes_calc)
+    hand_edits(project)
+    local(project, "req-2", writes_file("src/extra.py", "EXTRA = 1\n"))
+    assert discard_changes("req-2", repo=project)["discarded"] is True
+    review = local(project, "req-3", writes_file("src/third.py", "THIRD = 3\n"))
+    assert built_on(project, "req-3") == "req-1"
+    assert baseline_of(project, "req-3") == baseline_of(project, "req-1")
+    assert review["facts"]["files"] == ["src/calc.py", "src/third.py"], "R3 lists the fix and its own file"
+    older = snapshot("req-1", repo=project)
+    assert older["can_keep"] is False and older["blocked_by"] == "req-3"
+    kept = keep_changes("req-3", project)
+    assert kept["applied"] == ["src/calc.py", "src/third.py"] and kept["also_kept"] == ["req-1"]
+    assert not (project / "src" / "extra.py").exists() and hand_edits_survive(project)
+    assert history(project) == [("req-3", "kept"), ("req-2", "discarded"), ("req-1", "kept")]
+
+
 # --- Check 5: nothing comes back, nothing is wiped, nothing breaks ---------------------------------------------
+
+
+def test_nothing_comes_back_after_a_discard_not_through_the_copy_a_candidate_a_review_or_a_keep(project):
+    """SS6: R2's file is nowhere after the Discard and the retry; with everything discarded the copy is R1's start."""
+    pid = project_id_for(project)
+    fix(project)
+    hand_edits(project)
+    run(project, "req-2", "Now also add an extra module.", adds("src/extra.py", "EXTRA = 1\n", "Added extra.py."))
+    assert discard_changes("req-2", repo=project)["discarded"] is True
+    review = run(project, "req-3", "Now also document add().", documenting())
+    assert not (working_copy(project) / "src" / "extra.py").exists()
+    assert not (request_dir(pid, "req-3") / "candidate" / "src" / "extra.py").exists()
+    assert "src/extra.py" not in review["facts"]["files"] and "extra.py" not in snapshot("req-3", repo=project)["diff"]
+    assert discard_changes("req-3", repo=project)["discarded"] is True
+    assert discard_changes("req-1", repo=project)["discarded"] is True
+    assert identity(working_copy(project)) == identity(request_dir(pid, "req-1") / "baseline"), (
+        "everything discarded: the copy is the folder R1 started from"
+    )
+    fourth = Script(reply(calls=[call("list", {"path": "."}, "l"), call("list", {"path": "src"}, "s"),
+                                 call("read", {"path": "src/calc.py"}, "a")]),
+                    add_module("src/other.py", "OTHER = 1\n"), reply("Added other.py."))
+    at_first_call: dict = {}
+    fourth.hook = lambda: at_first_call.update(record(project, "req-4"))
+    last = run(project, "req-4", "Add another module.", fourth)
+    assert at_first_call["built_on"] is None and "notes.txt" in at_first_call["baseline_files"], "from the folder"
+    assert "BUG" in fourth.result("a") and "extra.py" not in fourth.result("s"), "no trace of the discarded work"
+    assert last["facts"]["files"] == ["src/other.py"]
+    kept = keep_changes("req-4", project)
+    assert kept["applied"] == ["src/other.py"] and kept["also_kept"] == [] and hand_edits_survive(project)
+    assert BUG in (project / "src" / "calc.py").read_text(encoding="utf-8"), "the fix never landed"
+    assert history(project) == [
+        ("req-4", "kept"), ("req-3", "discarded"), ("req-2", "discarded"), ("req-1", "discarded"),
+    ]
+
+
+def test_a_discard_goes_through_when_the_result_the_request_was_built_on_is_gone(project):
+    """SS7: R1's candidate/ is deleted. The Discard falls back to the request's own baseline, never an error."""
+    pid = project_id_for(project)
+    fix(project)
+    hand_edits(project)
+    run(project, "req-2", "Now also add an extra module.", adds("src/extra.py", "EXTRA = 1\n", "Added extra.py."))
+    shutil.rmtree(request_dir(pid, "req-1") / "candidate")
+    assert discard_changes("req-2", repo=project)["discarded"] is True
+    third = Script(reply(calls=[call("list", {"path": "src"}, "l")]), add_module("src/third.py", "THIRD = 3\n"),
+                   reply("Added third.py."))
+    at_first_call: dict = {}
+    third.hook = lambda: at_first_call.update(record(project, "req-3"))
+    review = run(project, "req-3", "Add a third module.", third)
+    assert at_first_call["built_on"] is None, "nothing whole waits: the request starts from the folder"
+    assert "extra.py" not in third.result("l") and review["facts"]["files"] == ["src/third.py"]
 
 
 def test_discarding_a_request_with_no_files_of_its_own_leaves_the_result_in_the_copy(project):
@@ -382,6 +510,34 @@ def test_a_request_after_the_discard_of_an_unstacked_request_starts_from_the_fol
     assert review["facts"]["files"] == ["src/extra.py"]
     kept = keep_changes("req-2", project)
     assert kept["applied"] == ["src/extra.py"] and kept["also_kept"] == []
+
+
+def test_discarding_an_older_request_while_a_newer_independent_result_is_in_the_copy(project):
+    """x2: R3 crashes and cuts the stack, R4 starts from the folder, then he discards R2. The Discard restores the copy
+    to R1's result, so R5 starts from the folder, and every Keep stays exact."""
+    local(project, "req-1", writes_file("src/a.py", "A = 1\n"))
+    local(project, "req-2", writes_file("src/extra.py", "EXTRA = 1\n"))
+
+    def crashes(cwd: Path, _text: str, _cancel) -> None:
+        (cwd / "src" / "stray.py").write_text("STRAY = 1\n", encoding="utf-8")
+        raise RuntimeError("the engine fell over")
+
+    with pytest.raises(RuntimeError):
+        local(project, "req-3", crashes)
+    local(project, "req-4", writes_file("src/four.py", "FOUR = 4\n"))
+    assert built_on(project, "req-4") is None, "the stray cut the stack: R4 starts from the folder"
+    assert discard_changes("req-2", repo=project)["discarded"] is True
+    review = local(project, "req-5", writes_file("src/five.py", "FIVE = 5\n"))
+    assert built_on(project, "req-5") is None and review["facts"]["files"] == ["src/five.py"]
+    assert keep_changes("req-5", project)["applied"] == ["src/five.py"]
+    assert keep_changes("req-4", project)["applied"] == ["src/four.py"]
+    kept = keep_changes("req-1", project)
+    assert kept["applied"] == ["src/a.py"] and kept["also_kept"] == []
+    assert sorted(p.name for p in (project / "src").iterdir() if p.suffix == ".py") == [
+        "__init__.py", "a.py", "calc.py", "five.py", "four.py"], "no extra.py, no stray.py"
+    assert history(project) == [
+        ("req-5", "kept"), ("req-4", "kept"), ("req-3", "review"), ("req-2", "discarded"), ("req-1", "kept"),
+    ]
 
 
 # --- Check 4: a follow-up that changes anything is still a real stack ---------------------------------------

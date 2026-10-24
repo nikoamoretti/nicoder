@@ -294,7 +294,8 @@ def test_the_newest_open_request_that_changed_files_is_the_waiting_one(calc):
 
 def test_a_request_that_only_answered_does_not_hide_a_result_it_is_not_built_on(calc):
     """The note names a result that really has files: an open request with none is passed over. Here the answering
-    request is built on nothing, because a Discard of the request built on req-old put the working copy back."""
+    request is built on req-old (the Discard of the request on top of it put the working copy back to that result)
+    and has no result of its own."""
     from local_coder.general.waiting import find_waiting_result
 
     _fix(calc, "req-old")

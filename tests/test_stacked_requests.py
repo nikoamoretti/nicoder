@@ -5,8 +5,9 @@ request 1's unreviewed result and keeping request 2 puts both into the project. 
 a request stands has to agree about that: Keep closes the older request it carried, a question is not
 told about it, History does not call it waiting, and the older request can not be kept or discarded alone
 while the newer one still has changes to decide (its Keep would bring a discarded change back). Every engine
-builds on the result that still waits, the hosted agent included. Requests that do not build on each other (the
-working copy no longer holds the older result: a Discard cut the stack) stay separate.
+builds on the result that still waits, the hosted agent included. A Discard puts the working copy back to the
+result the discarded request was built on, so it does not cut the stack. Requests that do not build on each other
+(the older result cannot be inherited whole, here its baseline index is gone) stay separate.
 """
 from __future__ import annotations
 
@@ -247,12 +248,17 @@ def test_a_hosted_request_on_a_waiting_hosted_one_is_built_on_it_and_its_keep_cl
     assert waiting_note(calc, can_read=False) == ""
 
 
+def _lose_the_baseline_index(project_id: str, request_id: str) -> None:
+    """Make a waiting result one that cannot be built on: its baseline index is gone, so it can not be inherited
+    whole. It can still be reviewed, kept and discarded from its baseline folder."""
+    (request_dir(project_id, request_id) / "baseline.json").unlink()
+
+
 def test_requests_that_start_from_the_folder_do_not_close_each_other(calc):
-    """A request starts from the folder when the working copy no longer holds the older result (here a Discard of the
-    request built on it put the copy back), so keeping it never carries the older one."""
-    _agent_writes(calc, "req-1", "src/one.py", "ONE = 1\n")
-    _agent_writes(calc, "req-1b", "src/mid.py", "MID = 1\n")
-    discard_changes("req-1b", repo=calc)
+    """A request starts from the folder when the older result cannot be built on (here its baseline index is gone),
+    so keeping it never carries the older one."""
+    first = _agent_writes(calc, "req-1", "src/one.py", "ONE = 1\n")
+    _lose_the_baseline_index(first["project_id"], "req-1")
     second = _agent_writes(calc, "req-2", "src/two.py", "TWO = 2\n")
     assert "built_on" not in load_meta(second["project_id"], "req-2")
     assert second["facts"]["files"] == ["src/two.py"]
@@ -260,7 +266,7 @@ def test_requests_that_start_from_the_folder_do_not_close_each_other(calc):
     assert kept["also_kept"] == []
     older = snapshot("req-1", repo=calc)
     assert older["can_keep"] is True and older["can_discard"] is True and older["outcome"] == "review"
-    assert _history(calc) == [("req-2", "kept"), ("req-1b", "discarded"), ("req-1", "review")]
+    assert _history(calc) == [("req-2", "kept"), ("req-1", "review")]
     assert waiting_note(calc, can_read=False).endswith("It adds src/one.py.")
     assert keep_changes("req-1", calc)["applied"] == ["src/one.py"]
 
@@ -276,17 +282,28 @@ def test_an_agent_run_after_a_local_one_builds_on_it(calc):
     assert keep_changes("req-2", calc)["also_kept"] == ["req-1"]
 
 
-def test_discarding_the_newer_request_cuts_the_stack(calc):
-    """After Discard the working copy is back at the folder, so the next request is not built on request 1."""
+def test_discarding_the_newer_request_leaves_the_older_result_in_the_copy_for_the_next_request(calc):
+    """After Discard the working copy is back at request 1's result, not at the folder: the next request is built on
+    request 1, one Keep takes both, and the discarded request's file never lands."""
     _fix(calc)
     _extra(calc)
     discard_changes("req-2", repo=calc)
-    third = _run(calc, "req-3", _write("src/third.py", "THIRD = 3\n"))
-    assert "built_on" not in load_meta(third["project_id"], "req-3")
-    assert keep_changes("req-3", calc)["also_kept"] == []
+    at_start: dict = {}
+
+    def third_engine(cwd: Path, text: str, cancel) -> None:
+        at_start.update(calc=(cwd / "src" / "calc.py").read_text(encoding="utf-8"),
+                        extra=(cwd / "src" / "extra.py").exists())
+        _write("src/third.py", "THIRD = 3\n")(cwd, text, cancel)
+
+    third = _run(calc, "req-3", third_engine)
+    assert load_meta(third["project_id"], "req-3")["built_on"] == "req-1"
+    assert at_start == {"calc": NEW, "extra": False}, "it starts in request 1's result without the discarded file"
+    assert third["facts"]["files"] == ["src/calc.py", "src/third.py"]
+    kept = keep_changes("req-3", calc)
+    assert kept["also_kept"] == ["req-1"] and kept["applied"] == ["src/calc.py", "src/third.py"]
     older = snapshot("req-1", repo=calc)
-    assert older["can_keep"] is True and older["outcome"] == "review", "request 1 still waits: its change is not in"
-    assert (calc / "src" / "calc.py").read_text(encoding="utf-8") == OLD
+    assert older["outcome"] == "kept" and older["summary"] == WENT_IN
+    assert (calc / "src" / "calc.py").read_text(encoding="utf-8") == NEW and not (calc / "src" / "extra.py").exists()
 
 
 def test_an_older_request_whose_files_the_keep_did_not_write_stays_open(calc):
@@ -406,10 +423,10 @@ def test_two_hosted_results_in_a_stack_are_decided_newest_first(calc):
 
 
 def test_requests_that_do_not_build_on_each_other_can_be_discarded_in_any_order(calc):
-    """Independent: the second started when the working copy no longer held the first (a Discard put it back)."""
-    _agent_writes(calc, "req-1", "src/one.py", "ONE = 1\n")
-    _agent_writes(calc, "req-1b", "src/mid.py", "MID = 1\n")
-    discard_changes("req-1b", repo=calc)
+    """Independent: the second started from the folder because the first could not be built on (its baseline index
+    is gone), so the older one can be discarded while the newer one waits."""
+    first = _agent_writes(calc, "req-1", "src/one.py", "ONE = 1\n")
+    _lose_the_baseline_index(first["project_id"], "req-1")
     _agent_writes(calc, "req-2", "src/two.py", "TWO = 2\n")
     assert discard_changes("req-1", repo=calc)["discarded"] is True
     assert snapshot("req-2", repo=calc)["can_keep"] is True
@@ -623,11 +640,10 @@ def test_a_request_running_on_top_of_a_stack_holds_back_every_older_one(calc):
 
 
 def test_a_running_request_that_is_not_built_on_the_older_one_does_not_hold_back_its_keep(calc):
-    """Only a request built on it matters. Here the hosted-agent run starts from the folder: a Discard of the
-    request built on req-1 put the working copy back, and req-1 still waits."""
+    """Only a request built on it matters. Here the hosted-agent run starts from the folder: req-1's baseline index
+    is gone, so it can not be built on, and req-1 still waits."""
     first = _fix(calc)
-    _extra(calc)
-    discard_changes("req-2", repo=calc)
+    _lose_the_baseline_index(first["project_id"], "req-1")
     kept_midrun: list[dict] = []
     steps = iter([
         _reply(calls=[_call("write", {"path": "src/three.py", "content": "THREE = 3\n"}, "1")]),
@@ -645,6 +661,35 @@ def test_a_running_request_that_is_not_built_on_the_older_one_does_not_hold_back
     assert kept_midrun and kept_midrun[0]["applied"] == ["src/calc.py"]
     assert third["facts"]["files"] == ["src/three.py"]
     assert keep_changes("req-3", calc)["applied"] == ["src/three.py"]
+    assert _history(calc) == [("req-3", "kept"), ("req-1", "kept")]
+
+
+def test_a_running_request_built_on_the_older_one_after_a_discard_holds_back_its_keep(calc):
+    """The mirror of the test above: after the Discard of req-2 the next hosted run IS built on req-1 (the copy is back
+    at its result), so it holds req-1 back while it runs, and one Keep then takes both."""
+    first = _fix(calc)
+    _extra(calc)
+    discard_changes("req-2", repo=calc)
+    before = _tree(calc)
+    seen: list = []
+    steps = iter([
+        _reply(calls=[_call("write", {"path": "src/three.py", "content": "THREE = 3\n"}, "1")]),
+        _reply("I wrote src/three.py."),
+    ])
+
+    def chat(_messages, _tools):
+        if not seen:
+            seen.append(_keep_outcome(calc, "req-1"))
+            seen.append(_tree(calc) == before)
+        return next(steps)
+
+    third = run_general_request(calc, "request req-3", request_id="req-3", agent_chat=chat,
+                                start_preview_after=False)
+    assert seen == [("busy", STILL_RUNNING), True], "refused in one plain sentence; nothing was written"
+    assert load_meta(first["project_id"], "req-3")["built_on"] == "req-1"
+    assert third["facts"]["files"] == ["src/calc.py", "src/three.py"]
+    kept = keep_changes("req-3", calc)
+    assert kept["also_kept"] == ["req-1"] and kept["applied"] == ["src/calc.py", "src/three.py"]
     assert _history(calc) == [("req-3", "kept"), ("req-2", "discarded"), ("req-1", "kept")]
 
 
@@ -692,7 +737,7 @@ def test_a_failed_run_does_not_leave_the_older_request_locked(calc):
 
 
 def test_the_next_request_does_not_undo_an_older_request_kept_after_the_newer_one_was_discarded(calc):
-    """Discard puts the working copy back to the folder; Keep then changes the folder, not the copy."""
+    """Discard puts the working copy back to the older result; Keep then changes the folder, not the copy."""
     _fix(calc)
     _extra(calc)
     discard_changes("req-2", repo=calc)
