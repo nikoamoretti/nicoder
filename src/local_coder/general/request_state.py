@@ -13,7 +13,9 @@ project, minus whatever the newer request took back. Keep closes every waiting r
 first (`kept` plus `kept_with`), however many of their files it wrote; the walk stops at the first request with no
 files, which published its starting copy and so carries nothing below it. The files of a closed request that the
 Keep did not write are its `dropped` list: when there are some, History says `replaced` and the words say that
-nothing from them went into those files. A request that is still open in its record although a kept request was
+nothing from them went into those files. A request whose own result lists no files while its baseline lists some (a
+folder that was emptied or made unreadable, or a request that deleted every file) has none to name: nothing is listed
+as taken back from it. A request that is still open in its record although a kept request was
 built on it (left by an older build, or a record that could not be saved) is read as closed from the kept request's
 record; nothing is rewritten. A closed request can be neither kept nor discarded, and an older one can not be kept
 or discarded on its own while the newer one still has changes to decide.

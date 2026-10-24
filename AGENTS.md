@@ -165,6 +165,13 @@
   `replaced` and the card, Keep and Discard (code `kept`) say "These changes were
   replaced by a later request you kept. Nothing from them went into src/gen.py."
   (at most three files named, then a count; `request_state.replaced_sentence`).
+  A closed request whose own result lists no files while its baseline lists some
+  (`snapshot.would_empty_project`: its `candidate/` emptied or unreadable, or a request
+  that deleted every file; the cases look alike) has no files to name, so its `dropped`
+  is empty and it reads "went in" (`coordinator._carried_chain`; a named limit: what the
+  kept request took back from it is not said, and its card still lists the files the
+  damaged folder shows); a `candidate/` that is gone gives no list at all and the
+  request stays as it was.
   All of it is per file, never by text: a file the kept request changed again
   counts as carried, so an undo plus an edit in one file, a removed function, or a
   delete then a re-create still reads "went in" (a named limit, the `closed-words`

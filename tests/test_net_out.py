@@ -13,7 +13,9 @@ the words are the ones Nico already saw. Some taken back: History says `replaced
 first request with no files (a request that changed nothing published its starting copy, so a request that continues
 it does not carry what lies below it). A request that is still open in its record although a kept one was built on it
 (an older build, or a record that could not be saved) is read as closed from the kept request's record; nothing is
-rewritten.
+rewritten. After QA's second round (x1, x2): a result that lists no files while its baseline lists some (a
+`candidate/` that was emptied or made unreadable, or a request that deleted every file) has no files to name, so the
+request is closed as carried with the plain words, never as replaced with its whole baseline.
 
 Every test is modelled on a scenario of the cut's probe (NT* the gaps, NG* the guards, NR* the named limit) and names
 the acceptance check it belongs to. Fake engines and a scripted hosted agent ($0); the workspace, baselines, Keep,
@@ -818,3 +820,57 @@ def test_a_record_that_could_not_be_saved_reads_as_closed_all_the_same(project, 
     assert "kept" not in load_meta(project_id_for(project), "r1")
     assert_closed_as_replaced(project, "r1", "r2", ["src/gen.py"], GEN)
     assert history(project) == [("r2", "kept"), ("r1", "replaced")]
+
+
+# === A result that lists no files has no files to name (QA x1, x2) ================================================
+
+LISTS_NO_FILES = [
+    "emptied",
+    pytest.param("unreadable", marks=pytest.mark.skipif(os.geteuid() == 0, reason="root reads any folder")),
+]
+
+
+def lose_the_result(project: Path, request_id: str, how: str):
+    """Empty a request's candidate/ folder, or take its mode away: it stays and lists no files. Returns the undo."""
+    folder = request_dir(project_id_for(project), request_id) / "candidate"
+    if how == "emptied":
+        for child in list(folder.iterdir()):
+            shutil.rmtree(child) if child.is_dir() else child.unlink()
+        return lambda: None
+    folder.chmod(0)
+    return lambda: folder.chmod(0o755)
+
+
+@pytest.mark.parametrize("how", LISTS_NO_FILES)
+def test_x1_x2_a_result_that_lists_no_files_is_closed_as_carried_not_as_replaced(project, how):
+    """R1 adds gen.py, R2 (built on R1) adds other.py, then R1's candidate/ is emptied (x1) or made unreadable (x2).
+    R2's Keep still writes gen.py: R2's own result holds it. R1 used to read "replaced ... Nothing from them went into
+    conftest.py, local-coder.toml, src/__init__.py or 3 more files": a folder that lists nothing was read as a request
+    that deleted all six files of its baseline. Its files cannot be told, so it is closed with the plain words."""
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    local(project, "r2", write("src/other.py", "OTHER = 1\n"))
+    restore = lose_the_result(project, "r1", how)
+    try:
+        kept = keep_changes("r2", project)
+        assert kept["applied"] == ["src/gen.py", "src/other.py"] and kept["also_kept"] == ["r1"]
+        assert (project / "src" / "gen.py").exists(), "R1's file did land, with R2"
+        after_keep = state(project)
+        assert_closed_as_went_in(project, "r1", "r2")
+        assert state(project) == after_keep, "the refused Keep and Discard of R1 write nothing"
+        assert "dropped" not in load_meta(project_id_for(project), "r1")
+        assert history(project) == [("r2", "kept"), ("r1", "kept")]
+        assert nothing_waits(project)
+    finally:
+        restore()
+
+
+def test_an_old_record_whose_result_lists_no_files_reads_as_went_in_too(project):
+    """The same, read from the kept request's record for a request an older build left open (nothing is rewritten)."""
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    local(project, "r2", write("src/other.py", "OTHER = 1\n"))
+    keep_changes("r2", project)
+    record = reopen(project, "r1")
+    lose_the_result(project, "r1", "emptied")
+    assert_closed_as_went_in(project, "r1", "r2")
+    assert history(project) == [("r2", "kept"), ("r1", "kept")]
+    assert (request_dir(project_id_for(project), "r1") / "meta.json").read_bytes() == record

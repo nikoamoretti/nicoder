@@ -496,11 +496,8 @@ def _project_metas(project_id: str) -> dict[str, dict[str, Any]]:
     return metas
 
 
-def request_delta(meta: dict[str, Any]) -> Delta | None:
-    """What a request changed: its frozen baseline against its candidate (meta.json keeps no file list).
-
-    None when either is gone or cannot be read.
-    """
+def _result_indexes(meta: dict[str, Any]) -> tuple[TreeIndex, TreeIndex] | None:
+    """A request's frozen baseline and its candidate, indexed; None when either is gone or cannot be read."""
     try:
         baseline = Path(str(meta["baseline"]))
         candidate = Path(str(meta["candidate"]))
@@ -508,9 +505,18 @@ def request_delta(meta: dict[str, Any]) -> Delta | None:
         if not candidate.is_dir() or not (frozen.is_file() or baseline.is_dir()):
             return None
         before = read_index(frozen) if frozen.is_file() else index_tree(baseline)
-        return compute_delta(before, index_tree(candidate))
+        return before, index_tree(candidate)
     except (KeyError, OSError, ValueError):
         return None
+
+
+def request_delta(meta: dict[str, Any]) -> Delta | None:
+    """What a request changed: its frozen baseline against its candidate (meta.json keeps no file list).
+
+    None when either is gone or cannot be read.
+    """
+    indexes = _result_indexes(meta)
+    return compute_delta(*indexes) if indexes else None
 
 
 def _created(meta: dict[str, Any]) -> float:
@@ -591,22 +597,30 @@ def _newer_request_running(project_id: str, metas: dict[str, dict[str, Any]], re
 
 def _carried_chain(
     metas: dict[str, dict[str, Any]], request_id: str,
-) -> Iterator[tuple[str, dict[str, Any], Delta | None]]:
-    """The requests this one was built on, nearest first, each with what it changed (None: that cannot be read).
+) -> Iterator[tuple[str, dict[str, Any], set[str] | None]]:
+    """The requests this one was built on, nearest first, each with the files it changed (None: that cannot be read).
 
     The result of each one is the base of the one after it, so a Keep of this request carries them all into the
     project. The walk stops at the first request that changed nothing: it published its starting copy as its
     result, so a request that continues it does not carry what lies below it (R1 adds a file, R2 on R1 is idle,
     R3 continues R2). A record that is gone ends the chain, as in `built_on`.
+
+    A result that lists no files while its baseline lists some (`would_empty_project`) is either a request that deleted
+    every file or a folder that was emptied or made unreadable, and the two look alike. Its files cannot be told, so it
+    gives an empty set: it is closed as carried, and its baseline's files are not read as taken back by a later Keep.
     """
     for older_id in built_on(metas, request_id):
         older = metas.get(older_id)
         if older is None:
             continue
-        delta = request_delta(older)
-        if delta is not None and not delta.touched():
+        indexes = _result_indexes(older)
+        if indexes is None:
+            yield older_id, older, None
+            continue
+        files = compute_delta(*indexes).touched()
+        if not files:
             return
-        yield older_id, older, delta
+        yield older_id, older, set() if would_empty_project(*indexes) else files
 
 
 def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, applied: list[str]) -> list[str]:
@@ -615,16 +629,17 @@ def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, appli
     A request the kept one was built on is carried by definition: its result is the base of the kept one's. What
     the Keep did not write of it, the kept request took back, so that is recorded as the closed request's
     `dropped` list: its files minus `applied`. Per file, never by what the text says (a file the kept request
-    changed again counts as carried). A record that cannot be read is skipped; one that cannot be saved stays as
-    it was: the Keep has happened and must not fail now, and the readers read it as closed all the same.
+    changed again counts as carried). A result that lists no files has none to name (`_carried_chain`): it is
+    closed with an empty `dropped` and reads "went in". A record that cannot be read is skipped; one that cannot be
+    saved stays as it was: the Keep has happened and must not fail now, and the readers read it as closed all the same.
     """
     written = set(applied)
     closed: list[str] = []
-    for older_id, older, delta in _carried_chain(metas, request_id):
-        if request_state(older) != WAITING or delta is None:
+    for older_id, older, files in _carried_chain(metas, request_id):
+        if request_state(older) != WAITING or files is None:
             continue
         record = {**older, "kept": True, KEPT_WITH: request_id}
-        dropped = sorted(delta.touched() - written)
+        dropped = sorted(files - written)
         if dropped:
             record[DROPPED] = dropped
         try:
@@ -656,14 +671,14 @@ def _read_as_closed(metas: dict[str, dict[str, Any]], request_id: str, kept_ids:
     with no files) or when a record or result needed to say what happened cannot be read: it then stays as it is.
     """
     for kept_id in kept_ids:
-        for older_id, older, delta in _carried_chain(metas, kept_id):
+        for older_id, older, files in _carried_chain(metas, kept_id):
             if older_id != request_id:
                 continue
             kept_delta = request_delta(metas[kept_id])
-            if delta is None or kept_delta is None:
+            if files is None or kept_delta is None:
                 break
             record = {**older, "kept": True, KEPT_WITH: kept_id}
-            dropped = sorted(delta.touched() - kept_delta.touched())
+            dropped = sorted(files - kept_delta.touched())
             if dropped:
                 record[DROPPED] = dropped
             return record
