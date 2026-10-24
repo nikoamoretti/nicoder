@@ -369,11 +369,13 @@ def test_conflicts_come_sorted_by_path_and_once_per_path(tmp_path):
 
 def test_apply_delta_keeps_its_own_detail_and_list_for_the_mcp_apply(tmp_path):
     """`nemotron_apply_draft` prints this detail and this list as they are; Nico's sentence is built elsewhere."""
-    b, c, u = _rename_trees(tmp_path, {"src/old.ts": MOVED, "src/new.ts": HIS})
+    b, c, u = _trees(tmp_path, {"a.ts": "one\n"}, {"a.ts": "two\n"}, {"a.ts": "his\n"})
     result = apply_delta(u, b, c)
     assert result["detail"].startswith("Some files changed in the project")
     assert not result["detail"].startswith("Not kept")
-    assert result["conflicts"] == [{"path": "src/new.ts", "reason": snap.REASON_ADDED}]
+    assert result["conflicts"] == [
+        {"path": "a.ts", "reason": "this file changed in the project after the request started"},
+    ]
 
 
 # --- The refusal sentence --------------------------------------------------------------------------------------
