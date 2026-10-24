@@ -61,7 +61,7 @@ def test_a_second_keep_is_refused_and_does_not_blame_changed_files(project):
         keep_changes("req-1", project)
     assert raised.value.code == "kept"
     assert "already in your project" in raised.value.detail
-    assert "Some files changed" not in raised.value.detail
+    assert not raised.value.detail.startswith("Not kept"), "only a clash is worded that way"
     assert (project / "src" / "a.ts").read_text(encoding="utf-8") == "export const a = 'EDITED-AFTER-KEEP'\n"
 
 

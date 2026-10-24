@@ -16,6 +16,7 @@ import os
 import shutil
 import stat
 import tempfile
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,6 +41,22 @@ NOISE_NAMES = {
     "bun.lock",
     "bun.lockb",
 }
+
+
+# Why a path is a conflict. `Conflict.reason` carries one of these as it is: the MCP apply prints them, and
+# `conflict_sentence` reads them back, so both sides use the same constants.
+REASON_CHANGED = "this file changed in the project after the request started"
+REASON_REMOVED = "this file was removed from the project after the request started"
+REASON_ADDED = "a new file now exists in the project"
+NAMES_SHOWN = 3
+SENTENCE_HEAD = "Not kept: since these changes were started, "
+SENTENCE_TAIL = "Your project was not changed."
+# (reason, how the sentence says it), in the order the clauses are written.
+_CLAUSES = (
+    (REASON_CHANGED, "changed in"),
+    (REASON_REMOVED, "removed from"),
+    (REASON_ADDED, "added to"),
+)
 
 
 @dataclass
@@ -241,15 +258,52 @@ def find_conflicts(baseline: TreeIndex, candidate: TreeIndex, user: TreeIndex) -
         b = baseline.sha_of(rel)
         u = user.sha_of(rel)
         if rel in delta.added and u is not None and u != candidate.sha_of(rel):
-            conflicts.append(Conflict(rel, "a new file now exists in the project"))
+            conflicts.append(Conflict(rel, REASON_ADDED))
             continue
         if rel in delta.added:
             continue
         if b is not None and u is not None and u != b:
-            conflicts.append(Conflict(rel, "this file changed in the project after the request started"))
+            conflicts.append(Conflict(rel, REASON_CHANGED))
         elif b is not None and u is None and rel not in {old for old, _ in delta.renamed}:
-            conflicts.append(Conflict(rel, "this file was removed from the project after the request started"))
+            conflicts.append(Conflict(rel, REASON_REMOVED))
     return conflicts
+
+
+def conflict_sentence(conflicts: Iterable[Mapping[str, object]]) -> str:
+    """Nico's sentence for a refused Keep, built from the conflict list `apply_delta` returns.
+
+    Every file is named once (a path listed twice counts once), sorted, with what happened to it: changed,
+    removed or added. Past three files the first three are named and the rest counted, all as changed: in that
+    long form "changed" also covers removed and added files. Project-relative paths and nothing else about the
+    files, and never any text from a model.
+    """
+    order = [reason for reason, _verb in _CLAUSES]
+    kind_of: dict[str, int] = {}
+    for row in conflicts:
+        path = str(row.get("path"))
+        reason = str(row.get("reason"))
+        kind = order.index(reason) if reason in order else 0
+        kind_of[path] = min(kind, kind_of.get(path, kind))
+    paths = sorted(kind_of)
+    if not paths:
+        return f"{SENTENCE_HEAD}some files were changed in your project. {SENTENCE_TAIL}"
+    if len(paths) > NAMES_SHOWN:
+        more = len(paths) - NAMES_SHOWN
+        shown = f"{', '.join(paths[:NAMES_SHOWN])} and {more} more file{'' if more == 1 else 's'}"
+        return f"{SENTENCE_HEAD}{shown} were changed in your project. {SENTENCE_TAIL}"
+    clauses = []
+    for kind, (_reason, verb) in enumerate(_CLAUSES):
+        named = [path for path in paths if kind_of[path] == kind]
+        if named:
+            clauses.append(f"{_name_list(named)} {'was' if len(named) == 1 else 'were'} {verb} your project")
+    return f"{SENTENCE_HEAD}{' and '.join(clauses)}. {SENTENCE_TAIL}"
+
+
+def _name_list(names: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def unified_diff(baseline: Path, candidate: Path, *, limit: int = 200_000) -> str:

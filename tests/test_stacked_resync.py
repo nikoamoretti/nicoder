@@ -28,7 +28,6 @@ README = "# calc\n"
 HIS_README = "# calc\nNico's own paragraph\n"
 HIS_NOTES = "Nico's notes\n"
 HIS_CALC = "def add(a, b):\n    return 0  # Nico's own version\n"
-CONFLICT = "Some files changed in the project while this request was running."
 WENT_IN = "These changes went in with a later request you kept."
 DECIDE_NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 MODEL = "Qwen3.5-4B-Q4_K_M"
@@ -42,6 +41,11 @@ HOSTED = machine.MachineConfig(
     max_tokens=16384,
     quantization="hosted",
 )
+
+
+def conflict(what: str) -> str:
+    """Nico's sentence for a refused Keep: which file, and what happened to it."""
+    return f"Not kept: since these changes were started, {what}. Your project was not changed."
 
 
 @pytest.fixture
@@ -359,7 +363,8 @@ def test_keep_refuses_a_file_he_changed_that_the_stack_also_changed(project):
     before = _tree(project)
     with pytest.raises(GeneralError) as refused:
         keep_changes("req-2", project)
-    assert refused.value.code == "conflict" and refused.value.detail == CONFLICT
+    assert refused.value.code == "conflict"
+    assert refused.value.detail == conflict("src/calc.py was changed in your project")
     assert _tree(project) == before, "a refused Keep writes nothing"
     assert (project / "src" / "calc.py").read_text(encoding="utf-8") == HIS_CALC
     still = snapshot("req-2", repo=project)
@@ -369,6 +374,7 @@ def test_keep_refuses_a_file_he_changed_that_the_stack_also_changed(project):
     with pytest.raises(GeneralError) as older:
         keep_changes("req-1", project)
     assert older.value.code == "conflict"
+    assert older.value.detail == conflict("src/calc.py was changed in your project")
     assert _tree(project) == before
 
 
@@ -380,7 +386,8 @@ def test_keep_refuses_a_file_he_created_where_the_stack_adds_one(project):
     before = _tree(project)
     with pytest.raises(GeneralError) as refused:
         keep_changes("req-2", project)
-    assert refused.value.code == "conflict" and refused.value.detail == CONFLICT
+    assert refused.value.code == "conflict"
+    assert refused.value.detail == conflict("src/extra.py was added to your project")
     assert _tree(project) == before
     still = snapshot("req-2", repo=project)
     assert still["can_keep"] is True and still["outcome"] == "review"
@@ -396,7 +403,8 @@ def test_keep_refuses_when_he_deleted_a_file_the_stack_changed(project):
     before = _tree(project)
     with pytest.raises(GeneralError) as refused:
         keep_changes("req-2", project)
-    assert refused.value.code == "conflict" and refused.value.detail == CONFLICT
+    assert refused.value.code == "conflict"
+    assert refused.value.detail == conflict("src/calc.py was removed from your project")
     assert _tree(project) == before and not (project / "src" / "calc.py").exists()
 
 
@@ -408,7 +416,8 @@ def test_keep_refuses_when_the_stack_deletes_a_file_he_edited(project):
     before = _tree(project)
     with pytest.raises(GeneralError) as refused:
         keep_changes("req-2", project)
-    assert refused.value.code == "conflict" and refused.value.detail == CONFLICT
+    assert refused.value.code == "conflict"
+    assert refused.value.detail == conflict("src/util.py was changed in your project")
     assert _tree(project) == before
     assert (project / "src" / "util.py").read_text(encoding="utf-8") == "UTIL = 'Nico'\n"
 

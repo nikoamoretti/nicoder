@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from local_coder.general import snapshot as snap
 from local_coder.general.snapshot import apply_delta, compute_delta, copy_snapshot, find_conflicts, index_tree
 
 
@@ -132,3 +135,107 @@ def test_sync_source_tree_preserves_node_modules(tmp_path):
     assert not (dest / "src/gone.tsx").exists()
     assert node.read_text(encoding="utf-8") == "keep-dep\n"
     assert "node_modules/pkg/index.js" not in index.files
+
+
+# --- The refusal sentence --------------------------------------------------------------------------------------
+
+HEAD = "Not kept: since these changes were started, "
+TAIL = " Your project was not changed."
+CHANGED, REMOVED, ADDED = "REASON_CHANGED", "REASON_REMOVED", "REASON_ADDED"
+
+
+def _sentence(*rows: tuple[str, str]) -> str:
+    """The sentence for (path, reason constant name) rows."""
+    return snap.conflict_sentence([{"path": path, "reason": getattr(snap, reason)} for path, reason in rows])
+
+
+@pytest.mark.parametrize(
+    ("rows", "clause"),
+    [
+        ([("src/a.ts", CHANGED)], "src/a.ts was changed in your project."),
+        ([("src/util.ts", REMOVED)], "src/util.ts was removed from your project."),
+        ([("src/b.ts", ADDED)], "src/b.ts was added to your project."),
+        ([("src/a.ts", CHANGED), ("README.md", CHANGED)], "README.md and src/a.ts were changed in your project."),
+        ([("src/x.ts", REMOVED), ("src/w.ts", REMOVED)], "src/w.ts and src/x.ts were removed from your project."),
+        ([("c", ADDED), ("a", ADDED), ("b", ADDED)], "a, b and c were added to your project."),
+        (
+            [("src/old.ts", CHANGED), ("README.md", CHANGED), ("src/a.ts", CHANGED)],
+            "README.md, src/a.ts and src/old.ts were changed in your project.",
+        ),
+        (
+            [("src/a.ts", CHANGED), ("src/util.ts", REMOVED)],
+            "src/a.ts was changed in your project and src/util.ts was removed from your project.",
+        ),
+        (
+            [("z", ADDED), ("y", REMOVED), ("x", CHANGED)],
+            "x was changed in your project and y was removed from your project and z was added to your project.",
+        ),
+        (
+            [("a", CHANGED), ("b", CHANGED), ("c", ADDED)],
+            "a and b were changed in your project and c was added to your project.",
+        ),
+    ],
+)
+def test_the_sentence_names_each_file_with_what_happened_to_it(rows, clause):
+    assert _sentence(*rows) == f"{HEAD}{clause}{TAIL}"
+
+
+def test_the_whole_sentence_is_pinned_word_for_word():
+    assert _sentence(("src/a.ts", CHANGED)) == (
+        "Not kept: since these changes were started, src/a.ts was changed in your project. "
+        "Your project was not changed."
+    )
+
+
+@pytest.mark.parametrize(
+    ("rows", "count"),
+    [
+        (
+            [("README.md", CHANGED), ("src/a.ts", CHANGED), ("src/old.ts", CHANGED), ("src/util.ts", CHANGED)],
+            "1 more file",
+        ),
+        ([(f"f{n}.ts", CHANGED) for n in range(5)], "2 more files"),
+        ([(f"f{n}.ts", CHANGED) for n in range(12)], "9 more files"),
+    ],
+)
+def test_more_than_three_files_are_three_names_and_a_count(rows, count):
+    names = ", ".join(sorted(path for path, _reason in rows)[:3])
+    assert _sentence(*rows) == f"{HEAD}{names} and {count} were changed in your project.{TAIL}"
+
+
+def test_the_long_form_calls_removed_and_added_files_changed():
+    rows = [("d", ADDED), ("c", REMOVED), ("b", CHANGED), ("a", CHANGED)]
+    assert _sentence(*rows) == f"{HEAD}a, b, c and 1 more file were changed in your project.{TAIL}"
+
+
+def test_a_path_is_named_and_counted_once():
+    rows = [("a", CHANGED), ("a", CHANGED), ("b", CHANGED), ("b", REMOVED), ("c", ADDED), ("c", ADDED)]
+    assert _sentence(*rows) == (
+        f"{HEAD}a and b were changed in your project and c was added to your project.{TAIL}"
+    ), "six rows are three files: no 'and 3 more files'"
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([("src/b.ts", CHANGED), ("README.md", REMOVED), ("src/a.ts", ADDED)], id="three-mixed"),
+        pytest.param(
+            [("src/b.ts", CHANGED), ("README.md", REMOVED), ("src/a.ts", ADDED), ("docs/x.md", CHANGED), ("z", ADDED)],
+            id="five",
+        ),
+    ],
+)
+def test_the_same_conflicts_in_any_order_read_the_same(rows):
+    want = _sentence(*rows)
+    for shift in range(len(rows)):
+        assert _sentence(*(rows[shift:] + rows[:shift])) == want
+    assert _sentence(*reversed(rows)) == want
+
+
+def test_a_reason_the_builder_does_not_know_reads_as_changed():
+    unknown = [{"path": "a", "reason": "something new"}]
+    assert snap.conflict_sentence(unknown) == f"{HEAD}a was changed in your project.{TAIL}"
+
+
+def test_no_rows_still_gives_a_true_sentence():
+    assert snap.conflict_sentence([]) == f"{HEAD}some files were changed in your project.{TAIL}"

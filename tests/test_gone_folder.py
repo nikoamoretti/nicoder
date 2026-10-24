@@ -202,7 +202,7 @@ def test_keep_refuses_when_the_folder_is_gone(ts_project, add):
         keep_request(review["project_id"], "req-keep-gone", ts_project)
     assert raised.value.code == "folder_gone"
     assert "gone" in raised.value.detail and ts_project.name in raised.value.detail
-    assert "Some files changed" not in raised.value.detail
+    assert not raised.value.detail.startswith("Not kept"), "only a clash is worded that way"
     assert not ts_project.exists(), "Keep must not recreate the folder"
     # The waiting result stays on disk and can still be read.
     candidate = data_root() / "projects" / review["project_id"] / "requests" / "req-keep-gone" / "candidate"

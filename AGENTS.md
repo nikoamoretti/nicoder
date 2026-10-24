@@ -124,7 +124,10 @@
   are measured from one starting point: what Nico changed in the folder meanwhile
   is not shown as the model's work and Keep never reverts it, and a file he and
   the stack both changed makes Keep refuse (`conflict`) and write nothing (file
-  renames excepted until the `keep-renames` cut). Known limit: what he edited
+  renames excepted until the `keep-renames` cut). The refusal names the files and
+  what happened to each (`snapshot.conflict_sentence`: "Not kept: since these changes
+  were started, src/a.ts was changed in your project. Your project was not
+  changed."; at most three names, then a count). Known limit: what he edited
   after the first request started is not in the copy a follow-up's agent works
   on (Keep still refuses a real clash). A continuation (`continue_from`) never
   inherits a baseline (`prepare_workspace(carry=not continue_from)`), and
