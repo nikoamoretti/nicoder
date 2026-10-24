@@ -1596,6 +1596,7 @@ KEPT_SUMMARY = "These changes are in your project."
 KEPT_WITH_SUMMARY = "These changes went in with a later request you kept."
 ALREADY_KEPT = "These changes are already in your project."
 ALREADY_KEPT_DISCARD = "These changes are already in your project, so they cannot be discarded."
+NOTHING_TO_KEEP = "This request changed nothing, so there is nothing to keep."
 NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 NEWER_RUNNING = (
     "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
@@ -1791,7 +1792,11 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
 
 
 def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dict[str, Any]:
-    """Apply B→C onto the current user tree. Not an OpenCode revert."""
+    """Apply B→C onto the current user tree. Not an OpenCode revert.
+
+    A request with no files of its own (it ended with the working copy as the result it was built on, or changed
+    nothing) is refused before anything is closed or written: its Keep would only close the requests it was built on.
+    """
     meta = load_meta(project_id, request_id)
     records = {**_project_metas(project_id), request_id: meta}
     metas = records_as_read(records)
@@ -1800,6 +1805,9 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
         raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
     if state == KEPT:
         raise GeneralError(_closed_words(metas[request_id], ALREADY_KEPT), code="kept")
+    own = request_delta(meta)
+    if own is not None and not own.touched():
+        raise GeneralError(NOTHING_TO_KEEP, code="nothing_to_keep")
     if _newer_request_running(project_id, metas, request_id):
         raise GeneralError(NEWER_RUNNING, code="busy")
     if _newer_request_to_decide(metas, request_id):

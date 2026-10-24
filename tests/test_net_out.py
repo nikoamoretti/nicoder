@@ -13,9 +13,10 @@ the words are the ones Nico already saw. Some taken back: History says `replaced
 first request with no files (a request that changed nothing published its starting copy, so a request that continues
 it does not carry what lies below it). A request that is still open in its record although a kept one was built on it
 (an older build, or a record that could not be saved) is read as closed from the kept request's record; nothing is
-rewritten. After QA's second round (x1, x2): a result that lists no files while its baseline lists some (a
+rewritten. After QA's second round (x1, x2, x9): a result that lists no files while its baseline lists some (a
 `candidate/` that was emptied or made unreadable, or a request that deleted every file) has no files to name, so the
-request is closed as carried with the plain words, never as replaced with its whole baseline.
+request is closed as carried with the plain words, never as replaced with its whole baseline; and Keep refuses a request
+with no files of its own, so it cannot close the older request it was built on.
 
 Every test is modelled on a scenario of the cut's probe (NT* the gaps, NG* the guards, NR* the named limit) and names
 the acceptance check it belongs to. Fake engines and a scripted hosted agent ($0); the workspace, baselines, Keep,
@@ -53,6 +54,7 @@ FIXED = "return a + b"
 WENT_IN = "These changes went in with a later request you kept."
 ALREADY_KEPT = "These changes are already in your project."
 ALREADY_KEPT_DISCARD = "These changes are already in your project, so they cannot be discarded."
+NOTHING_TO_KEEP = "This request changed nothing, so there is nothing to keep."
 REPLACED = "These changes were replaced by a later request you kept. Nothing from them went into "
 
 darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="the agent's bash runs in sandbox-exec: macOS only")
@@ -874,3 +876,39 @@ def test_an_old_record_whose_result_lists_no_files_reads_as_went_in_too(project)
     assert_closed_as_went_in(project, "r1", "r2")
     assert history(project) == [("r2", "kept"), ("r1", "kept")]
     assert (request_dir(project_id_for(project), "r1") / "meta.json").read_bytes() == record
+
+
+# === A request with no files of its own cannot be kept (QA x9) ===================================================
+
+
+def test_x9_a_direct_keep_of_a_request_with_no_result_of_its_own_is_refused_and_closes_nothing(project):
+    """R1 adds gen.py; R2 (built on R1) ends with the working copy as R1 left it: no files, no button. A direct `keep`
+    used to be accepted and closed R1 as replaced, with a sentence saying a later request had taken gen.py back."""
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    local(project, "r2", nothing)
+    pid = project_id_for(project)
+    assert load_meta(pid, "r2")["built_on"] == "r1"
+    idle = card(project, "r2")
+    assert idle["files"] == [] and idle["can_keep"] is False and idle["can_discard"] is False
+    before = state(project)
+    server = RpcServer(runtime=AppRuntime(), out=io.StringIO())
+    reply_ = server.dispatch({"id": "1", "method": "keep", "params": {"episode_id": "r2", "path": str(project)}})
+    assert reply_["ok"] is False and reply_["error"] == {"code": "nothing_to_keep", "detail": NOTHING_TO_KEEP}
+    assert state(project) == before, "nothing was written"
+    assert "kept" not in load_meta(pid, "r2")
+    assert "kept" not in load_meta(pid, "r1") and "dropped" not in load_meta(pid, "r1")
+    older = card(project, "r1")
+    assert older["can_keep"] is True and older["can_discard"] is True and older["outcome"] == "review"
+    assert older["blocked_by"] is None and older["kept_with"] is None and older["dropped"] == []
+    assert history(project) == [("r2", "review"), ("r1", "review")]
+    kept = keep_changes("r1", project)
+    assert kept["applied"] == ["src/gen.py"] and kept["also_kept"] == [], "R1 is still waiting, and keepable"
+
+
+def test_a_request_that_changed_nothing_cannot_be_kept(project):
+    """Not only a follow-up: any request that ended with no files has nothing to keep."""
+    local(project, "q1", nothing)
+    assert card(project, "q1")["files"] == []
+    assert keep_refusal(project, "q1") == ("nothing_to_keep", NOTHING_TO_KEEP)
+    assert "kept" not in load_meta(project_id_for(project), "q1")
+    assert history(project) == [("q1", "review")]

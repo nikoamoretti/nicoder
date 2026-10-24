@@ -188,7 +188,10 @@
   its files and diff still show). A request built on an older one that ends with the
   working copy exactly as that result has no result of its own (decided from the two
   source trees in `_publish_candidate`, never from the model's words; its baseline is
-  published instead): no files, no Keep or Discard, no Local Coder check or preview, it
+  published instead): no files, no Keep or Discard (a `keep` that arrives anyway, for
+  any request with no files of its own, is refused before anything is closed or written,
+  code `nothing_to_keep`: "This request changed nothing, so there is nothing to keep.";
+  the older request stays waiting and keepable), no Local Coder check or preview, it
   does not hold the older one back, its card forgets the check verdicts (the check log stays as evidence), and it keeps its
   History word (`error`, `stopped`, `review`). The next request passes over such
   requests and over discarded ones, and a question still finds the waiting result
