@@ -10,8 +10,12 @@ is a conflict. Unrelated user edits survive. Newly created candidate paths
 that now exist in U are also conflicts, and so is a rename's destination when
 U holds other text there than the request wrote. A rename is checked at both
 ends: its source must still be there unchanged, or the move must already have
-been made by hand. Everything Keep can know to refuse is found before the
-first write, and the refusal is a sentence that names the files.
+been made by hand. Found before the first write: a clash at either end of a
+rename, a link, a folder at a rename's destination and a path leaving the
+project. Found only while writing (then rolled back, bytes only, so a deleted
+file comes back with mode 0644): a plain file where a folder must be made, a
+folder where an added file goes, a looping link and disk errors. Only a clash
+refusal names the files; the others keep the generic sentence.
 """
 from __future__ import annotations
 
@@ -387,9 +391,10 @@ def _read_lines(path: Path) -> list[str]:
 def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object]:
     """Apply B→C onto U transactionally. Refuses on conflict or path escape.
 
-    Everything that can be known to refuse is found before the first delete or write, in one pass: a clash with
-    what he changed (both ends of every rename included) and a link or folder in the way. A refusal found halfway
-    would be rolled back, but `_rollback` restores bytes only: a deleted executable would come back as a new
+    Found before the first delete or write, in one pass: a clash with what he changed (both ends of every rename
+    included), a link, a folder at a rename's destination and a path leaving the project. Found only while
+    writing: a plain file where a folder must be made, a folder where an added file goes, a looping link and disk
+    errors. Those are rolled back, but `_rollback` restores bytes only: a deleted executable comes back as a new
     file with mode 0644. The `detail` of a conflict stays as it is for the MCP apply, which prints it with the
     list; Keep builds Nico's sentence from that list (`conflict_sentence`).
     """
@@ -451,7 +456,7 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
 
 
 def _blocked_before_writing(user: Path, candidate: Path, delta: Delta) -> str | None:
-    """Why the writes would fail halfway, found before the first one, or None.
+    """Some of the reasons the writes would fail halfway, found before the first one, or None.
 
     A path that leaves the project (a folder of his that became a link elsewhere), a link where a file is to be
     written (never followed or replaced), and a folder where a renamed file is to land (a file cannot replace it).
