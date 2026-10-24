@@ -7,16 +7,17 @@ it is not saved in the chat.
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from local_coder.general.coordinator import (
+    _project_metas,
     _request_in_flight,
     _title_from_transcript,
     project_dir,
     project_id_for,
+    records_as_read,
     request_delta,
 )
 from local_coder.general.request_state import WAITING, request_state
@@ -48,7 +49,8 @@ def find_waiting_result(user_path: str | Path) -> WaitingResult | None:
     """The project's newest request that is neither kept nor discarded and changed files, or None.
 
     Open requests that changed nothing (a question, an early Stop, a follow-up that failed or left the older
-    result as it was) are passed over: there is nothing in them to wait for. Reads only; nothing is created.
+    result as it was) are passed over: there is nothing in them to wait for, and so is a request that reads as
+    closed because a kept request was built on it (`records_as_read`). Reads only; nothing is created.
     """
     project_id = project_id_for(Path(user_path).expanduser())
     if _request_in_flight(project_id):
@@ -57,13 +59,9 @@ def find_waiting_result(user_path: str | Path) -> WaitingResult | None:
     if not folder.is_dir():
         return None
     open_requests: list[tuple[float, Path, dict[str, object]]] = []
-    for entry in folder.iterdir():
-        try:
-            meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(meta, dict) and request_state(meta) == WAITING:
-            open_requests.append((float(meta.get("created_ts") or 0), entry, meta))
+    for name, meta in records_as_read(_project_metas(project_id)).items():
+        if request_state(meta) == WAITING:
+            open_requests.append((float(meta.get("created_ts") or 0), folder / name, meta))
     open_requests.sort(key=lambda row: row[0], reverse=True)
     for created, entry, meta in open_requests[:LOOK_AT]:
         delta = request_delta(meta)

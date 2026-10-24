@@ -11,7 +11,9 @@ Keep did not write (`dropped`: the request's files minus the Keep's `applied`; p
 the words are the ones Nico already saw. Some taken back: History says `replaced`, the card and the refusals say
 "These changes were replaced by a later request you kept. Nothing from them went into <files>." The walk stops at the
 first request with no files (a request that changed nothing published its starting copy, so a request that continues
-it does not carry what lies below it).
+it does not carry what lies below it). A request that is still open in its record although a kept one was built on it
+(an older build, or a record that could not be saved) is read as closed from the kept request's record; nothing is
+rewritten.
 
 Every test is modelled on a scenario of the cut's probe (NT* the gaps, NG* the guards, NR* the named limit) and names
 the acceptance check it belongs to. Fake engines and a scripted hosted agent ($0); the workspace, baselines, Keep,
@@ -38,6 +40,7 @@ from local_coder.general.coordinator import (
     list_requests,
     load_meta,
     project_id_for,
+    request_dir,
     run_general_request,
 )
 from local_coder.general.waiting import find_waiting_result, waiting_note
@@ -730,3 +733,88 @@ def test_a_record_that_cannot_be_saved_stays_as_it_was_and_the_keep_still_succee
     assert "kept" not in load_meta(project_id_for(project), "r1") and "dropped" not in load_meta(
         project_id_for(project), "r1")
     assert load_meta(project_id_for(project), "r2")["kept"] is True
+
+
+# === Old records: a request the old rule left open reads as closed =================================================
+# An older build (or a record that could not be saved) left a request open although a kept request was built on it.
+
+
+def reopen(project: Path, request_id: str) -> bytes:
+    """Put a request's record back to what an old build left: neither kept nor discarded. Returns its bytes."""
+    path = request_dir(project_id_for(project), request_id) / "meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("kept", "kept_with", "dropped"):
+        meta.pop(key, None)
+    path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    return path.read_bytes()
+
+
+def test_nt10_a_record_the_old_rule_left_open_reads_as_closed_and_is_never_rewritten(project):
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    local(project, "r2", both(remove("src/gen.py"), write("src/other.py", "OTHER = 1\n")))
+    keep_changes("r2", project)
+    record = reopen(project, "r1")
+    path = request_dir(project_id_for(project), "r1") / "meta.json"
+    assert "kept" not in json.loads(record)
+    before = state(project)
+    assert_closed_as_replaced(project, "r1", "r2", ["src/gen.py"], GEN)
+    assert history(project) == [("r2", "kept"), ("r1", "replaced")]
+    assert nothing_waits(project)
+    assert path.read_bytes() == record, "the reads and the refusals rewrote nothing"
+    assert state(project) == before and not (project / "src" / "gen.py").exists()
+
+
+def test_an_old_record_whose_files_all_went_in_reads_with_the_old_words(project):
+    local(project, "r1", calc_fix)
+    local(project, "r2", calc_append)
+    keep_changes("r2", project)
+    record = reopen(project, "r1")
+    assert_closed_as_went_in(project, "r1", "r2")
+    assert history(project) == [("r2", "kept"), ("r1", "kept")]
+    assert (request_dir(project_id_for(project), "r1") / "meta.json").read_bytes() == record
+
+
+def test_an_old_record_is_left_as_it_is_when_the_kept_requests_result_cannot_be_read(project):
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    local(project, "r2", both(remove("src/gen.py"), write("src/other.py", "OTHER = 1\n")))
+    keep_changes("r2", project)
+    reopen(project, "r1")
+    shutil.rmtree(request_dir(project_id_for(project), "r2") / "candidate")
+    seen = card(project, "r1")
+    assert seen["outcome"] == "review" and seen["kept_with"] is None, "as before this cut: the safe direction"
+
+
+def test_the_words_are_per_file_for_an_old_record_too(project):
+    """The same named limit, read from the kept request's record instead of written by the Keep."""
+    local(project, "r1", calc_fix)
+    local(project, "r2", lambda cwd: (cwd / "src" / "calc.py").write_text(
+        (cwd / "src" / "calc.py").read_text(encoding="utf-8").replace(FIXED, "return b + a"), encoding="utf-8"))
+    keep_changes("r2", project)
+    reopen(project, "r1")
+    assert_closed_as_went_in(project, "r1", "r2")
+
+
+def test_nt13_the_old_record_read_stops_there_too(project):
+    """R1 stays open behind the idle R2 and reads open, while a request an ordinary stack carried reads as closed."""
+    stack_with_an_idle_request_between(project)
+    keep_changes("r3", project)
+    local(project, "r4", write("src/a.py", "A = 1\n"))
+    local(project, "r5", write("src/b.py", "B = 1\n"))
+    assert load_meta(project_id_for(project), "r4").get("built_on") is None, "a new stack starts from the folder"
+    assert keep_changes("r5", project)["also_kept"] == ["r4"]
+    reopen(project, "r4")
+    r1_record = (request_dir(project_id_for(project), "r1") / "meta.json").read_bytes()
+    assert_closed_as_went_in(project, "r4", "r5")
+    seen = card(project, "r1")
+    assert seen["outcome"] == "review" and seen["can_keep"] is True and seen["kept_with"] is None
+    assert history(project) == [
+        ("r5", "kept"), ("r4", "kept"), ("r3", "kept"), ("r2", "review"), ("r1", "review"),
+    ]
+    assert (request_dir(project_id_for(project), "r1") / "meta.json").read_bytes() == r1_record
+
+
+def test_a_record_that_could_not_be_saved_reads_as_closed_all_the_same(project, monkeypatch):
+    keep_r2_while_r1_cannot_be_saved(project, monkeypatch)
+    assert "kept" not in load_meta(project_id_for(project), "r1")
+    assert_closed_as_replaced(project, "r1", "r2", ["src/gen.py"], GEN)
+    assert history(project) == [("r2", "kept"), ("r1", "replaced")]

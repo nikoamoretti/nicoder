@@ -636,6 +636,59 @@ def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, appli
     return closed
 
 
+def _kept_requests_built_on(metas: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    """For each request, the kept requests that were built on it (through others too), newest first."""
+    found: dict[str, list[str]] = {}
+    for kept_id, meta in metas.items():
+        if request_state(meta) == KEPT:
+            for older_id in built_on(metas, kept_id):
+                found.setdefault(older_id, []).append(kept_id)
+    for kept_ids in found.values():
+        kept_ids.sort(key=lambda rid: (_created(metas[rid]), rid), reverse=True)
+    return found
+
+
+def _read_as_closed(metas: dict[str, dict[str, Any]], request_id: str, kept_ids: list[str]) -> dict[str, Any] | None:
+    """A copy of this still-open record as it reads when the newest kept request that carried it closed it, or None.
+
+    The same fields and words as if the Keep had closed it at the time: `dropped` is its files minus the files the
+    kept request changed (which that Keep wrote). None when no kept request carried it (the walk stops at a request
+    with no files) or when a record or result needed to say what happened cannot be read: it then stays as it is.
+    """
+    for kept_id in kept_ids:
+        for older_id, older, delta in _carried_chain(metas, kept_id):
+            if older_id != request_id:
+                continue
+            kept_delta = request_delta(metas[kept_id])
+            if delta is None or kept_delta is None:
+                break
+            record = {**older, "kept": True, KEPT_WITH: kept_id}
+            dropped = sorted(delta.touched() - kept_delta.touched())
+            if dropped:
+                record[DROPPED] = dropped
+            return record
+    return None
+
+
+def records_as_read(metas: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The project's request records as every reader must read them (the snapshot, Keep, Discard, History, a question).
+
+    A request that is still open in its record although a kept request was built on it (the Keep of an older build
+    left it open, or its record could not be saved) reads as closed, from the kept request's record. Copies; nothing is
+    written, by a read or by a refusal.
+    """
+    reading = dict(metas)
+    for request_id, kept_ids in _kept_requests_built_on(metas).items():
+        meta = metas.get(request_id)
+        if meta is None or request_state(meta) != WAITING:
+            continue
+        try:
+            reading[request_id] = _read_as_closed(metas, request_id, kept_ids) or meta
+        except (AttributeError, KeyError, OSError, TypeError, ValueError):
+            continue  # a result that cannot be read leaves the record as it is, and must never fail a read
+    return reading
+
+
 def ensure_model_server() -> dict[str, Any]:
     """Start the owned llama-server with tool-calling flags if needed. A hosted model needs none."""
     from local_coder.server import server_start as _start
@@ -1593,6 +1646,10 @@ def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -
 
 def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
     meta = load_meta(project_id, request_id)
+    metas: dict[str, dict[str, Any]] = {}
+    if request_state(meta) == WAITING:
+        metas = records_as_read({**_project_metas(project_id), request_id: meta})
+        meta = metas[request_id]
     state = request_state(meta)
     if state == DISCARDED:
         return _discarded_payload(meta, project_id, request_id)
@@ -1663,7 +1720,6 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         commentary = None
     blocked_by, blocked_text = None, ""
     if state == WAITING and files:
-        metas = _project_metas(project_id)
         running = _newer_request_running(project_id, metas, request_id)
         blocked_by = running or _newer_request_to_decide(metas, request_id)
         blocked_text = NEWER_RUNNING if running else NEWER_FIRST
@@ -1722,12 +1778,13 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
 def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dict[str, Any]:
     """Apply B→C onto the current user tree. Not an OpenCode revert."""
     meta = load_meta(project_id, request_id)
-    state = request_state(meta)
+    records = {**_project_metas(project_id), request_id: meta}
+    metas = records_as_read(records)
+    state = request_state(metas[request_id])
     if state == DISCARDED:
         raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
     if state == KEPT:
-        raise GeneralError(_closed_words(meta, ALREADY_KEPT), code="kept")
-    metas = _project_metas(project_id)
+        raise GeneralError(_closed_words(metas[request_id], ALREADY_KEPT), code="kept")
     if _newer_request_running(project_id, metas, request_id):
         raise GeneralError(NEWER_RUNNING, code="busy")
     if _newer_request_to_decide(metas, request_id):
@@ -1772,7 +1829,7 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     _save_meta(meta)
     applied = result.get("applied")
     names = [str(rel) for rel in applied] if isinstance(applied, list) else []
-    also_kept = _close_what_went_in(metas, request_id, names)
+    also_kept = _close_what_went_in(records, request_id, names)
     return {
         "ok": True, **result, "request_id": request_id, "repo": str(Path(user_path).resolve()),
         "also_kept": also_kept,
@@ -1800,6 +1857,10 @@ def _reset_live_copy(meta: dict[str, Any]) -> None:
 def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
     """Close the request without keeping it. Evidence (meta.json, candidate/) stays on disk."""
     meta = load_meta(project_id, request_id)
+    metas: dict[str, dict[str, Any]] = {}
+    if request_state(meta) == WAITING:
+        metas = records_as_read({**_project_metas(project_id), request_id: meta})
+        meta = metas[request_id]
     state = request_state(meta)
     if state == KEPT:
         raise GeneralError(_closed_words(meta, ALREADY_KEPT_DISCARD), code="kept")
@@ -1810,7 +1871,7 @@ def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
             "A request is still running in this project. Wait for it to finish, or stop it, then discard.",
             code="busy",
         )
-    if _newer_request_to_decide(_project_metas(project_id), request_id):
+    if _newer_request_to_decide(metas, request_id):
         # Its Keep would put this request's changes into the project after all.
         raise GeneralError(NEWER_FIRST, code="newer_waiting")
     try:
@@ -1849,19 +1910,12 @@ def list_requests(user_path: str | Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not root.exists():
         return rows
-    for entry in root.iterdir():
-        meta_path = entry / "meta.json"
-        if not meta_path.exists():
-            continue
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for entry_name, meta in records_as_read(_project_metas(pid)).items():
         rows.append({
-            "episode_id": meta.get("request_id") or entry.name,
-            "request_id": meta.get("request_id") or entry.name,
+            "episode_id": meta.get("request_id") or entry_name,
+            "request_id": meta.get("request_id") or entry_name,
             "outcome": request_outcome(meta),
-            "request": (meta.get("title") or _title_from_transcript(entry))[:160],
+            "request": (meta.get("title") or _title_from_transcript(root / entry_name))[:160],
             "updated_ts": meta.get("created_ts"),
             "created_ts": meta.get("created_ts"),
             "complete": False,
