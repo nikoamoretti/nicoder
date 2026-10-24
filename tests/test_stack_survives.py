@@ -50,6 +50,9 @@ NICO_TEST_LINE = "# Nico's own edit while the result waits\n"
 NICO_NOTES = "Nico's notes\n"
 HIS_CALC = "def add(a, b):\n    return 0  # Nico's own version\n"
 WENT_IN = "These changes went in with a later request you kept."
+REPLACED_GEN = (
+    "These changes were replaced by a later request you kept. Nothing from them went into src/gen.py."
+)
 NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 NEWER_RUNNING = (
     "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
@@ -630,10 +633,10 @@ def test_a_continuation_still_brings_its_own_copy_and_inherits_no_baseline(proje
     assert FIXED in script.result("a") and {"src/calc.py", "src/extra.py"} <= set(review["facts"]["files"])
 
 
-def test_a_later_request_that_removes_a_file_an_earlier_one_created_is_unchanged(project):
-    """Net-out, the known limit (Later cut 1): R2 removes the gen.py that R1 created. Keep R2 takes calc.py only, R1
-    stays keepable and its Keep is then refused as a conflict. The same behaviour as before the cut; the sentence
-    now names the file."""
+def test_a_later_request_that_removes_a_file_an_earlier_one_created_closes_the_earlier_one(project):
+    """Net-out: R2 removes the gen.py that R1 created. Keep R2 takes calc.py only; R1 is closed with that file dropped
+    (it used to stay keepable, and its Keep was refused as a conflict that blamed his edit). Keep and Discard of R1
+    are refused with the true sentence and the folder is byte-identical after both."""
 
     def creates_gen(cwd: Path, text: str, cancel) -> None:
         fixes_calc(cwd, text, cancel)
@@ -650,13 +653,15 @@ def test_a_later_request_that_removes_a_file_an_earlier_one_created_is_unchanged
     older = snapshot("req-1", repo=project)
     assert older["facts"]["files"] == ["src/calc.py", "src/gen.py"] and older["blocked_by"] == "req-2"
     kept = keep_changes("req-2", project)
-    assert kept["applied"] == ["src/calc.py"] and kept["also_kept"] == []
-    assert history(project) == [("req-2", "kept"), ("req-1", "review")]
+    assert kept["applied"] == ["src/calc.py"] and kept["also_kept"] == ["req-1"]
+    assert history(project) == [("req-2", "kept"), ("req-1", "replaced")]
+    older = snapshot("req-1", repo=project)
+    assert older["can_keep"] is False and older["can_discard"] is False and older["blocked_by"] is None
+    assert older["kept_with"] == "req-2" and older["dropped"] == ["src/gen.py"] and older["outcome"] == "replaced"
+    assert older["summary"] == REPLACED_GEN
     folder = tree(project)
-    assert snapshot("req-1", repo=project)["can_keep"] is True
-    assert refusal(lambda: keep_changes("req-1", project)) == (
-        "conflict", conflict("src/calc.py was changed in your project"),
-    )
+    assert refusal(lambda: keep_changes("req-1", project)) == ("kept", REPLACED_GEN)
+    assert refusal(lambda: discard_changes("req-1", repo=project)) == ("kept", REPLACED_GEN)
     assert tree(project) == folder and not (project / "src" / "gen.py").exists()
 
 

@@ -8,7 +8,9 @@ from local_coder.general.request_state import (
     KEPT,
     WAITING,
     built_on,
+    dropped_files,
     is_closed,
+    replaced_sentence,
     request_outcome,
     request_state,
     waiting_on_top,
@@ -61,6 +63,52 @@ def test_a_request_closed_by_a_later_keep_counts_as_kept():
     meta = {"kept": True, "kept_with": "req-2"}
     assert request_state(meta) == KEPT and is_closed(meta) is True
     assert request_outcome(meta) == "kept"
+
+
+def test_a_kept_request_a_later_keep_took_files_back_from_is_replaced():
+    """Net-out: only a kept request with files in its `dropped` list reads `replaced`; the list means nothing else."""
+    assert request_outcome({"kept": True, "kept_with": "req-2", "dropped": ["src/gen.py"]}) == "replaced"
+    assert request_state({"kept": True, "dropped": ["src/gen.py"]}) == KEPT
+    assert is_closed({"kept": True, "dropped": ["src/gen.py"]}) is True
+    assert request_outcome({"kept": True, "kept_with": "req-2", "dropped": []}) == "kept"
+    assert request_outcome({"kept": True, "kept_with": "req-2"}) == "kept"
+    assert request_outcome({"dropped": ["src/gen.py"]}) == "review", "a request that is not kept is not replaced"
+    assert request_outcome({"discarded": True, "dropped": ["src/gen.py"]}) == "discarded"
+    assert request_outcome({"kept": True, "dropped": "src/gen.py"}) == "kept", "a damaged list counts as none"
+
+
+def test_the_dropped_files_are_a_sorted_list_of_names_and_a_damaged_record_has_none():
+    assert dropped_files({"dropped": ["src/b.py", "src/a.py", "src/b.py"]}) == ["src/a.py", "src/b.py"]
+    assert dropped_files({"dropped": ["src/a.py", 7, None]}) == ["src/a.py"]
+    assert dropped_files({}) == [] and dropped_files({"dropped": "src/a.py"}) == []
+    assert dropped_files(None) == [] and dropped_files("not a dict") == []
+
+
+@pytest.mark.parametrize(
+    ("files", "named"),
+    [
+        (["src/gen.py"], "src/gen.py"),
+        (["src/b.py", "src/a.py"], "src/a.py or src/b.py"),
+        (["c.py", "a.py", "b.py"], "a.py, b.py or c.py"),
+        (["d.py", "b.py", "a.py", "c.py"], "a.py, b.py, c.py or 1 more file"),
+        (["e.py", "d.py", "c.py", "b.py", "a.py"], "a.py, b.py, c.py or 2 more files"),
+        (["b.py", "a.py", "b.py", "c.py", "a.py", "c.py"], "a.py, b.py or c.py"),
+        (["z.py", "y.py", "x.py", "w.py", "x.py", "v.py", "w.py"], "v.py, w.py, x.py or 2 more files"),
+    ],
+    ids=["one", "two", "three", "four", "five", "duplicates", "more duplicates"],
+)
+def test_the_replaced_sentence_names_at_most_three_files_sorted_and_counts_the_rest(files, named):
+    """A pure function of the file list: sorted, each file once, whatever order or repeats it is given."""
+    assert replaced_sentence(files) == (
+        f"These changes were replaced by a later request you kept. Nothing from them went into {named}."
+    )
+    assert replaced_sentence(reversed(files)) == replaced_sentence(files)
+    assert replaced_sentence(iter(files)) == replaced_sentence(files), "any iterable"
+
+
+def test_the_replaced_sentence_needs_at_least_one_file():
+    with pytest.raises(ValueError):
+        replaced_sentence([])
 
 
 STACK = {

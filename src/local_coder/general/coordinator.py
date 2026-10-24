@@ -55,10 +55,13 @@ from local_coder.general.repair_context import (
 from local_coder.general.request_state import (
     BUILT_ON,
     DISCARDED,
+    DROPPED,
     KEPT,
     KEPT_WITH,
     WAITING,
     built_on,
+    dropped_files,
+    replaced_sentence,
     request_outcome,
     request_state,
     waiting_on_top,
@@ -586,27 +589,49 @@ def _newer_request_running(project_id: str, metas: dict[str, dict[str, Any]], re
     return _newest(metas, [other for other in waiting_on_top(metas, request_id) if other in running])
 
 
-def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, applied: list[str]) -> list[str]:
-    """Close the older requests that a Keep carried into the project; returns their ids, nearest first.
+def _carried_chain(
+    metas: dict[str, dict[str, Any]], request_id: str,
+) -> Iterator[tuple[str, dict[str, Any], Delta | None]]:
+    """The requests this one was built on, nearest first, each with what it changed (None: that cannot be read).
 
-    A request counts only if this Keep wrote every file it changed, so "went in with" is true. A record
-    that cannot be saved stays as it was: the Keep has happened and must not fail now.
+    The result of each one is the base of the one after it, so a Keep of this request carries them all into the
+    project. The walk stops at the first request that changed nothing: it published its starting copy as its
+    result, so a request that continues it does not carry what lies below it (R1 adds a file, R2 on R1 is idle,
+    R3 continues R2). A record that is gone ends the chain, as in `built_on`.
+    """
+    for older_id in built_on(metas, request_id):
+        older = metas.get(older_id)
+        if older is None:
+            continue
+        delta = request_delta(older)
+        if delta is not None and not delta.touched():
+            return
+        yield older_id, older, delta
+
+
+def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, applied: list[str]) -> list[str]:
+    """Close every waiting request this Keep carried into the project; returns their ids, nearest first.
+
+    A request the kept one was built on is carried by definition: its result is the base of the kept one's. What
+    the Keep did not write of it, the kept request took back, so that is recorded as the closed request's
+    `dropped` list: its files minus `applied`. Per file, never by what the text says (a file the kept request
+    changed again counts as carried). A record that cannot be read is skipped; one that cannot be saved stays as
+    it was: the Keep has happened and must not fail now, and the readers read it as closed all the same.
     """
     written = set(applied)
     closed: list[str] = []
-    for older_id in built_on(metas, request_id):
-        older = metas.get(older_id)
-        if older is None or request_state(older) != WAITING:
+    for older_id, older, delta in _carried_chain(metas, request_id):
+        if request_state(older) != WAITING or delta is None:
             continue
-        delta = request_delta(older)
-        if delta is None or not delta.touched() or not delta.touched() <= written:
-            continue
-        older["kept"] = True
-        older[KEPT_WITH] = request_id
+        record = {**older, "kept": True, KEPT_WITH: request_id}
+        dropped = sorted(delta.touched() - written)
+        if dropped:
+            record[DROPPED] = dropped
         try:
-            _save_meta(older)
+            _save_meta(record)
         except (KeyError, OSError):
             continue
+        older.update(record)
         closed.append(older_id)
     return closed
 
@@ -1501,12 +1526,20 @@ def _has_file_changes(before: Path, after: Path) -> bool:
 DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
 KEPT_SUMMARY = "These changes are in your project."
 KEPT_WITH_SUMMARY = "These changes went in with a later request you kept."
+ALREADY_KEPT = "These changes are already in your project."
+ALREADY_KEPT_DISCARD = "These changes are already in your project, so they cannot be discarded."
 NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 NEWER_RUNNING = (
     "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
 )
 STOPPED_NOTHING = "Stopped. Nothing was changed."
 STOPPED_WITH_FILES = "Stopped. Review what changed so far, or discard it."
+
+
+def _closed_words(meta: dict[str, Any], otherwise: str) -> str:
+    """What the card, Keep and Discard say of a closed request: `otherwise`, or that a later Keep took files back."""
+    dropped = dropped_files(meta)
+    return replaced_sentence(dropped) if dropped else otherwise
 
 
 def stopped_text(has_files: bool) -> str:
@@ -1626,7 +1659,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
     kept_with = meta.get(KEPT_WITH) if state == KEPT else None
     if state == KEPT:
         # What the model said before Keep ("the original project is unchanged...") is no longer true.
-        summary = KEPT_WITH_SUMMARY if kept_with else KEPT_SUMMARY
+        summary = _closed_words(meta, KEPT_WITH_SUMMARY if kept_with else KEPT_SUMMARY)
         commentary = None
     blocked_by, blocked_text = None, ""
     if state == WAITING and files:
@@ -1667,6 +1700,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
         "can_discard": state == WAITING and bool(files) and not blocked_by,
         "outcome": request_outcome(meta),
         "kept_with": kept_with,
+        "dropped": dropped_files(meta) if state == KEPT else [],
         "blocked_by": blocked_by,
         "verification": {
             "build": stored.get("build") or "not_run",
@@ -1692,7 +1726,7 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     if state == DISCARDED:
         raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
     if state == KEPT:
-        raise GeneralError("These changes are already in your project.", code="kept")
+        raise GeneralError(_closed_words(meta, ALREADY_KEPT), code="kept")
     metas = _project_metas(project_id)
     if _newer_request_running(project_id, metas, request_id):
         raise GeneralError(NEWER_RUNNING, code="busy")
@@ -1768,9 +1802,7 @@ def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
     meta = load_meta(project_id, request_id)
     state = request_state(meta)
     if state == KEPT:
-        raise GeneralError(
-            "These changes are already in your project, so they cannot be discarded.", code="kept",
-        )
+        raise GeneralError(_closed_words(meta, ALREADY_KEPT_DISCARD), code="kept")
     if state == DISCARDED:
         return {"ok": True, "discarded": True, "request_id": request_id, "detail": "Already discarded."}
     if _request_in_flight(project_id):
