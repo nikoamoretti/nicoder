@@ -64,6 +64,7 @@ from local_coder.general.request_state import (
     waiting_on_top,
 )
 from local_coder.general.snapshot import (
+    EMPTY_RESULT_SENTENCE,
     Delta,
     TreeIndex,
     apply_delta,
@@ -74,6 +75,7 @@ from local_coder.general.snapshot import (
     read_index,
     sync_source_tree,
     unified_diff,
+    would_empty_project,
     write_index,
 )
 from local_coder.general.source_check import parse_retry_message
@@ -1565,7 +1567,8 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
     candidate = Path(meta["candidate"])
     frozen = baseline.parent / "baseline.json"
     before = read_index(frozen) if frozen.is_file() else index_tree(baseline)
-    delta = compute_delta(before, index_tree(candidate))
+    after = index_tree(candidate)
+    delta = compute_delta(before, after)
     diff = unified_diff(baseline, candidate)
     files = sorted(delta.touched())
     commentary = str(meta.get("model_commentary") or "").strip() or None
@@ -1634,6 +1637,11 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
     if blocked_by:
         # Keep and Discard would both be refused, so the review offers neither and says what to do instead.
         summary, commentary = blocked_text, None
+    # A result with no files left (its folder is gone or empty, or it deleted everything): Keep would be refused, so
+    # the review offers Discard only and says why. The files and the diff stay, else the app says nothing changed.
+    nothing_left = state == WAITING and not blocked_by and would_empty_project(before, after)
+    if nothing_left:
+        summary, commentary = EMPTY_RESULT_SENTENCE, None
     engine = str(meta.get("engine") or "local")
     return {
         "kind": "code",
@@ -1655,7 +1663,7 @@ def review_payload(project_id: str, request_id: str) -> dict[str, Any]:
             "pin": meta.get("pin") or pin_record(),
             "outcome": request_outcome(meta),
         },
-        "can_keep": state == WAITING and bool(files) and not blocked_by,
+        "can_keep": state == WAITING and bool(files) and not blocked_by and not nothing_left,
         "can_discard": state == WAITING and bool(files) and not blocked_by,
         "outcome": request_outcome(meta),
         "kept_with": kept_with,
