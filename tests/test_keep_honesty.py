@@ -36,6 +36,7 @@ HIS = "export const nico = 'MINE'\n"
 HIS_README = "# p\nNico's own paragraph\n"
 RED = "export const a = 'RED'\n"
 BLUE = "export const b = 'BLUE'\n"
+LONG_AGO = 1_000_000_000_000_000_000  # ns: any rewrite of a file moves its mtime off this
 
 darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="the agent's bash runs in sandbox-exec: macOS only")
 
@@ -85,6 +86,13 @@ def write(path: str, body: str):
     def engine(cwd: Path) -> None:
         (cwd / path).parent.mkdir(parents=True, exist_ok=True)
         (cwd / path).write_text(body, encoding="utf-8")
+
+    return engine
+
+
+def remove(path: str):
+    def engine(cwd: Path) -> None:
+        (cwd / path).unlink()
 
     return engine
 
@@ -197,6 +205,18 @@ def test_rn12b_a_link_he_put_where_the_source_was_is_a_conflict_too(project):
     assert os.readlink(project / "src" / "old.ts") == "../README.md" and not (project / "src" / "new.ts").exists()
 
 
+def test_rn14_two_renames_one_clashing_write_nothing_not_even_a_mode(project):
+    """The first rename's source is an executable; the second rename's destination is a file he made. Nothing moves:
+    a refusal found halfway would roll the first back as a new file with mode 0644 and a new mtime."""
+    (project / "src" / "a.ts").chmod(0o755)
+    os.utime(project / "src" / "a.ts", ns=(LONG_AGO, LONG_AGO))
+    local(project, "r1", several(move("src/a.ts", "src/a2.ts"), move("src/util.ts", "src/util2.ts")))
+    (project / "src" / "util2.ts").write_text(HIS, encoding="utf-8")
+    refused_as_a_conflict(project, "r1", "src/util2.ts was added to your project")
+    assert (project / "src" / "a.ts").stat().st_mtime_ns == LONG_AGO and not (project / "src" / "a2.ts").exists()
+    can_still_be_decided(project, "r1")
+
+
 # --- Check 2: Keep never says ok for a destination it did not write ------------------------------------------------
 
 
@@ -299,6 +319,20 @@ def test_rn13_a_folder_at_the_destination_keeps_the_generic_refusal_and_writes_n
     error = refusal(project, "r1")
     assert error.code == "apply_failed" and error.detail == GENERIC
     assert state(project) == before
+
+
+def test_rn12c_a_link_where_the_request_adds_a_file_is_refused_before_a_delete(project):
+    """The request deletes an executable and adds src/new.ts, where he made a link. That refusal is not a clash he can
+    see in a file list (the generic one), but the delete must not happen first."""
+    (project / "run.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    (project / "run.sh").chmod(0o755)
+    os.utime(project / "run.sh", ns=(LONG_AGO, LONG_AGO))
+    local(project, "r1", several(remove("run.sh"), write("src/new.ts", MOVED)))
+    (project / "src" / "new.ts").symlink_to("../README.md")
+    before = state(project)
+    error = refusal(project, "r1")
+    assert error.code == "apply_failed" and error.detail == GENERIC
+    assert state(project) == before and (project / "run.sh").stat().st_mtime_ns == LONG_AGO
 
 
 # --- Check 4: the refusal names the files and is true ------------------------------------------------------------
