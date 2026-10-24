@@ -104,12 +104,16 @@
   wins. The review snapshot, History, Keep, Discard and `general/waiting.py` all
   read it. Keep and Discard are final: a closed request offers neither, `keep`
   refuses a discarded request, `discard` refuses a kept one, and Discard puts the
-  project's sticky working copy (`live/candidate`) back to the request's baseline.
+  project's sticky working copy (`live/candidate`) back to where the request
+  started: the result it was built on while that still waits (copied, never linked),
+  else its own baseline; a request with no files of its own leaves the copy as it is.
   Evidence (`meta.json`, `candidate/`) stays on disk. A cancelled run ends with
   one `stopped` event, never `done`. A request starts the sticky copy from the folder
   as it is now, unless it is built on an older request that still waits (`built_on`
-  in its meta.json, found by comparing the copy with that request's result). Every
-  engine does this, the hosted agent included: its agent starts in the copy as that
+  in its meta.json, found by comparing the copy with that request's result: the
+  newest request that is neither discarded nor without a result of its own decides,
+  and when such requests were passed over the whole copy must equal that result).
+  Every engine does this, the hosted agent included: its agent starts in the copy as that
   result left it (`_run_agent_request` re-syncs the copy from that request's
   candidate, copied and never linked, else from the baseline; the re-sync stays
   because it undoes the preview's SWC rewrite of `package.json` and
@@ -130,7 +134,17 @@
   changes to decide, an older one can be neither kept nor discarded, and its
   snapshot says so (`can_keep` and `can_discard` false, `blocked_by` names the
   newer request, the summary says to let it finish or to Keep or Discard it first;
-  its files and diff still show).
+  its files and diff still show). A request built on an older one that ends with the
+  working copy exactly as that result has no result of its own (decided from the two
+  source trees in `_publish_candidate`, never from the model's words; its baseline is
+  published instead): no files, no Keep or Discard, no Local Coder check or preview, it
+  does not hold the older one back, its check results are dropped, and it keeps its
+  History word (`error`, `stopped`, `review`). The next request passes over such
+  requests and over discarded ones, and a question still finds the waiting result
+  behind them (`waiting.LOOK_AT`, 30). Known limits: a visible junk file (such as
+  `.coverage`), or a local request after a hosted one on a Babel project (the local
+  path's SWC rewrite), makes it a real stack as before; a run that crashes leaves its
+  stray files in the copy, so the next request starts from the folder.
 - `src/local_coder/general/waiting.py` — a question asked while a result waits
   for Keep or Discard gets a note built from the request's own record (title,
   age, files, "not in the folder yet", and for the agent where to read the

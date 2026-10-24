@@ -47,8 +47,8 @@ class WaitingResult:
 def find_waiting_result(user_path: str | Path) -> WaitingResult | None:
     """The project's newest request that is neither kept nor discarded and changed files, or None.
 
-    Open requests that changed nothing (a question, an early Stop) are passed over: there is nothing
-    in them to wait for. Reads only; nothing is created.
+    Open requests that changed nothing (a question, an early Stop, a follow-up that failed or left the older
+    result as it was) are passed over: there is nothing in them to wait for. Reads only; nothing is created.
     """
     project_id = project_id_for(Path(user_path).expanduser())
     if _request_in_flight(project_id):
