@@ -22,8 +22,10 @@ from local_coder.general.coordinator import (
 from local_coder.general.request_state import WAITING, request_state
 from local_coder.general.snapshot import Delta
 
-# Only the newest few open requests are looked at; most have no files (a question, a stop before any write).
-LOOK_AT = 5
+# Only the newest open requests are looked at; most have no files (a question, a stop before any write, a follow-up
+# that failed or changed nothing and so has no result of its own), and a run of those must not hide the result that
+# still waits behind them.
+LOOK_AT = 30
 LISTED_FILES = 8
 
 
@@ -45,8 +47,8 @@ class WaitingResult:
 def find_waiting_result(user_path: str | Path) -> WaitingResult | None:
     """The project's newest request that is neither kept nor discarded and changed files, or None.
 
-    Open requests that changed nothing (a question, an early Stop) are passed over: there is nothing
-    in them to wait for. Reads only; nothing is created.
+    Open requests that changed nothing (a question, an early Stop, a follow-up that failed or left the older
+    result as it was) are passed over: there is nothing in them to wait for. Reads only; nothing is created.
     """
     project_id = project_id_for(Path(user_path).expanduser())
     if _request_in_flight(project_id):

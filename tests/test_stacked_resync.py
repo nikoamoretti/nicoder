@@ -492,13 +492,20 @@ def test_discarding_the_top_of_three_then_keeping_the_middle_one(project):
 
 
 def test_a_request_that_changed_nothing_between_two_others_keeps_his_edits_too(project):
+    """Cut stack-survives: R2 changed nothing, so it has no result of its own. It lists no file and offers no Keep or
+    Discard; R3 is built on R1 and one Keep takes both, so R2 is no part of the stack (it stays `review`)."""
     _fix(project)
     (project / "README.md").write_text(HIS_README, encoding="utf-8")
-    _run(project, "req-2", lambda _cwd, _text, _cancel: None)
-    _third(project)
+    second = _run(project, "req-2", lambda _cwd, _text, _cancel: None)
+    assert second["facts"]["files"] == [] and second["can_keep"] is False and second["can_discard"] is False
+    older = snapshot("req-1", repo=project)
+    assert older["can_keep"] is True and older["blocked_by"] is None, "R2 holds nothing back"
+    third = _third(project)
+    assert load_meta(third["project_id"], "req-3")["built_on"] == "req-1"
     kept = keep_changes("req-3", project)
-    assert kept["applied"] == ["src/calc.py", "src/third.py"] and kept["also_kept"] == ["req-2", "req-1"]
+    assert kept["applied"] == ["src/calc.py", "src/third.py"] and kept["also_kept"] == ["req-1"]
     assert (project / "README.md").read_text(encoding="utf-8") == HIS_README
+    assert _history(project) == [("req-3", "kept"), ("req-2", "review"), ("req-1", "kept")]
 
 
 def test_a_stack_without_hand_edits_behaves_as_it_did(project):

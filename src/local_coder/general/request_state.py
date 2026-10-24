@@ -10,6 +10,12 @@ link is `built_on` in the newer request's meta.json; a continuation carries it t
 continues. Keeping the newer request puts the older result into the project too, so the older request is
 closed by that Keep (`kept` plus `kept_with`); and the older one can not be kept or discarded on its own
 while the newer one still has changes to decide.
+
+A Discard puts the working copy back to where the request started: the result it was built on while that still
+waits, else its own baseline (a request with no files of its own leaves the copy as it is), so the stack
+survives it. A request built on an older one that ends with the copy exactly as that result has no result of its
+own: no files, no Keep or Discard, it does not hold the older one back, and it keeps its History word. The next
+request passes over such requests and discarded ones and is built on the newest one left.
 """
 from __future__ import annotations
 

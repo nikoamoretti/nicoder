@@ -694,9 +694,10 @@ def test_a_follow_up_that_is_still_running_holds_the_older_request_back(project)
 
 
 @pytest.mark.parametrize("how", ["stopped", "failed", "answered"])
-def test_a_stopped_failed_or_idle_follow_up_loses_nothing(project, how):
-    """HF7: R2 is stopped at its first call, its model fails, or it answers without a change. R1 and the folder are
-    untouched, and discarding R2 frees R1."""
+def test_a_stopped_failed_or_idle_follow_up_has_no_result_of_its_own_and_loses_nothing(project, how):
+    """HF7: R2 is stopped at its first call, its model fails, or it answers without a change. It lists no file and
+    offers neither Keep nor Discard, so R1 is free at once, before any Discard. R1, its record and the folder are
+    untouched; a Discard of R2 through the helper still goes through and changes nothing."""
     fix(project)
     pid = project_id_for(project)
     folder, r1_folder = tree(project), tree(request_dir(pid, "req-1"))
@@ -710,27 +711,39 @@ def test_a_stopped_failed_or_idle_follow_up_loses_nothing(project, how):
         script = Script(reply("Nothing needed changing."))
     run(project, "req-2", "Now also add an extra module.", script, cancel_event=cancel)
     review = snapshot("req-2", repo=project)
-    if how != "answered":
-        assert review["outcome"] == ("stopped" if how == "stopped" else "error"), "never a finished attempt"
+    assert review["facts"]["files"] == [] and review["can_keep"] is False and review["can_discard"] is False
+    assert review["blocked_by"] is None
+    if how == "stopped":
+        assert review["outcome"] == "stopped" and review["summary"] == "Stopped. Nothing was changed."
+    elif how == "failed":
+        assert review["outcome"] == "error" and "dropped the stream" in review["summary"]
+    else:
+        assert review["outcome"] == "review" and review["summary"] == "Nothing needed changing."
+    freed = snapshot("req-1", repo=project)
+    assert freed["can_keep"] is True and freed["can_discard"] is True and freed["blocked_by"] is None
+    assert freed["outcome"] == "review"
     assert tree(project) == folder and tree(request_dir(pid, "req-1")) == r1_folder
     assert discard_changes("req-2", repo=project)["discarded"] is True
-    freed = snapshot("req-1", repo=project)
-    assert freed["can_keep"] is True and freed["blocked_by"] is None and freed["outcome"] == "review"
-    assert keep_changes("req-1", project)["applied"] == ["src/calc.py"]
+    assert tree(project) == folder and tree(request_dir(pid, "req-1")) == r1_folder, "it changes nothing"
+    kept = keep_changes("req-1", project)
+    assert kept["applied"] == ["src/calc.py"] and kept["also_kept"] == []
 
 
-def test_a_plain_retry_after_a_failed_follow_up_builds_on_it_and_one_keep_takes_the_stack(project):
-    """The natural next step after an error: send the request again. R3 is built on R2, which holds R1's fix."""
+def test_a_plain_retry_after_a_failed_follow_up_builds_on_the_result_that_waits_and_one_keep_takes_both(project):
+    """The natural next step after an error: send the request again. The failed R2 changed nothing, so R3 is built on
+    R1 (it reads the fix), one Keep takes both, and R2 stays what it was: a request that failed, never `kept`."""
     fix(project)
     run(project, "req-2", "Now also document add().", Script(RuntimeError("the provider dropped the stream")))
     retry = Script(reply(calls=[call("read", {"path": "src/calc.py"}, "a")]), document, reply("Documented."))
     run(project, "req-3", "Now also document add().", retry)
-    assert load_meta(project_id_for(project), "req-3")["built_on"] == "req-2"
+    assert load_meta(project_id_for(project), "req-3")["built_on"] == "req-1"
     assert FIXED in retry.result("a") and "BUG" not in retry.result("a"), "the retry reads the fix"
     kept = keep_changes("req-3", project)
-    assert kept["applied"] == ["src/calc.py"] and kept["also_kept"] == ["req-2", "req-1"]
+    assert kept["applied"] == ["src/calc.py"] and kept["also_kept"] == ["req-1"]
     assert DOCUMENTED in (project / "src" / "calc.py").read_text(encoding="utf-8")
-    assert history(project) == [("req-3", "kept"), ("req-2", "kept"), ("req-1", "kept")]
+    assert history(project) == [("req-3", "kept"), ("req-2", "error"), ("req-1", "kept")]
+    failed = snapshot("req-2", repo=project)
+    assert failed["outcome"] == "error" and failed["summary"] != WENT_IN
 
 
 # --- Check 6: the engine is chosen once and nothing falls back between models ---------------------------------
