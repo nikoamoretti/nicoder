@@ -35,6 +35,9 @@ OLD = "def add(a, b):\n    return a - b\n"
 NEW = "def add(a, b):\n    return a + b\n"
 FURTHER = "def add(a, b):\n    # numbers only\n    return a + b\n"
 WENT_IN = "These changes went in with a later request you kept."
+REPLACED_CALC = (
+    "These changes were replaced by a later request you kept. Nothing from them went into src/calc.py."
+)
 DECIDE_NEWER_FIRST = "A newer request in this project builds on this one, so Keep or Discard the newer one first."
 STILL_RUNNING = (
     "A newer request in this project builds on this one and is still running, so let it finish or stop it first."
@@ -306,8 +309,10 @@ def test_discarding_the_newer_request_leaves_the_older_result_in_the_copy_for_th
     assert (calc / "src" / "calc.py").read_text(encoding="utf-8") == NEW and not (calc / "src" / "extra.py").exists()
 
 
-def test_an_older_request_whose_files_the_keep_did_not_write_stays_open(calc):
-    """Request 2 undid request 1's change and added a file: keeping it does not carry request 1 in."""
+def test_an_older_request_the_later_keep_took_files_back_from_is_closed_and_cannot_be_kept_on_its_own(calc):
+    """Request 2 undid request 1's change and added a file. Net-out: keeping it still closes request 1, because
+    request 1's result is the base of request 2's, and records that none of its files went in (`replaced`). It used to
+    stay keepable, and its Keep undid what he had just kept."""
     first = _fix(calc)
 
     def undo_and_add(cwd: Path, _text: str, _cancel) -> None:
@@ -317,12 +322,19 @@ def test_an_older_request_whose_files_the_keep_did_not_write_stays_open(calc):
     second = _run(calc, "req-2", undo_and_add)
     assert second["facts"]["files"] == ["src/extra.py"], "request 1's change was undone on the way"
     assert load_meta(first["project_id"], "req-2")["built_on"] == "req-1"
-    assert keep_changes("req-2", calc)["also_kept"] == []
+    assert keep_changes("req-2", calc)["also_kept"] == ["req-1"]
     assert (calc / "src" / "calc.py").read_text(encoding="utf-8") == OLD
     older = snapshot("req-1", repo=calc)
-    assert older["can_keep"] is True and older["outcome"] == "review", "its change never went in"
-    assert _history(calc) == [("req-2", "kept"), ("req-1", "review")]
-    assert discard_changes("req-1", repo=calc)["detail"] == "Discarded. The original project was not changed."
+    assert older["can_keep"] is False and older["can_discard"] is False
+    assert older["outcome"] == "replaced" and older["dropped"] == ["src/calc.py"] and older["kept_with"] == "req-2"
+    assert older["summary"] == REPLACED_CALC
+    assert _history(calc) == [("req-2", "kept"), ("req-1", "replaced")]
+    before = _tree(calc)
+    for decide in (lambda: keep_changes("req-1", calc), lambda: discard_changes("req-1", repo=calc)):
+        with pytest.raises(GeneralError) as refused:
+            decide()
+        assert refused.value.code == "kept" and refused.value.detail == REPLACED_CALC
+    assert _tree(calc) == before and (calc / "src" / "calc.py").read_text(encoding="utf-8") == OLD
 
 
 def test_a_keep_that_is_refused_closes_nothing(calc):

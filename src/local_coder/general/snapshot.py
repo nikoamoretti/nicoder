@@ -10,12 +10,13 @@ is a conflict. Unrelated user edits survive. Newly created candidate paths
 that now exist in U are also conflicts, and so is a rename's destination when
 U holds other text there than the request wrote. A rename is checked at both
 ends: its source must still be there unchanged, or the move must already have
-been made by hand. Found before the first write: a clash at either end of a
-rename, a link, a folder at a rename's destination and a path leaving the
-project. Found only while writing (then rolled back, bytes only, so a deleted
-file comes back with mode 0644): a plain file where a folder must be made, a
-folder where an added file goes, a looping link and disk errors. Only a clash
-refusal names the files; the others keep the generic sentence.
+been made by hand. Found before the first write: a result that lists no files
+while its baseline lists some (Keep would empty the project), a clash at either
+end of a rename, a link, a folder at a rename's destination and a path leaving
+the project. Found only while writing (then rolled back, bytes only, so a
+deleted file comes back with mode 0644): a plain file where a folder must be
+made, a folder where an added file goes, a looping link and disk errors. Only a
+clash refusal names the files; the others keep the generic sentence.
 """
 from __future__ import annotations
 
@@ -59,6 +60,11 @@ REASON_ADDED = "a new file now exists in the project"
 NAMES_SHOWN = 3
 SENTENCE_HEAD = "Not kept: since these changes were started, "
 SENTENCE_TAIL = "Your project was not changed."
+# A result that lists no files while its baseline lists some would delete every file of the project.
+EMPTY_RESULT_CODE = "empty_result"
+EMPTY_RESULT_SENTENCE = (
+    "This result has no files left, so Keep would empty your project. Your project was not changed."
+)
 # (reason, how the sentence says it), in the order the clauses are written.
 _CLAUSES = (
     (REASON_CHANGED, "changed in"),
@@ -258,6 +264,18 @@ def compute_delta(before: TreeIndex, after: TreeIndex) -> Delta:
     return Delta(added=added, modified=modified, deleted=deleted, renamed=renamed)
 
 
+def would_empty_project(baseline: TreeIndex, candidate: TreeIndex) -> bool:
+    """True when the baseline lists files and the candidate lists none: applying it would delete every one of them.
+
+    One condition for every way a result can lose all its files: a `candidate/` folder that is gone, emptied or
+    unreadable (`index_tree` never raises, it lists nothing), and a request that deleted every file. `apply_delta`
+    asks it before any write, so Keep and the MCP apply are protected alike. It does not see a candidate that is
+    missing one file or has one unreadable subfolder: the rest is listed, so those files are still deleted under a
+    normal card (a later cut, `frozen-candidate-index`).
+    """
+    return bool(baseline.files) and not candidate.files
+
+
 def find_conflicts(baseline: TreeIndex, candidate: TreeIndex, user: TreeIndex) -> list[Conflict]:
     """Conflicts between B→C and the current user tree U, sorted by path, at most one for each path.
 
@@ -391,18 +409,21 @@ def _read_lines(path: Path) -> list[str]:
 def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object]:
     """Apply B→C onto U transactionally. Refuses on conflict or path escape.
 
-    Found before the first delete or write, in one pass: a clash with what he changed (both ends of every rename
-    included), a link, a folder at a rename's destination and a path leaving the project. Found only while
-    writing: a plain file where a folder must be made, a folder where an added file goes, a looping link and disk
-    errors. Those are rolled back, but `_rollback` restores bytes only: a deleted executable comes back as a new
-    file with mode 0644. The `detail` of a conflict stays as it is for the MCP apply, which prints it with the
-    list; Keep builds Nico's sentence from that list (`conflict_sentence`).
+    Found before the first delete or write, in one pass: a result with no files left while the baseline lists some
+    (`would_empty_project`), a clash with what he changed (both ends of every rename included), a link, a folder at
+    a rename's destination and a path leaving the project. Found only while writing: a plain file where a folder
+    must be made, a folder where an added file goes, a looping link and disk errors. Those are rolled back, but
+    `_rollback` restores bytes only: a deleted executable comes back as a new file with mode 0644. The `detail` of
+    a conflict stays as it is for the MCP apply, which prints it with the list; Keep builds Nico's sentence from
+    that list (`conflict_sentence`).
     """
     user = user.resolve()
     baseline = baseline.resolve()
     candidate = candidate.resolve()
     b_index = index_tree(baseline)
     c_index = index_tree(candidate)
+    if would_empty_project(b_index, c_index):
+        return {"ok": False, "code": EMPTY_RESULT_CODE, "detail": EMPTY_RESULT_SENTENCE, "applied": []}
     u_index = index_tree(user)
     conflicts = find_conflicts(b_index, c_index, u_index)
     if conflicts:
