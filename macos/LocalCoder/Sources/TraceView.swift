@@ -221,12 +221,112 @@ struct LiveTrace: View {
                         .controlSize(.small)
                 }
             }
-            TraceTimeline(steps: model.trace, start: start, live: true, waiting: waiting)
+            StepWheel(steps: model.trace, start: start, waiting: waiting)
         }
         .padding(14)
         .background(.background.secondary, in: .rect(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator.opacity(0.5)))
         .accessibilityIdentifier("livingProgress")
+    }
+}
+
+/// The run in progress, one action at a time: the walker keeps walking, the new action turns in from the right
+/// and the one before turns out to the left, like a wheel (Nico, 2026-10-25). Every step stays in the summary
+/// once the run ends.
+struct StepWheel: View {
+    let steps: [TraceStep]
+    let start: Date
+    /// What the row says while the model works on its first step.
+    var waiting = "Working"
+
+    var body: some View {
+        let current = steps.last
+        HStack(alignment: .center, spacing: 12) {
+            HomininSpinner(size: 40)
+                .frame(width: 30, height: 40)
+            ZStack(alignment: .leading) {
+                if let current {
+                    WheelLabel(step: current)
+                        .id(current.id)
+                        .transition(.wheelTurn)
+                } else {
+                    Text(waiting)
+                        .foregroundStyle(.secondary)
+                        .id("waiting")
+                        .transition(.wheelTurn)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
+            if !steps.isEmpty {
+                Text("\(steps.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .contentTransition(.numericText())
+                    .help("\(steps.count) step\(steps.count == 1 ? "" : "s") so far")
+            }
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(Durations.label(context.date.timeIntervalSince(current?.started ?? start)))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .contentTransition(.numericText())
+            }
+        }
+        .font(.callout)
+        .frame(height: 40)
+        .animation(.snappy(duration: 0.4), value: current?.id)
+    }
+}
+
+/// One action on the wheel: its icon, verb and what it touched, on one line.
+private struct WheelLabel: View {
+    let step: TraceStep
+
+    var body: some View {
+        let style = StepStyle(step)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: step.ok ? style.symbol : "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(step.ok ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+            if style.isNote || style.verb.isEmpty {
+                Text(style.subject)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(style.verb)
+                    .foregroundStyle(.secondary)
+                Text(style.subject)
+                    .font(.system(.callout, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .help(step.detail)
+    }
+}
+
+/// A turn of the wheel: in from the right, out to the left, tipped a little as it goes.
+private struct WheelTurn: ViewModifier {
+    let angle: Double
+    let shift: CGFloat
+    let opacity: Double
+
+    func body(content: Content) -> some View {
+        content
+            .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
+            .offset(x: shift)
+            .opacity(opacity)
+    }
+}
+
+private extension AnyTransition {
+    static var wheelTurn: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: WheelTurn(angle: -35, shift: 90, opacity: 0),
+                                 identity: WheelTurn(angle: 0, shift: 0, opacity: 1)),
+            removal: .modifier(active: WheelTurn(angle: 35, shift: -90, opacity: 0),
+                               identity: WheelTurn(angle: 0, shift: 0, opacity: 1))
+        )
     }
 }
 

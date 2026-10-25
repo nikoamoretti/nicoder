@@ -1,18 +1,15 @@
+import AppKit
 import SwiftUI
 
 /// A model's answer as readable text: paragraphs, lists, quotes and code blocks, with inline
-/// bold, italics, `code` and links.
+/// bold, italics, `code` and links. One macOS text view holds the whole answer, so a selection runs across
+/// paragraphs and ⌘C or the context menu copies it (Nico, 2026-10-25: "I cant copy anything from the app").
 struct ProseView: View {
     let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
-                view(for: block)
-            }
-        }
-        .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        ProseText(attributed: Self.attributed(text), whole: text)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     enum Block: Hashable {
@@ -24,68 +21,104 @@ struct ProseView: View {
         case code(String)
     }
 
-    @ViewBuilder
-    private func view(for block: Block) -> some View {
-        switch block {
-        case .paragraph(let body):
-            Text(Self.inline(body))
-                .font(.system(size: 14))
-                .lineSpacing(3.5)
-                .fixedSize(horizontal: false, vertical: true)
-        case .heading(let body):
-            Text(Self.inline(body))
-                .font(.system(size: 15, weight: .semibold))
-                .padding(.top, 4)
-        case .bullet(let body, let level):
-            ListLine(marker: "•", content: Self.inline(body), level: level)
-        case .numbered(let number, let body, let level):
-            ListLine(marker: number, content: Self.inline(body), level: level)
-        case .quote(let body):
-            HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(.quaternary)
-                    .frame(width: 3)
-                Text(Self.inline(body))
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-        case .code(let body):
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(body)
-                    .font(.system(size: 12, design: .monospaced))
-                    .lineSpacing(2)
-                    .padding(12)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 10))
-        }
-    }
-
-    private struct ListLine: View {
-        let marker: String
-        let content: AttributedString
-        let level: Int
-
-        var body: some View {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(marker)
-                    .font(.system(size: 14).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 14, alignment: .trailing)
-                Text(content)
-                    .font(.system(size: 14))
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.leading, CGFloat(level) * 18)
-        }
-    }
-
     static func inline(_ text: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+    }
+
+    /// The whole answer as one attributed string, in the sizes the answer always had.
+    static func attributed(_ text: String) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let parts = blocks(text)
+        for (index, block) in parts.enumerated() {
+            out.append(rendered(block))
+            if index < parts.count - 1 {
+                out.append(NSAttributedString(string: "\n"))
+            }
+        }
+        return out
+    }
+
+    private static func rendered(_ block: Block) -> NSAttributedString {
+        switch block {
+        case .paragraph(let body):
+            return inlineText(lineBreaks(body), size: 14, style: paragraph(after: 10, lines: 3.5))
+        case .heading(let body):
+            return inlineText(body, size: 15, weight: .semibold, style: paragraph(before: 4, after: 8))
+        case .bullet(let body, let level):
+            return listLine(marker: "•", body: body, level: level)
+        case .numbered(let number, let body, let level):
+            return listLine(marker: number, body: body, level: level)
+        case .quote(let body):
+            return inlineText(lineBreaks(body), size: 14, color: .secondaryLabelColor,
+                              style: paragraph(after: 10, lines: 3, indent: 14))
+        case .code(let body):
+            return NSAttributedString(string: lineBreaks(body), attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: NSColor.labelColor,
+                .backgroundColor: NSColor.textColor.withAlphaComponent(0.07),
+                .paragraphStyle: paragraph(after: 10, lines: 2, indent: 10),
+            ])
+        }
+    }
+
+    /// Breaks inside one block stay inside its paragraph, so spacing falls only between blocks.
+    private static func lineBreaks(_ text: String) -> String {
+        text.replacingOccurrences(of: "\n", with: "\u{2028}")
+    }
+
+    private static func paragraph(before: CGFloat = 0, after: CGFloat, lines: CGFloat = 3,
+                                  indent: CGFloat = 0) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.paragraphSpacingBefore = before
+        style.paragraphSpacing = after
+        style.lineSpacing = lines
+        style.firstLineHeadIndent = indent
+        style.headIndent = indent
+        return style
+    }
+
+    private static func listLine(marker: String, body: String, level: Int) -> NSAttributedString {
+        let indent = CGFloat(level) * 18
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .left, location: indent + 22)]
+        style.firstLineHeadIndent = indent
+        style.headIndent = indent + 22
+        style.lineSpacing = 3
+        style.paragraphSpacing = 6
+        let line = NSMutableAttributedString(string: "\(marker)\t", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        line.append(inlineText(lineBreaks(body), size: 14, style: style))
+        line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
+        return line
+    }
+
+    /// Inline markdown (bold, italics, `code`, links) in AppKit fonts.
+    private static func inlineText(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
+                                   color: NSColor = .labelColor, style: NSParagraphStyle) -> NSAttributedString {
+        let parsed = inline(text)
+        let out = NSMutableAttributedString()
+        for run in parsed.runs {
+            let intent = run.inlinePresentationIntent ?? []
+            var font = NSFont.systemFont(ofSize: size, weight: intent.contains(.stronglyEmphasized) ? .semibold : weight)
+            if intent.contains(.code) {
+                font = .monospacedSystemFont(ofSize: size - 1.5, weight: .regular)
+            }
+            if intent.contains(.emphasized) {
+                font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+            }
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: style]
+            if intent.contains(.code) {
+                attributes[.backgroundColor] = NSColor.textColor.withAlphaComponent(0.07)
+            }
+            if let link = run.link {
+                attributes[.link] = link
+            }
+            out.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
+        }
+        return out
     }
 
     /// Split plain model text into blocks. Lines inside a paragraph keep their breaks.
@@ -144,5 +177,61 @@ struct ProseView: View {
         }
         flush()
         return blocks
+    }
+}
+
+/// A read-only macOS text view sized to its text: select any part of an answer, copy it, or copy it all.
+struct ProseText: NSViewRepresentable {
+    let attributed: NSAttributedString
+    let whole: String
+
+    func makeNSView(context: Context) -> AnswerTextView {
+        let view = AnswerTextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.isRichText = true
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
+        view.textStorage?.setAttributedString(attributed)
+        view.whole = whole
+        return view
+    }
+
+    func updateNSView(_ view: AnswerTextView, context: Context) {
+        view.whole = whole
+        // Only a new answer replaces the text, so a selection survives the window's other updates.
+        if view.textStorage?.isEqual(to: attributed) == false {
+            view.textStorage?.setAttributedString(attributed)
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: AnswerTextView, context: Context) -> CGSize? {
+        let width = max(1, proposal.width ?? 640)
+        guard let container = view.textContainer, let layout = view.layoutManager else { return nil }
+        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        return CGSize(width: width, height: ceil(layout.usedRect(for: container).height))
+    }
+}
+
+/// The answer's text view, with "Copy Answer" above the usual Copy in its context menu.
+final class AnswerTextView: NSTextView {
+    var whole = ""
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        let item = NSMenuItem(title: "Copy Answer", action: #selector(copyAnswer), keyEquivalent: "")
+        item.target = self
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+        return menu
+    }
+
+    @objc private func copyAnswer() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(whole, forType: .string)
     }
 }

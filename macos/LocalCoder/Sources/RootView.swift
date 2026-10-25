@@ -299,13 +299,7 @@ struct EntryView: View {
                 TraceSummary(record: record)
             }
             ForEach(entry.answers) { answer in
-                ProseView(text: answer.text)
-                    .contextMenu {
-                        Button("Copy Answer") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(answer.text, forType: .string)
-                        }
-                    }
+                ProseView(text: answer.text)  // its own menu has Copy and Copy Answer
             }
             if isLast && !model.running && model.hasChanges && model.snapshot?["can_keep"] as? Bool == true {
                 ChangesPill()
