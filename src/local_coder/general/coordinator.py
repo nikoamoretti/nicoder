@@ -85,7 +85,7 @@ from local_coder.general.snapshot import (
     write_index,
 )
 from local_coder.general.source_check import parse_retry_message
-from local_coder.general.starter import copy_starter
+from local_coder.general.starter import lay_starter, starter_root
 from local_coder.general.toolchain import ensure_ts_preview
 from local_coder.hosted import provider_place
 from local_coder.machine import is_hosted, load_machine_config
@@ -290,12 +290,16 @@ def prepare_workspace(
     """Snapshot the current user tree, including uncommitted work.
 
     The folder must already exist: a request never creates it. Only New Project and the welcome
-    chat make folders. A request built on a result that still waits (`_open_request_in`, which passes over
+    chat make folders. A request never writes into it either: its baseline is the folder as it is, and on an
+    empty folder (when `allow_starter`) the blank starter is laid into the sticky working copy (`live/candidate`)
+    and nowhere else, so the review lists the starter's files as the request's own new files and only a Keep
+    writes them. A request built on a result that still waits (`_open_request_in`, which passes over
     discarded requests and requests that ended with no files of their own) takes that
     result's baseline as its own instead: its diff and its Keep are then measured from one starting
     point, so what was changed in the folder meanwhile is neither shown as the model's work nor
-    reverted by Keep. `carry=False` starts from the folder as it is now, whatever result still waits: a
-    continuation does, which brings its own copy and inherits no baseline.
+    reverted by Keep; it also takes that result's working copy as it is and never lays the starter again, which
+    would overwrite the earlier request's edits. `carry=False` starts from the folder as it is now, whatever
+    result still waits: a continuation does, which brings its own copy and inherits no baseline.
     """
     user_path = user_path.expanduser().resolve()
     problem = folder_problem(user_path)
@@ -308,10 +312,6 @@ def prepare_workspace(
     live_candidate = live_dir(pid) / "candidate"
     carried = _open_request_in(pid, request_id, live_candidate) if carry else None
     empty = not any(user_path.iterdir())
-    starter_used = False
-    if empty and allow_starter:
-        copy_starter(user_path)
-        starter_used = True
     inherited = carried is not None and _inherit_baseline(pid, carried, baseline, root / "baseline.json")
     if not inherited:
         # Nothing waits, or not all of its baseline is there: start from the folder as it is now.
@@ -326,6 +326,12 @@ def prepare_workspace(
         # Not built on a waiting result: start from the folder as it is now, whatever Keep, Discard or a
         # run that never finished left in the sticky copy (else the diff would undo what was kept).
         sync_source_tree(baseline, live_candidate)
+    # The starter is part of this request's working copy, not of its baseline: Keep writes what the copy has beyond the
+    # baseline, so a starter in the baseline would be one Keep never wrote. A request built on a waiting result has
+    # its starter already; one whose inherited baseline could not be used starts from the folder, so it lays it.
+    starter_used = bool(empty and allow_starter and carried is None)
+    if starter_used:
+        lay_starter(live_candidate)
     # Candidate-only: Keep can persist SWC so Bonsai TypeScript compiles next time.
     ensure_ts_preview(candidate)
     ensure_ts_preview(live_candidate)
@@ -1056,10 +1062,13 @@ def _run_agent_request(
     if fresh:
         # Start in the project as this request is measured from it, whatever the workspace left in the copy: the
         # result this request is built on (copied, never linked: the agent writes into this copy and that
-        # result's candidate is evidence), else the folder as it is now. Never skipped: the workspace has just
-        # rewritten the copy for Local Coder's preview (SWC), and that must not reach the review or Keep.
-        # node_modules in the live copy stay.
+        # result's candidate is evidence), else the folder as it is now, with the blank starter laid over it when
+        # the folder was empty (the baseline is empty then, and syncing from it alone would delete the starter the
+        # agent is meant to edit). Never skipped: the workspace has just rewritten the copy for Local Coder's
+        # preview (SWC), and that must not reach the review or Keep. node_modules in the live copy stay.
         sync_source_tree(_agent_start_tree(meta, baseline), engine_cwd)
+        if _lays_starter(meta):
+            lay_starter(engine_cwd)
     session = build_session(
         project=folder,
         workdir=engine_cwd,
@@ -1122,9 +1131,19 @@ def _run_agent_request(
         _save_meta(meta)
 
 
+def _lays_starter(meta: dict[str, Any]) -> bool:
+    """True for a request that started from an empty folder: its working copy began as the blank starter.
+
+    Not for one built on a waiting result (its copy already is that result, starter included) and not for a
+    continuation, which brings its own copy.
+    """
+    return bool(meta.get("starter_used")) and not meta.get(BUILT_ON)
+
+
 def _agent_start_tree(meta: dict[str, Any], baseline: Path) -> Path:
-    """The tree the agent's working copy starts as: the candidate of the waiting result this request is built on,
-    else the baseline. A missing candidate stops the run: syncing from nothing would empty the working copy."""
+    """The tree the agent's working copy starts from: the candidate of the waiting result this request is built on,
+    else the baseline (a request on an empty folder then gets the starter laid over it, `_lays_starter`). A missing
+    candidate stops the run: syncing from nothing would empty the working copy."""
     older = meta.get(BUILT_ON)
     if not older:
         return baseline
@@ -1406,15 +1425,16 @@ def _result_it_was_built_on(meta: dict[str, Any]) -> Path | None:
 
 
 def _idle_baseline(engine_cwd: Path, meta: dict[str, Any]) -> Path | None:
-    """The request's baseline when its working copy is exactly the result it was built on, else None.
+    """The request's baseline when its working copy is exactly where the request started, else None.
 
-    Decided from the two trees, never from the model's words or `meta["agent"]["status"]`. None too when the
-    baseline is not all there: `baseline/` must hold exactly the files its `baseline.json` lists, or an
-    empty copy of it would list every file as deleted.
+    Where it started is the result it was built on, or, for a request on an empty folder, the blank starter. A copy
+    that is still exactly that is no result of its own. Decided from the two trees, never from the model's words or
+    `meta["agent"]["status"]`. None too when the baseline is not all there: `baseline/` must hold exactly the files its
+    `baseline.json` lists, or an empty copy of it would list every file as deleted.
     """
     result = _result_it_was_built_on(meta)
     if result is None:
-        return None
+        return _baseline_at_the_starter(engine_cwd, meta)
     try:
         baseline = Path(str(meta["baseline"]))
         if _tree_hashes(engine_cwd) != _tree_hashes(result):
@@ -1423,6 +1443,24 @@ def _idle_baseline(engine_cwd: Path, meta: dict[str, Any]) -> Path | None:
     except (KeyError, OSError, ValueError):
         return None
     return baseline if whole else None
+
+
+def _baseline_at_the_starter(engine_cwd: Path, meta: dict[str, Any]) -> Path | None:
+    """The baseline of a request on an empty folder whose working copy is still exactly the blank starter, else None.
+
+    Offering Keep for a page that says "New app" would be a fake result, and the hosted agent would be sent back to
+    repair it with a second paid model call. Same rule as `_idle_baseline`: the two trees are read, never the model's
+    words.
+    """
+    if not _lays_starter(meta):
+        return None
+    try:
+        baseline = Path(str(meta["baseline"]))
+        whole = _identity(index_tree(baseline)) == _identity(read_index(baseline.parent / "baseline.json"))
+        at_the_starter = _tree_hashes(engine_cwd) == _tree_hashes(starter_root())
+    except (KeyError, OSError, ValueError):
+        return None
+    return baseline if whole and at_the_starter else None
 
 
 def _forget_checks(meta: dict[str, Any]) -> None:
@@ -1440,8 +1478,9 @@ def _publish_candidate(engine_cwd: Path, candidate: Path, meta: dict[str, Any] |
     A request built on a result that still waits (`meta` given, not a continuation) whose working copy is exactly
     that result has no result of its own: it publishes its baseline instead, so its review lists no files, offers
     neither Keep nor Discard, holds the older request back no longer and runs no check (the callers skip them).
-    Its record loses the check results of earlier states of the copy. The History word stays: `error`,
-    `stopped` or `review` are what happened, not what was changed.
+    So has a request on an empty folder whose working copy is still exactly the blank starter. Its record loses the
+    check results of earlier states of the copy. The History word stays: `error`, `stopped` or `review` are what
+    happened, not what was changed.
     """
     if engine_cwd.resolve() == candidate.resolve():
         return False

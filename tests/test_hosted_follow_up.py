@@ -34,6 +34,7 @@ from local_coder.general.coordinator import (
     run_general_request,
 )
 from local_coder.general.snapshot import index_tree
+from local_coder.general.starter import starter_root
 from local_coder.general.waiting import waiting_note
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "demo_calc" / "repo"
@@ -50,6 +51,7 @@ NEWER_RUNNING = (
 STILL_RUNNING = "A request is still running in this project. Wait for it to finish, or stop it, then discard."
 OUTSIDE = "outside the project's working copy"
 STARTER_TEXT = "<h1>New app</h1>\n      <p>This starter is empty on purpose. Describe what you want to build.</p>"
+STARTER_FILES = sorted(index_tree(starter_root()).files)
 
 
 def conflict(what: str) -> str:
@@ -367,9 +369,13 @@ def test_keeping_a_follow_up_on_another_file_takes_both_files_and_keeps_his_edit
 
 
 def test_a_follow_up_on_a_vite_web_app_is_checked_as_a_whole_with_the_waiting_result(home):
-    """HF9: the daily-driver shape. Local Coder's own checks run on the stack and the follow-up reads the heading."""
+    """HF9: the daily-driver shape. Local Coder's own checks run on the stack and the follow-up reads the heading.
+
+    A web app that already holds the starter's files, as an older build's New Project left it: an empty folder gets
+    the starter in the request's working copy instead (the next test), and this one is about the checks and the stack.
+    """
     folder = home / "Local Coder Projects" / "board"
-    folder.mkdir(parents=True)
+    shutil.copytree(starter_root(), folder)
     first = Script(
         reply(calls=[call("edit", {"path": "src/App.tsx", "old_string": STARTER_TEXT,
                                    "new_string": "<h1>Tasks</h1>"}, "1")]),
@@ -397,6 +403,43 @@ def test_a_follow_up_on_a_vite_web_app_is_checked_as_a_whole_with_the_waiting_re
     assert tree(folder) == before and tree(request_dir(pid, "req-1")) == r1_before
     kept = keep_changes("req-2", folder)
     assert kept["applied"] == ["src/App.tsx"] and kept["also_kept"] == ["req-1"]
+    app = (folder / "src" / "App.tsx").read_text(encoding="utf-8")
+    assert "Tasks" in app and "blue" in app
+    assert history(folder) == [("req-2", "kept"), ("req-1", "kept")]
+
+
+def test_a_follow_up_on_a_first_request_in_an_empty_folder_is_checked_as_a_whole_with_the_waiting_result(home):
+    """HF9 on an empty folder: the starter is in the first request's working copy, so the follow-up's review lists its
+    files with the edits, the folder stays empty until Keep, and one Keep takes both requests."""
+    folder = home / "Local Coder Projects" / "board"
+    folder.mkdir(parents=True)
+    first = Script(
+        reply(calls=[call("edit", {"path": "src/App.tsx", "old_string": STARTER_TEXT,
+                                   "new_string": "<h1>Tasks</h1>"}, "1")]),
+        reply("The page now says Tasks."),
+    )
+    run(folder, "req-1", "Make the page show Tasks", first)
+    pid = project_id_for(folder)
+    r1_before = tree(request_dir(pid, "req-1"))
+
+    def make_it_blue(seen: str) -> dict:
+        old = "<h1>Tasks</h1>" if "<h1>Tasks</h1>" in seen else STARTER_TEXT
+        return reply(calls=[call("edit", {"path": "src/App.tsx", "old_string": old,
+                                          "new_string": "<h1 style={{ color: 'blue' }}>Tasks</h1>"}, "e")])
+
+    second = Script(reply(calls=[call("read", {"path": "src/App.tsx"}, "a")]), make_it_blue, reply("It is blue now."))
+    at_first_call: dict = {}
+    second.hook = lambda: at_first_call.update(record(folder, "req-2"))
+    review = run(folder, "req-2", "Now also make it blue", second)
+    assert "<h1>Tasks</h1>" in second.result("a"), "the agent read the waiting change, not the starter text"
+    assert at_first_call["built_on"] == "req-1" and at_first_call["baseline_files"] == []
+    assert load_meta(pid, "req-2")["stop_reason"] == "checks_passed", "the checks ran on the whole stack"
+    assert review["facts"]["files"] == STARTER_FILES, "the starter's files, with both requests' edits in App.tsx"
+    older = snapshot("req-1", repo=folder)
+    assert older["can_keep"] is False and older["blocked_by"] == "req-2"
+    assert tree(folder) == {} and tree(request_dir(pid, "req-1")) == r1_before
+    kept = keep_changes("req-2", folder)
+    assert kept["applied"] == STARTER_FILES and kept["also_kept"] == ["req-1"]
     app = (folder / "src" / "App.tsx").read_text(encoding="utf-8")
     assert "Tasks" in app and "blue" in app
     assert history(folder) == [("req-2", "kept"), ("req-1", "kept")]

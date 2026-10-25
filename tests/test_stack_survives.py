@@ -40,6 +40,7 @@ from local_coder.general.coordinator import (
     run_general_request,
 )
 from local_coder.general.snapshot import index_tree
+from local_coder.general.starter import starter_root
 from local_coder.general.waiting import find_waiting_result, waiting_note
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "demo_calc" / "repo"
@@ -889,6 +890,7 @@ def test_a_question_still_finds_the_waiting_result_after_many_failed_follow_ups(
 # --- Check 7: the daily-driver shapes: a Vite app and a Babel project ---------------------------------------------
 
 STARTER_TEXT = "<h1>New app</h1>\n      <p>This starter is empty on purpose. Describe what you want to build.</p>"
+STARTER_FILES = sorted(index_tree(starter_root()).files)
 BABEL_PACKAGE = {
     "name": "babel-app", "private": True, "version": "0.0.0", "type": "module",
     "scripts": {"dev": "vite", "build": "tsc -b && vite build"},
@@ -917,9 +919,13 @@ def edit_app(old: str, new: str, call_id: str = "e") -> dict:
 
 
 def test_a_failed_follow_up_on_a_vite_app_runs_no_check_and_the_retry_is_checked_as_a_whole(home):
-    """ID9: it used to list src/App.tsx, run Local Coder's checks and record `checks_passed` for a failed model."""
+    """ID9: it used to list src/App.tsx, run Local Coder's checks and record `checks_passed` for a failed model.
+
+    A web app that already holds the starter's files, as an older build's New Project left it (an empty folder gets
+    the starter in the request's working copy instead: the next test).
+    """
     folder = home / "Local Coder Projects" / "board"
-    folder.mkdir(parents=True)
+    shutil.copytree(starter_root(), folder)
     pid = project_id_for(folder)
     run(folder, "req-1", "Make the page show Tasks",
         Script(edit_app(STARTER_TEXT, "<h1>Tasks</h1>", "1"), reply("The page now says Tasks.")))
@@ -945,6 +951,41 @@ def test_a_failed_follow_up_on_a_vite_app_runs_no_check_and_the_retry_is_checked
     assert review["facts"]["files"] == ["src/App.tsx"]
     kept = keep_changes("req-3", folder)
     assert kept["applied"] == ["src/App.tsx"] and kept["also_kept"] == ["req-1"]
+    assert "blue" in (folder / "src" / "App.tsx").read_text(encoding="utf-8")
+
+
+def test_a_failed_follow_up_in_an_empty_folder_runs_no_check_and_the_retry_is_checked_as_a_whole(home):
+    """ID9 on an empty folder: the starter is in the first request's working copy, so the retry's review lists the
+    starter's files and one Keep writes them all; the folder is empty until then."""
+    folder = home / "Local Coder Projects" / "board"
+    folder.mkdir(parents=True)
+    pid = project_id_for(folder)
+    run(folder, "req-1", "Make the page show Tasks",
+        Script(edit_app(STARTER_TEXT, "<h1>Tasks</h1>", "1"), reply("The page now says Tasks.")))
+    assert load_meta(pid, "req-1")["stop_reason"] == "checks_passed"
+    run(folder, "req-2", "Now also make it blue", fails())
+    second = load_meta(pid, "req-2")
+    assert snapshot("req-2", repo=folder)["facts"]["files"] == []
+    assert not second.get("checks") and second.get("stop_reason") != "checks_passed", "no check ran for it"
+    older = snapshot("req-1", repo=folder)
+    assert older["can_keep"] is True and older["blocked_by"] is None
+    assert older["facts"]["files"] == STARTER_FILES
+
+    def make_it_blue(seen: str) -> dict:
+        old = "<h1>Tasks</h1>" if "<h1>Tasks</h1>" in seen else STARTER_TEXT
+        return edit_app(old, "<h1 style={{ color: 'blue' }}>Tasks</h1>")
+
+    retry = Script(reply(calls=[call("read", {"path": "src/App.tsx"}, "a")]), make_it_blue,
+                   reply("The heading is blue."))
+    at_first_call: dict = {}
+    retry.hook = lambda: at_first_call.update(record(folder, "req-3"))
+    review = run(folder, "req-3", "Now also make it blue", retry)
+    assert at_first_call["built_on"] == "req-1" and "<h1>Tasks</h1>" in retry.result("a")
+    assert load_meta(pid, "req-3")["stop_reason"] == "checks_passed", "the retry is checked as a whole"
+    assert review["facts"]["files"] == STARTER_FILES
+    assert tree(folder) == {}, "nothing is in his folder until Keep"
+    kept = keep_changes("req-3", folder)
+    assert kept["applied"] == STARTER_FILES and kept["also_kept"] == ["req-1"]
     assert "blue" in (folder / "src" / "App.tsx").read_text(encoding="utf-8")
 
 
@@ -989,7 +1030,36 @@ def test_a_babel_vite_project_keeps_package_json_and_vite_config_out_of_every_re
 
 def test_a_local_model_that_re_emits_a_file_unchanged_is_idle_costs_one_model_call_and_runs_no_check(home):
     """x1b: `apply_files` counts an identical rewrite as written. The follow-up used to run Local Coder's checks on
-    the baseline copy, fail 'the preview is still the empty starter page' and spend three model calls on it."""
+    the baseline copy, fail 'the preview is still the empty starter page' and spend three model calls on it.
+
+    A web app that already holds the starter's files, as an older build's New Project left it (an empty folder gets
+    the starter in the request's working copy instead: the next test).
+    """
+    folder = home / "Local Coder Projects" / "board"
+    shutil.copytree(starter_root(), folder)
+    pid = project_id_for(folder)
+    app = "export default function App(){return <main><h1>Tasks</h1></main>}\n"
+    prompts: list[str] = []
+
+    def model(prompt: str) -> str:
+        prompts.append(prompt)
+        return f"Done.\n\n```src/App.tsx\n{app}```\n"
+
+    kwargs = {"model_id": "Qwen3.5-4B-Q4_K_M", "fake_complete": model, "start_preview_after": False}
+    first = run_general_request(folder, "Make the page show Tasks", request_id="req-1", **kwargs)
+    asked_for_the_first = len(prompts)
+    run_general_request(folder, "Make the page show Tasks", request_id="req-2", **kwargs)
+    second = load_meta(pid, "req-2")
+    assert first["facts"]["files"] == ["src/App.tsx"] and load_meta(pid, "req-1")["stop_reason"] == "checks_passed"
+    assert second["built_on"] == "req-1"
+    assert len(prompts) - asked_for_the_first == 1, "one model call, no repair rounds"
+    assert not second.get("checks") and second.get("stop_reason") not in {"no_progress", "checks_passed"}
+    assert_no_result_of_its_own(folder)
+
+
+def test_a_local_model_that_re_emits_a_file_unchanged_on_a_first_request_in_an_empty_folder_is_idle_too(home):
+    """x1b on an empty folder: the first request lists the starter's files with the model's App.tsx; the follow-up
+    that writes the same text again is idle: one model call, no check, no result of its own."""
     folder = home / "Local Coder Projects" / "board"
     folder.mkdir(parents=True)
     pid = project_id_for(folder)
@@ -1005,7 +1075,8 @@ def test_a_local_model_that_re_emits_a_file_unchanged_is_idle_costs_one_model_ca
     asked_for_the_first = len(prompts)
     run_general_request(folder, "Make the page show Tasks", request_id="req-2", **kwargs)
     second = load_meta(pid, "req-2")
-    assert first["facts"]["files"] == ["src/App.tsx"] and load_meta(pid, "req-1")["stop_reason"] == "checks_passed"
+    assert first["facts"]["files"] == STARTER_FILES and load_meta(pid, "req-1")["stop_reason"] == "checks_passed"
+    assert tree(folder) == {}, "nothing is in his folder until Keep"
     assert second["built_on"] == "req-1"
     assert len(prompts) - asked_for_the_first == 1, "one model call, no repair rounds"
     assert not second.get("checks") and second.get("stop_reason") not in {"no_progress", "checks_passed"}

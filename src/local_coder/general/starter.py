@@ -1,10 +1,16 @@
-"""Blank Vite + React + TypeScript starter. No task-board implementation."""
+"""Blank Vite + React + TypeScript starter. No task-board implementation.
+
+A request never writes it into a project folder: on an empty folder `lay_starter` puts it into the request's working
+copy, so the review lists its files as the request's own new files and only Keep writes them.
+"""
 from __future__ import annotations
 
 import os
 import re
 import shutil
 from pathlib import Path
+
+from local_coder.general.snapshot import iter_source_files
 
 STARTER_NAME = "vite-react-ts"
 _SKIP_WORDS = {"a", "an", "the", "please", "can", "you", "i", "want", "to", "me"}
@@ -19,6 +25,21 @@ def starter_root() -> Path:
         return bundled
     repo = here.parents[3] / "starters" / STARTER_NAME
     return repo
+
+
+def lay_starter(working_copy: Path) -> None:
+    """Lay the blank starter's files into a request's working copy: the sticky `live/candidate`, never a project folder.
+
+    Raises before any model call when the starter is missing from the install, so the model is never handed an empty
+    working copy to fill from nothing. Only the files a snapshot sees are laid (no `node_modules`, no lock files).
+    """
+    source = starter_root()
+    if not source.is_dir():
+        raise FileNotFoundError(f"blank starter missing: {source}")
+    for full in iter_source_files(source):
+        target = working_copy / full.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(full, target)
 
 
 def copy_starter(dest: Path) -> Path:

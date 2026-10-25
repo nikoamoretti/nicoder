@@ -34,7 +34,8 @@ from local_coder.general.coordinator import (
     request_dir,
     run_general_request,
 )
-from local_coder.general.snapshot import apply_delta
+from local_coder.general.snapshot import apply_delta, index_tree
+from local_coder.general.starter import starter_root
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "demo_calc" / "repo"
 NOTHING_LEFT = "This result has no files left, so Keep would empty your project. Your project was not changed."
@@ -247,7 +248,10 @@ def test_a_new_project_with_nothing_in_it_is_kept_as_before(home):
     empty.mkdir(parents=True)
     review = local(empty, "r1", writes("main.py", "print('hi')\n"))
     assert review["can_keep"] is True
-    assert keep_changes("r1", empty)["applied"] == ["main.py"]
+    # The blank starter is laid in the request's working copy (an empty folder gets it), so Keep writes it too.
+    want = sorted([*index_tree(starter_root()).files, "main.py"])
+    assert keep_changes("r1", empty)["applied"] == want
+    assert sorted(p.relative_to(empty).as_posix() for p in empty.rglob("*") if p.is_file()) == want
     assert (empty / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
 
 
