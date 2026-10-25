@@ -1,7 +1,9 @@
 """Blank Vite + React + TypeScript starter. No task-board implementation.
 
 A request never writes it into a project folder: on an empty folder `lay_starter` puts it into the request's working
-copy, so the review lists its files as the request's own new files and only Keep writes them.
+copy, so the review lists its files as the request's own new files and only Keep writes them. New Project and the
+welcome chat make the folder and nothing in it: the folder has to exist (Keep never makes folders), and everything
+that goes inside waits for Keep.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from pathlib import Path
 from local_coder.general.snapshot import iter_source_files
 
 STARTER_NAME = "vite-react-ts"
+FINDER_NOISE = ".DS_Store"
 _SKIP_WORDS = {"a", "an", "the", "please", "can", "you", "i", "want", "to", "me"}
 _SKIP_VERBS = {"build", "make", "create", "write", "implement", "add"}
 
@@ -42,29 +45,29 @@ def lay_starter(working_copy: Path) -> None:
         shutil.copy2(full, target)
 
 
-def copy_starter(dest: Path) -> Path:
-    """Copy the blank starter into an empty or new folder."""
-    dest = dest.expanduser()
-    dest.mkdir(parents=True, exist_ok=True)
-    if any(dest.iterdir()):
-        raise ValueError(f"refusing to copy a starter into a non-empty folder: {dest}")
-    source = starter_root()
-    if not source.is_dir():
-        raise FileNotFoundError(f"blank starter missing: {source}")
-    shutil.copytree(source, dest, dirs_exist_ok=True)
-    return dest
+def is_blank_folder(folder: Path) -> bool:
+    """True when a folder holds nothing of his: it is empty, or holds only the `.DS_Store` Finder leaves in a folder.
+
+    The one definition of "an empty folder" for the starter, the inspection and the project names. A Finder
+    `.DS_Store` is not content: the folder looks empty to him, and counting it would skip the starter without a word.
+    Every other hidden entry (`.git`) is his.
+    """
+    return all(entry.name == FINDER_NOISE and entry.is_file() for entry in Path(folder).iterdir())
 
 
 def create_project(parent: str | Path, name: str) -> Path:
-    """Create parent/name and copy the blank starter into it."""
+    """Create parent/name, empty: the folder has to exist, and the app reaches it only when a Keep writes it.
+
+    The starter is part of the first request's working copy (`lay_starter`), so this puts nothing in the folder.
+    """
     cleaned = name.strip().replace("/", "-").replace("\\", "-")
     if not cleaned or cleaned in {".", ".."}:
         raise ValueError("Choose a project name.")
     dest = Path(parent).expanduser().resolve() / cleaned
-    if dest.exists() and dest.is_dir() and any(dest.iterdir()):
+    if dest.exists() and dest.is_dir() and not is_blank_folder(dest):
         raise ValueError(f"{dest} already exists and is not empty.")
     dest.mkdir(parents=True, exist_ok=True)
-    return copy_starter(dest)
+    return dest
 
 
 def projects_home() -> Path:
@@ -91,7 +94,7 @@ def allocate_project_name(parent: str | Path, name: str) -> str:
     root = Path(parent).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     dest = root / name
-    if not dest.exists() or (dest.is_dir() and not any(dest.iterdir())):
+    if not dest.exists() or (dest.is_dir() and is_blank_folder(dest)):
         return name
     for index in range(2, 100):
         candidate = f"{name}-{index}"

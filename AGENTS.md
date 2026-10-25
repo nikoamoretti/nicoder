@@ -95,9 +95,13 @@
   (JSON-lines helper, no network server). A request never creates its project
   folder: `general/inspect.folder_problem` refuses a path that is gone, a file or
   unreadable, in plain words, before any worker or model call (only `new_project`
-  and `start_chat` make folders). A request puts nothing into its folder before
-  Keep either, the starter included: on an empty folder it is laid in the working
-  copy (see `request_state.py` below). Known limit (the `preview-in-place` cut): a
+  and `start_chat` make folders, and they make them empty: no starter in them, so
+  the folder exists for Keep to write into). A request puts nothing into its folder
+  before Keep either, the starter included: on an empty folder it is laid in the
+  working copy (see `request_state.py` below). A Finder `.DS_Store` is not content:
+  a folder holding only one still counts as empty (`starter.is_blank_folder`, used
+  by the starter, the inspection and the project names); `.git` and anything else
+  is his. Known limit (the `preview-in-place` cut): a
   question that asks for the preview runs `npm install` and the dev server in the
   project's own folder (`app_service._start_preview_note`). Errors reach the app
   as plain sentences:
