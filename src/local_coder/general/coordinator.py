@@ -1373,6 +1373,8 @@ def _record_verification(
 ) -> dict[str, Any]:
     """Run source/build/preview checks and persist evidence."""
     _emit(listener, "check", {})
+    if start_preview_after:
+        _ensure_packages(meta, candidate)
     checks = check_candidate(candidate)
     files = sorted(compute_delta(_frozen_baseline(Path(meta["baseline"])), index_tree(candidate)).touched())
     preview_status = "not_run"
@@ -1446,6 +1448,29 @@ def _record_verification(
     _save_meta(meta)
     write_verification(Path(meta["baseline"]).parent, verification)
     return verification
+
+
+def _ensure_packages(meta: dict[str, Any], candidate: Path) -> None:
+    """Give a web candidate its packages before the checks, so the project's own build can judge it.
+
+    Without them the build was skipped ("node_modules is not installed yet"), only the quick scan judged the code,
+    and its false alarms kept the preview from ever starting (Nico's French app, 2026-10-25). Packages come the way
+    the preview gets them: a clone from another working copy, else npm install. Any failure leaves the build
+    "not run", as before.
+    """
+    if not (candidate / "package.json").is_file() or (candidate / "node_modules").is_dir():
+        return
+    from local_coder.general import preview as preview_module
+
+    npm = preview_module._which("npm")
+    if npm is None:
+        return
+    log = data_root() / "logs" / f"preview-{meta['project_id']}.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        preview_module._provide_packages(npm, candidate, str(meta["project_id"]), log)
+    except Exception:  # noqa: BLE001 - packages are a head start for the checks, never a reason to fail them
+        pass
 
 
 def _result_it_was_built_on(meta: dict[str, Any]) -> Path | None:

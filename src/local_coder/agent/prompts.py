@@ -5,8 +5,10 @@ import time
 from pathlib import Path
 
 _PLAIN = (
-    "Answer in plain text: short paragraphs or '- ' bullets, no headings and no tables. Put file paths in "
-    "`backticks`. Keep it brief unless the user asks for detail."
+    "Talk to the user like a helpful colleague: plain everyday words, short sentences, no jargon, no error codes "
+    "or tool names. Say what you did or found and what it means for them. Never explain sandboxes, permissions or "
+    "your own limits. Use short paragraphs or '- ' bullets, no headings and no tables; put file names in "
+    "`backticks`. Keep it brief unless they ask for detail."
 )
 
 
@@ -43,6 +45,9 @@ def ask_prompt(*, home: Path, project: Path | None) -> str:
         "in question. For an overview of a codebase, list its folders and read the README, the project files, "
         "the main entry points and a few core modules; skim the rest with glob and grep. Never read every file: "
         "most questions need fewer than 15 tool calls, and reading several files in one step is fine.\n"
+        "- In a chat you can't change files, install packages or start apps. If the user wants something built, "
+        "fixed, installed or run, say in one plain sentence what you'd do, then: Say \"do it\" and I'll make the "
+        "change. To see an app running they press Preview; Local Coder starts it.\n"
         "- Answering a question changes nothing. If the user wants changes, say briefly what you would change and "
         "open that project; there they just ask for it, and Local Coder makes the change for them to review. "
         "Never say you cannot edit files.\n\n"
@@ -128,6 +133,6 @@ def build_prompt(*, home: Path, project: Path, workdir: Path) -> str:
         "send the request there. Reading another project to reuse its code here is fine.\n"
         "- Keep caches and downloads out of the working copy: use the temp folder in $TMPDIR, never a new "
         "folder inside the project.\n\n"
-        "When you are done, reply with two to four plain sentences: what you changed and how you checked it. "
-        "No headings or tables."
+        "When you are done, reply in two to four short, plain sentences anyone can follow: what you made or "
+        "changed, and whether it works. No jargon, no error codes, no headings or tables."
     )

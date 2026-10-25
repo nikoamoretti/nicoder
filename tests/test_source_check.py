@@ -47,3 +47,24 @@ def test_parse_retry_message_asks_for_straight_quotes():
     assert "do not parse" in note.lower()
     assert "straight quotes" in note.lower()
     assert "src/App.tsx" in note
+
+
+def test_curly_quotes_in_text_are_fine():
+    # Nico's French app (2026-10-25): every "’" was an error, and the model stripped all accents to pass.
+    jsx = '<p>Vider l’entrepôt ? Les données « INSEE » s’affichent ici.</p>\n'
+    code = 'window.confirm("Vider l’entrepôt IndexedDB ? Cette action est définitive.");\n'
+    assert scan_text("src/App.tsx", jsx) == []
+    assert scan_text("src/App.tsx", code) == []
+
+
+def test_curly_quotes_used_as_code_quotes_are_flagged():
+    assert scan_text("src/App.tsx", "const label = “Tasks”;\n")
+    assert scan_text("src/App.tsx", "import App from ‘./App’;\n")
+
+
+def test_a_regex_class_and_apostrophes_in_jsx_are_not_errors():
+    text = (
+        "const QUOTE = /[\"']/g;\n"
+        "export const Note = () => <p>It's the commune's latest figure (don't round it)</p>;\n"
+    )
+    assert scan_text("src/ingestion/normalise.tsx", text) == []

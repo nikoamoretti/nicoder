@@ -5,6 +5,8 @@ Seen in Nico's own requests (2026-10-23): asked from one project for a change to
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from local_coder.agent.prompts import ask_prompt, build_prompt
 
 
@@ -35,3 +37,11 @@ def test_a_change_request_gets_to_work_without_searching(tmp_path):
 def test_a_question_does_not_go_looking_for_a_matching_folder(tmp_path):
     text = ask_prompt(home=tmp_path, project=None)
     assert "Never go looking for a folder that might match what they asked for." in text
+
+
+def test_the_model_talks_plainly():
+    for text in (ask_prompt(home=Path("/h"), project=None),
+                 build_prompt(home=Path("/h"), project=Path("/h/site"), workdir=Path("/w"))):
+        assert "plain" in text and "jargon" in text
+    assert "Never explain sandboxes, permissions or your own limits." in ask_prompt(home=Path("/h"), project=None)
+    assert 'Say "do it" and I\'ll make the change.' in ask_prompt(home=Path("/h"), project=None)

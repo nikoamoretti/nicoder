@@ -362,6 +362,9 @@ struct PreviewPane: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // No media until the user plays it: WebKit's media handling asked macOS for Apple Music access (2026-10-25).
+        config.mediaTypesRequiringUserActionForPlayback = .all
+        config.allowsAirPlayForMediaPlayback = false
         let view = WKWebView(frame: .zero, configuration: config)
         view.setAccessibilityIdentifier("previewWebView")
         view.load(URLRequest(url: url))

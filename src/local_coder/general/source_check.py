@@ -4,21 +4,24 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_SMART_QUOTES = frozenset("“”‘’")
+# A curly quote is only a problem where code needs a string delimiter: after "=", "(", "[", "{", ",", ":", "?",
+# "return", "from" or "import". In text it is fine (French "l’entrepôt", JSX copy), and flagging every one sent the
+# model back until it stripped all accents and quotes from a French app (Nico, 2026-10-25).
+_CODE_SMART_QUOTE = re.compile(r"""(?:[=(\[{,:?]|\breturn|\bfrom|\bimport)\s*[“”‘’]""")
 _WEB_SUFFIX = {".tsx", ".ts", ".jsx", ".js", ".css"}
-_MISMATCHED_INDEX = re.compile(r"""\["[^"\n]*'\]|\['[^'\n]*"\]""")
-_PAIRS = {")": "(", "]": "[", "}": "{"}
+# ["status'] in a type or an index. A name must start it, so a regex class like /["']/ is not one.
+_MISMATCHED_INDEX = re.compile(r"""\["[A-Za-z_$][^"\n]*'\]|\['[A-Za-z_$][^'\n]*"\]""")
 
 
 def scan_text(rel: str, text: str) -> list[str]:
     """Return problem notes for one source file."""
     problems: list[str] = []
-    if any(char in text for char in _SMART_QUOTES):
-        problems.append(f"{rel}: curly/smart quotes that Vite cannot parse")
+    if _CODE_SMART_QUOTE.search(text):
+        problems.append(f"{rel}: curly/smart quotes used as code quotes, which Vite cannot parse")
     if _MISMATCHED_INDEX.search(text):
         problems.append(f"{rel}: mismatched quotes in a type or index")
-    if _unbalanced(text):
-        problems.append(f"{rel}: unmatched brackets or braces")
+    # No bracket count: without a real parser it misreads apostrophes in JSX text and regex literals (5 false
+    # alarms in one of Nico's projects). The project's own build, run in the checks, finds real ones.
     return problems
 
 
@@ -42,58 +45,7 @@ def parse_retry_message(problems: list[str]) -> str:
     listed = "\n".join(f"- {item}" for item in problems)
     return (
         "The files you wrote do not parse, so the preview cannot run. "
-        "Use straight quotes, not curly quotes. TypeScript generics are fine. "
+        "Use straight quotes around code strings; curly quotes inside text are fine. TypeScript generics are fine. "
         f"Problems:\n{listed}\n"
         "Reply again with write or edit blocks."
     )
-
-
-def _unbalanced(text: str) -> bool:
-    stack: list[str] = []
-    index = 0
-    length = len(text)
-    while index < length:
-        char = text[index]
-        if char in "\"'`":
-            index = _skip_string(text, index)
-            continue
-        if char == "/" and index + 1 < length and text[index + 1] == "/":
-            newline = text.find("\n", index)
-            index = length if newline < 0 else newline + 1
-            continue
-        if char == "/" and index + 1 < length and text[index + 1] == "*":
-            end = text.find("*/", index + 2)
-            index = length if end < 0 else end + 2
-            continue
-        if char in "([{":
-            stack.append(char)
-        elif char in _PAIRS:
-            if not stack or stack[-1] != _PAIRS[char]:
-                return True
-            stack.pop()
-        index += 1
-    return bool(stack)
-
-
-def _skip_string(text: str, start: int) -> int:
-    quote = text[start]
-    index = start + 1
-    while index < len(text):
-        if text[index] == "\\":
-            index += 2
-            continue
-        if text[index] == quote:
-            return index + 1
-        if quote == "`" and text[index] == "$" and index + 1 < len(text) and text[index + 1] == "{":
-            # Treat interpolated templates as opaque; resume after the matching brace.
-            depth = 1
-            index += 2
-            while index < len(text) and depth:
-                if text[index] == "{":
-                    depth += 1
-                elif text[index] == "}":
-                    depth -= 1
-                index += 1
-            continue
-        index += 1
-    return len(text)

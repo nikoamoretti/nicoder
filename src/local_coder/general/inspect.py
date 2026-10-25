@@ -43,6 +43,15 @@ _SEE_UI = (
     "how to run",
     "how do i run",
     "how can i run",
+    "what it built",
+    "what you built",
+    "what it has built",
+    "what you have built",
+    "see it running",
+    "run it",
+    "start it",
+    "launch it",
+    "preview it",
 )
 _CHANGE = re.compile(
     r"^(?:please\s+|can you\s+|could you\s+|would you\s+|"
@@ -50,7 +59,7 @@ _CHANGE = re.compile(
     r"(make|build|add|fix|wrap|create|implement|change|update|remove|"
     r"delete|rename|refactor|write|replace|install|upgrade|turn|package|"
     # "do this: …" is work; "do you …" stays a question (Nico's spec, 2026-10-25, was answered as a question).
-    r"do(?!\s+(?:you|i|we|they|he|she|it|there)\b)|use|scrape|ingest|set ?up|generate|design|develop|draft|"
+    r"do(?!\s+(?:you|i|we|they|he|she)\b)|use|scrape|ingest|set ?up|generate|design|develop|draft|"
     r"prototype|scaffold|convert|port|improve|rewrite|automate|code|connect|integrate|migrate)\b",
     re.I,
 )
@@ -311,7 +320,7 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
 
 # With no project open, a request to do something is work; questions, look-ups and small talk are a chat.
 _WORK_VERBS = (
-    r"(do(?!\s+(?:you|i|we|they|he|she|it|there)\b)|build|make|create|write|add|implement|set ?up|scrape|ingest|"
+    r"(do(?!\s+(?:you|i|we|they|he|she)\b)|build|make|create|write|add|implement|set ?up|scrape|ingest|"
     r"code|generate|design|develop|draft|"
     r"prototype|scaffold|start|turn|convert|port|refactor|fix|update|change|improve|rewrite|automate|deploy|ship|"
     r"put together|spin up)"
