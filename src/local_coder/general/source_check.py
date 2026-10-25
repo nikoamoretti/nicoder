@@ -7,7 +7,8 @@ from pathlib import Path
 # A curly quote is only a problem where code needs a string delimiter: after "=", "(", "[", "{", ",", ":", "?",
 # "return", "from" or "import". In text it is fine (French "l’entrepôt", JSX copy), and flagging every one sent the
 # model back until it stripped all accents and quotes from a French app (Nico, 2026-10-25).
-_CODE_SMART_QUOTE = re.compile(r"""(?:[=(\[{,:?]|\breturn|\bfrom|\bimport)\s*[“”‘’]""")
+# Not after "[": a regex class like /[’']/g holds curly quotes on purpose.
+_CODE_SMART_QUOTE = re.compile(r"""(?:[=({,:?]|\breturn|\bfrom|\bimport)\s*[“”‘’]""")
 _WEB_SUFFIX = {".tsx", ".ts", ".jsx", ".js", ".css"}
 _PAIRS = {")": "(", "]": "[", "}": "{"}
 # ["status'] in a type or an index. A name must start it, so a regex class like /["']/ is not one.
@@ -120,7 +121,15 @@ _REGEX_KEYWORDS = ("return", "typeof", "case", "in", "of", "do", "else", "throw"
 
 
 def _regex_can_start(text: str, index: int) -> bool:
-    """Whether a "/" here opens a regex literal (after an operator or a keyword) rather than dividing."""
+    """Whether a "/" here opens a regex literal (after an operator or a keyword) rather than dividing.
+
+    Never in JSX: "/>" closes a tag and "</" opens a closing one (a self-closing <Row ... /> after a {prop}
+    was read as a regex and raised "unmatched brackets" for good React code).
+    """
+    if index + 1 < len(text) and text[index + 1] == ">":
+        return False
+    if index and text[index - 1] == "<":
+        return False
     before = text[:index].rstrip()
     if not before:
         return True

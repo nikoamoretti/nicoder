@@ -84,3 +84,16 @@ def test_a_regex_with_quotes_and_brackets_is_not_an_error():
     text = 'for (const m of s.matchAll(/<Rel[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)) { use(m) }\n'
     assert scan_text("src/ingestion/upload.ts", text) == []
     assert scan_text("src/a.ts", "const half = (a + b) / 2; const r = total / count;\n") == []
+
+
+def test_jsx_closing_tags_are_not_regex_literals():
+    app = (
+        'import TaskItem from "./TaskItem";\n'
+        "export default function App() {\n"
+        "  return <ul>{tasks.map((task) => <TaskItem key={task.id} task={task} />)}</ul>;\n}\n"
+    )
+    assert scan_text("src/App.tsx", app) == []
+
+
+def test_a_regex_class_with_curly_quotes_is_fine():
+    assert scan_text("src/a.js", "const t = (s) => s.replace(/[’']/g, '').split(/\\s+/);\n") == []
