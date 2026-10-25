@@ -20,6 +20,8 @@ def test_project_name_from_request_uses_the_goal():
     assert project_name_from_request("Build a task board") == "task-board"
     assert project_name_from_request("  hello  ") == "hello"
     assert project_name_from_request("???") == "new-project"
+    spec = "do this * Data Ingestion: Scrape and ingest the Interstat datasets, which provide crime figures."
+    assert project_name_from_request(spec) == "data-ingestion-scrape-ingest-interstat"
 
 
 def test_allocate_project_name_avoids_occupied_folders(tmp_path):

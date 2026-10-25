@@ -227,3 +227,15 @@ def test_bash_stops_when_the_user_presses_stop(home, tmp_path):
     result = box.call("bash", {"command": "sleep 20"})
     assert time.monotonic() - started < 10
     assert "stopped by the user" in result.text
+
+
+def test_a_change_request_has_no_project_search(home, tmp_path):
+    # Nico (2026-10-25): asked to do something, the agent went "researching a folder that could correspond".
+    from local_coder.agent.runner import build_session
+
+    work = home / ".local" / "share" / "lc" / "work"
+    work.mkdir(parents=True)
+    session = build_session(project=home / "projects" / "nicos-prototypes", workdir=work, run_tmp=tmp_path / "t",
+                            chat=lambda messages, tools: {}, context_chars=40_000, home=home)
+    assert "find_project" not in session.toolbox.names
+    assert {"list", "read", "write", "edit", "bash"} <= set(session.toolbox.names)

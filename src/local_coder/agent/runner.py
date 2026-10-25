@@ -157,6 +157,9 @@ def build_session(
         cwd=workdir,
         run_tmp=run_tmp,
         cancel=cancel,
+        # A change request works in its own project: no hunting for a folder that might match (Nico, 2026-10-25).
+        # A project he names can still be read by its path.
+        allow_find_project=False,
     )
     return AgentSession(
         chat=chat,

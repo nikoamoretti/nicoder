@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,10 @@ _CHANGE = re.compile(
     r"^(?:please\s+|can you\s+|could you\s+|would you\s+|"
     r"i want (?:you )?to\s+|i need (?:you )?to\s+)?"
     r"(make|build|add|fix|wrap|create|implement|change|update|remove|"
-    r"delete|rename|refactor|write|replace|install|upgrade|turn|package)\b",
+    r"delete|rename|refactor|write|replace|install|upgrade|turn|package|"
+    # "do this: …" is work; "do you …" stays a question (Nico's spec, 2026-10-25, was answered as a question).
+    r"do(?!\s+(?:you|i|we|they|he|she|it|there)\b)|use|scrape|ingest|set ?up|generate|design|develop|draft|"
+    r"prototype|scaffold|convert|port|improve|rewrite|automate|code|connect|integrate|migrate)\b",
     re.I,
 )
 _LOOK = re.compile(
@@ -305,32 +309,80 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
             "detail": "You will review any proposed change before it is kept."}
 
 
-# With no project open, only these make a new project: a request to build something new.
-_NEW_BUILD = re.compile(
-    r"\b(build|make|create|write|generate|scaffold|start|code|want|need|would like)\b[^.?!]*?\b("
-    r"apps?|application|site|website|web ?page|page|landing|game|script|tool|dashboard|extension|plugin|bot|"
-    r"api|cli|program|prototype|portfolio|blog|shop|store|calculator|tracker|todo|to-do|clone)\b",
+# With no project open, a request to do something is work; questions, look-ups and small talk are a chat.
+_WORK_VERBS = (
+    r"(do(?!\s+(?:you|i|we|they|he|she|it|there)\b)|build|make|create|write|add|implement|set ?up|scrape|ingest|"
+    r"code|generate|design|develop|draft|"
+    r"prototype|scaffold|start|turn|convert|port|refactor|fix|update|change|improve|rewrite|automate|deploy|ship|"
+    r"put together|spin up)"
+)
+_WORK = re.compile(
+    rf"^(please\s+|pls\s+|can you\s+|could you\s+|would you\s+|i want you to\s+|i need you to\s+|let'?s\s+|"
+    rf"go ahead and\s+)?{_WORK_VERBS}\b",
     re.I,
 )
-_NEW_THING = re.compile(r"\bnew (app|application|project|site|website|page|game|script|tool)\b", re.I)
+_SMALL_TALK = re.compile(
+    r"^(hi|hello|hey|yo|thanks|thank you|ok|okay|cool|nice|great|good (morning|afternoon|evening|night))\b", re.I,
+)
+_ASKS = re.compile(
+    r"^(what|why|how|who|whom|whose|when|where|which|tell|explain|describe|summari[sz]e|compare|define|translate|"
+    r"recommend|suggest|find|show|look|check|search|list|read|see|"
+    r"help me (plan|think|decide|understand|figure|choose|pick|learn|prepare))\b",
+    re.I,
+)
+_ASKS_YOU = re.compile(
+    r"^(do|does|did|can|could|would|should|will|is|are|was|were|has|have|had|may|might)\s+(you|i|we|they|he|she|there|it)\b",
+    re.I,
+)
+# Folder names too generic to mean one project ("to the app", "in my projects").
+_GENERIC_NAMES = frozenset({
+    "app", "apps", "api", "code", "data", "demo", "docs", "local coder projects", "project", "projects", "site",
+    "src", "test", "tests", "web", "website",
+})
 
 
-def classify_without_project(text: str) -> dict[str, Any]:
-    """With no project open, a message is a chat unless it asks to build something new.
+def _words(text: str) -> str:
+    return " " + re.sub(r"[^a-z0-9]+", " ", text.lower()).strip() + " "
 
-    Inside a project an unclear message is a change to that project. Outside one, the same guess made a new
-    project folder for "hi" and "tell me about australopithecus" (Nico's welcome chat, 2026-10-22). Now only
-    "build a todo app", "write me a script that…" and the like make a project; everything else is answered
-    by the agent, which can look around the Mac and open the project it means.
+
+def _named_project(request: str, projects: Iterable[Path]) -> Path | None:
+    """The existing project a work request names after "to", "in", "for"…, as in "add X to vc-jobs-board"."""
+    text = _words(request)
+    best: tuple[int, Path] | None = None
+    for folder in projects:
+        name = _words(folder.name).strip()
+        if len(name) < 4 or name in _GENERIC_NAMES:
+            continue
+        if re.search(rf" (to|in|into|on|for|of|inside|within) (my |the |our )?{re.escape(name)} ", text):
+            if best is None or len(name) > best[0]:
+                best = (len(name), folder)
+    return best[1] if best else None
+
+
+def classify_without_project(text: str, projects: Iterable[Path] = ()) -> dict[str, Any]:
+    """With no project open: a request to do something is built, a question is answered.
+
+    Nico, 2026-10-25: "im asking it to do something and it goes directly into researching a folder that could
+    correspond that what im asking which is super dumb". A request ("do this: scrape the Interstat datasets…",
+    "write me a script that…") starts a new project and the work begins at once, or, when it names one of his
+    projects ("add X to vc-jobs-board"), runs in that project. Only questions, look-ups and small talk go to the
+    chat, which answers without making a folder ("hi" and "tell me about australopithecus" used to make one).
     """
     request = text.strip()
     if not request:
         return classify_request(text)
-    if _NEW_BUILD.search(request) or _NEW_THING.search(request):
-        return {"kind": "code", "summary": "This will start a new project and build it.",
+    asks = (
+        request.endswith("?") or _SMALL_TALK.match(request) or _ASKS.match(request) or _ASKS_YOU.match(request)
+    ) and not _WORK.match(request)
+    if asks:
+        return {"kind": "chat", "summary": "This will answer in chat without editing files.",
+                "detail": "No files will be edited."}
+    named = _named_project(request, projects)
+    if named is not None:
+        return {"kind": "code", "project": str(named), "summary": f"This will make the change in {named.name}.",
                 "detail": "You will review any proposed change before it is kept."}
-    return {"kind": "chat", "summary": "This will answer in chat without editing files.",
-            "detail": "No files will be edited."}
+    return {"kind": "code", "summary": "This will start a new project and build it.",
+            "detail": "You will review any proposed change before it is kept."}
 
 
 def _looks_native(repo: Path) -> bool:

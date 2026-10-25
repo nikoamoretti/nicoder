@@ -147,10 +147,11 @@ class RpcServer:
             return report
         if method == "classify_request":
             if not params.get("path"):
-                # No project open: a chat unless it asks to build something new (no folder for "hi").
+                # No project open: work is built (in a new project, or the one it names); questions are a chat.
+                from local_coder.app_service import known_projects
                 from local_coder.general.inspect import classify_without_project
 
-                return classify_without_project(str(params.get("text", "")))
+                return classify_without_project(str(params.get("text", "")), known_projects())
             return classify_request(params.get("text", ""), inspect_project(params["path"]))
         if method == "explain_request":
             return explain_request(params["path"], params["text"])

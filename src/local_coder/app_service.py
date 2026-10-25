@@ -133,6 +133,19 @@ def save_prefs(prefs: dict[str, Any]) -> Path:
     return path
 
 
+def known_projects() -> list[Path]:
+    """Projects a request can name: the recent list, then the folders in ~/projects and ~/Local Coder Projects."""
+    from local_coder.general.starter import projects_home
+
+    found: list[Path] = [Path(str(row.get("path"))) for row in load_prefs().get("recent_projects", [])]
+    for root in (Path.home() / "projects", projects_home()):
+        try:
+            found.extend(sorted(child for child in root.iterdir() if child.is_dir() and not child.name.startswith(".")))
+        except OSError:
+            continue
+    return found
+
+
 def remember_project(repo: str | Path) -> dict[str, Any]:
     """Record a project on the recent list without exposing model settings."""
     prefs = load_prefs()

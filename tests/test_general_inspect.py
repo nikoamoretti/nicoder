@@ -61,3 +61,13 @@ def test_legacy_inspect_and_classify_still_refuse_javascript(tmp_path):
     assert report["verdict"] == "unsupported"
     kind = classify_legacy_request("add a search box", {"supported": True, "languages": ["Python"]})
     assert kind["kind"] == "unsupported"
+
+
+def test_do_this_is_work_and_do_you_is_a_question():
+    # Nico's spec (2026-10-25) began "do this", and "do" was read as the start of a question.
+    spec = "do this * Data Ingestion: Scrape and ingest the Interstat datasets, which provide crime figures."
+    assert classify_request(spec)["kind"] == "code"
+    assert classify_request("scrape the Interstat datasets")["kind"] == "code"
+    assert classify_request("set up a postgres database")["kind"] == "code"
+    assert classify_request("do you know how the scraper works")["kind"] == "chat"
+    assert classify_request("is this a React project?")["kind"] == "chat"

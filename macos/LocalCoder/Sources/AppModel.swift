@@ -446,15 +446,22 @@ final class AppModel: ObservableObject {
                         try await answerQuestion(path: nil, text: text)
                         return
                     }
-                    noteStatus("Creating a project from what you wrote.")
-                    let created = try await engine.call("start_chat", ["text": text])
-                    path = created["path"] as? String
-                    if let report = created["inspection"] as? [String: Any] {
-                        inspection = report
-                    } else if let createdPath = path {
-                        inspection = try await engine.call("inspect_project", ["path": createdPath])
+                    if let named = first["project"] as? String, !named.isEmpty {
+                        // The request names one of his projects ("add X to vc-jobs-board"): do it there.
+                        noteStatus("Working in \(URL(fileURLWithPath: named).lastPathComponent).")
+                        inspection = try await engine.call("inspect_project", ["path": named])
+                        path = named
+                    } else {
+                        noteStatus("Creating a project from what you wrote.")
+                        let created = try await engine.call("start_chat", ["text": text])
+                        path = created["path"] as? String
+                        if let report = created["inspection"] as? [String: Any] {
+                            inspection = report
+                        } else if let createdPath = path {
+                            inspection = try await engine.call("inspect_project", ["path": createdPath])
+                        }
+                        banner = created["detail"] as? String
                     }
-                    banner = created["detail"] as? String
                     try await refreshSidebars()
                 }
                 guard let path else {

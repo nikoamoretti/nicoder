@@ -13,8 +13,11 @@ from pathlib import Path
 from local_coder.general.snapshot import iter_source_files
 
 STARTER_NAME = "vite-react-ts"
-_SKIP_WORDS = {"a", "an", "the", "please", "can", "you", "i", "want", "to", "me"}
-_SKIP_VERBS = {"build", "make", "create", "write", "implement", "add"}
+_SKIP_WORDS = {
+    "a", "an", "the", "please", "pls", "can", "could", "would", "you", "i", "want", "need", "to", "me", "for", "this",
+    "that", "it", "lets", "let", "go", "ahead", "and", "or", "of", "with", "which",
+}
+_SKIP_VERBS = {"build", "make", "create", "write", "implement", "add", "do"}
 
 
 def starter_root() -> Path:
@@ -81,9 +84,12 @@ def project_name_from_request(text: str) -> str:
     words = [part for part in cleaned.replace("_", " ").split() if part]
     if words and words[0] in _SKIP_VERBS and len(words) > 1:
         words = words[1:]
-    words = [word for word in words if word not in _SKIP_WORDS][:6]
-    slug = "-".join(words)[:40].strip("-")
-    return slug or "new-project"
+    slug = ""
+    for word in [word for word in words if word not in _SKIP_WORDS][:6]:
+        if len(slug) + len(word) + 1 > 40:
+            break  # whole words only: "…-interstat", never "…-interstat-d"
+        slug = f"{slug}-{word}" if slug else word
+    return slug[:40].strip("-") or "new-project"
 
 
 def allocate_project_name(parent: str | Path, name: str) -> str:

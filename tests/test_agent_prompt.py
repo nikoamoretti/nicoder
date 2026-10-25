@@ -25,3 +25,13 @@ def test_a_question_is_answered_without_a_tour_of_the_guarded_folders(tmp_path):
     assert "answer it directly without searching" in text
     assert "only when the user points there" in text
     assert "Call open_project only when the user asks to open a project or to work on one" in text
+
+
+def test_a_change_request_gets_to_work_without_searching(tmp_path):
+    text = build_prompt(home=tmp_path, project=tmp_path / "crime-map", workdir=tmp_path / "wc")
+    assert "never go searching for one. Start on the work right away." in text
+
+
+def test_a_question_does_not_go_looking_for_a_matching_folder(tmp_path):
+    text = ask_prompt(home=tmp_path, project=None)
+    assert "Never go looking for a folder that might match what they asked for." in text
