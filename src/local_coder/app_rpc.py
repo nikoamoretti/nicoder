@@ -146,8 +146,12 @@ class RpcServer:
             remember_project(report["path"]) if report.get("exists") else None
             return report
         if method == "classify_request":
-            inspection = inspect_project(params["path"]) if params.get("path") else None
-            return classify_request(params.get("text", ""), inspection)
+            if not params.get("path"):
+                # No project open: a chat unless it asks to build something new (no folder for "hi").
+                from local_coder.general.inspect import classify_without_project
+
+                return classify_without_project(str(params.get("text", "")))
+            return classify_request(params.get("text", ""), inspect_project(params["path"]))
         if method == "explain_request":
             return explain_request(params["path"], params["text"])
         if method == "chat_request":

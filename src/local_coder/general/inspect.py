@@ -305,6 +305,34 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
             "detail": "You will review any proposed change before it is kept."}
 
 
+# With no project open, only these make a new project: a request to build something new.
+_NEW_BUILD = re.compile(
+    r"\b(build|make|create|write|generate|scaffold|start|code|want|need|would like)\b[^.?!]*?\b("
+    r"apps?|application|site|website|web ?page|page|landing|game|script|tool|dashboard|extension|plugin|bot|"
+    r"api|cli|program|prototype|portfolio|blog|shop|store|calculator|tracker|todo|to-do|clone)\b",
+    re.I,
+)
+_NEW_THING = re.compile(r"\bnew (app|application|project|site|website|page|game|script|tool)\b", re.I)
+
+
+def classify_without_project(text: str) -> dict[str, Any]:
+    """With no project open, a message is a chat unless it asks to build something new.
+
+    Inside a project an unclear message is a change to that project. Outside one, the same guess made a new
+    project folder for "hi" and "tell me about australopithecus" (Nico's welcome chat, 2026-10-22). Now only
+    "build a todo app", "write me a script that…" and the like make a project; everything else is answered
+    by the agent, which can look around the Mac and open the project it means.
+    """
+    request = text.strip()
+    if not request:
+        return classify_request(text)
+    if _NEW_BUILD.search(request) or _NEW_THING.search(request):
+        return {"kind": "code", "summary": "This will start a new project and build it.",
+                "detail": "You will review any proposed change before it is kept."}
+    return {"kind": "chat", "summary": "This will answer in chat without editing files.",
+            "detail": "No files will be edited."}
+
+
 def _looks_native(repo: Path) -> bool:
     names = {path.name.lower() for path in repo.iterdir()} if repo.is_dir() else set()
     return bool(names & {"xcodeproj", "pbxproj"}) or any(
