@@ -72,18 +72,29 @@ struct RootView: View {
 
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
+    /// The sidebar row for a chat with no project open (the agent answers about anything on the Mac).
+    static let chatTag = "chat:"
 
     private var selection: Binding<String?> {
         Binding(
-            get: { model.projectPath },
+            get: { model.projectPath ?? SidebarView.chatTag },
             set: { path in
-                if let path { model.selectProject(path) }
+                guard let path else { return }
+                if path == SidebarView.chatTag {
+                    model.closeProject()
+                } else {
+                    model.selectProject(path)
+                }
             }
         )
     }
 
     var body: some View {
         List(selection: selection) {
+            Label("New Chat", systemImage: "square.and.pencil")
+                .help("Ask about anything on your Mac, without a project")
+                .tag(Optional(SidebarView.chatTag))
+                .accessibilityIdentifier("sidebarNewChat")
             Section("Projects") {
                 if model.recent.isEmpty {
                     Text("Projects you open appear here.")
@@ -136,15 +147,6 @@ struct SidebarView: View {
                 .disabled(model.running)
                 .help("Create a new project (⇧⌘N)")
                 .accessibilityIdentifier("newProjectButton")
-                if model.projectPath != nil {
-                    Button {
-                        model.closeProject()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .disabled(model.running)
-                    .help("Close this project and ask about anything on your Mac (its chat stays saved)")
-                }
             }
             .buttonStyle(.borderless)
             .labelStyle(.titleAndIcon)
