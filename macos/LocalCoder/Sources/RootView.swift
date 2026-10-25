@@ -56,7 +56,8 @@ struct RootView: View {
             } label: {
                 Label("Changes", systemImage: "sidebar.trailing")
             }
-            .help(model.hasChanges ? "Show the proposed changes" : "Changes and preview")
+            .help(model.hasChanges ? (model.canKeep || model.canDiscard ? "Show the proposed changes" : "Show the changes")
+                                    : "Changes and preview")
         }
     }
 

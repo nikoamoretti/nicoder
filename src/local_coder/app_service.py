@@ -1043,7 +1043,7 @@ def snapshot(episode_id: str, store: EpisodeStore | None = None,
     elif state.outcome == "blocked":
         summary = f"Stopped without a verified complete change. {state.stop_reason or ''}".strip()
     elif state.outcome == "discarded":
-        summary = "This request was discarded. The original project was not changed."
+        summary = "This request was discarded. Your project was not changed."
     elif state.outcome == "running":
         summary = latest_progress(events)["phrase"]
     else:

@@ -28,7 +28,7 @@ struct ChangesInspector: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 16)
                 .padding(.vertical, 10)
             }
             if tab == .preview, let url = model.previewURL.flatMap(URL.init(string:)) {
@@ -285,7 +285,7 @@ private struct ReviewBar: View {
             }
             .controlSize(.large)
         }
-        .padding(14)
+        .padding(16)
         .background(.bar)
     }
 }
@@ -306,7 +306,7 @@ private struct ReviewNote: View {
                 CostCaption()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
+            .padding(16)
             .background(.bar)
             .accessibilityIdentifier(model.blockedBy == nil ? "reviewNote" : "reviewNoteBlocked")
         }
@@ -347,7 +347,7 @@ private struct PreviewTab: View {
                 .help("Open in your browser")
                 .accessibilityIdentifier("openInBrowserButton")
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .padding(.vertical, 8)
             Divider()
             PreviewPane(url: url)

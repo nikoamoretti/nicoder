@@ -580,7 +580,7 @@ final class AppModel: ObservableObject {
                 _ = try await engine.call("discard", params)
                 snapshot = try await engine.call("snapshot", params)
                 previewURL = nil
-                banner = "The changes were thrown away. Your project is as it was."
+                banner = "Discarded. Your project was not changed."
                 followUpReady = false
                 inspectorShown = false
                 try await refreshSidebars()
@@ -604,7 +604,7 @@ final class AppModel: ObservableObject {
                 // A kept request keeps its files and diff, so it has changes to show and never reaches the notice.
                 if !hasChanges {
                     switch snapshot?["outcome"] as? String {
-                    case "discarded": banner = "That request was discarded."
+                    case "discarded": banner = "This request was discarded. Your project was not changed."
                     default: banner = "That request did not change any files."
                     }
                 }

@@ -2030,7 +2030,7 @@ def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
         "ok": True,
         "discarded": True,
         "request_id": request_id,
-        "detail": "Discarded. The original project was not changed.",
+        "detail": "Discarded. Your project was not changed.",
     }
 
 

@@ -226,7 +226,7 @@ MainActor.assumeIsolated {
     // 1f. A History row opened for a discarded request: no files, so a notice says so and the inspector stays closed.
     model.snapshot = discarded
     model.inspectorShown = false
-    model.banner = "That request was discarded."
+    model.banner = "This request was discarded. Your project was not changed."
     capture(main, "10d-history-notice")
     model.banner = nil
 

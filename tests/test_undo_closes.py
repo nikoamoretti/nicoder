@@ -547,7 +547,7 @@ def test_ug8_a_partial_undo_closes_nothing(project):
 
 def test_ug9_a_request_he_discarded_himself_keeps_its_own_words(project):
     local(project, "r1", write("src/gen.py", "GEN = 1\n"))
-    assert discard_changes("r1", repo=project)["detail"] == "Discarded. The original project was not changed."
+    assert discard_changes("r1", repo=project)["detail"] == "Discarded. Your project was not changed."
     assert_discarded_by_him(project, "r1")
 
 

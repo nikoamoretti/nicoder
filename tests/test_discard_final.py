@@ -151,7 +151,7 @@ def test_discarding_twice_changes_nothing_the_second_time(project):
     _run(project, "req-1")
     first = discard_changes("req-1", repo=project)
     second = discard_changes("req-1", repo=project)
-    assert first["detail"] == "Discarded. The original project was not changed."
+    assert first["detail"] == "Discarded. Your project was not changed."
     assert second["ok"] is True and second["detail"] == "Already discarded."
 
 
