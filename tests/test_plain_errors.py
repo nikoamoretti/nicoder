@@ -136,6 +136,26 @@ def test_a_missing_file_gets_a_plain_sentence(capfd):
     assert "no-such-request" in capfd.readouterr().err
 
 
+def test_new_project_into_a_folder_with_files_says_so_and_leaves_it_alone(tmp_path):
+    folder = tmp_path / "board"
+    folder.mkdir()
+    (folder / "notes.txt").write_text("mine")
+    server, _out = _rpc()
+    reply = server.dispatch({"id": "1", "method": "new_project", "params": {"parent": str(tmp_path), "name": "board"}})
+    assert reply["ok"] is False
+    assert reply["error"]["code"] == "refused"
+    _assert_plain(reply["error"]["detail"])
+    assert reply["error"]["detail"].startswith("A folder named board already has files in it.")
+    assert [p.name for p in folder.iterdir()] == ["notes.txt"]
+    assert (folder / "notes.txt").read_text() == "mine"
+
+
+def test_new_project_without_a_name_says_so(tmp_path):
+    server, _out = _rpc()
+    reply = server.dispatch({"id": "1", "method": "new_project", "params": {"parent": str(tmp_path), "name": "  "}})
+    assert reply["error"] == {"code": "refused", "detail": "Choose a project name."}
+
+
 def test_the_error_log_is_private_and_stays_small(tmp_path):
     from local_coder import errorlog
     from local_coder.errorlog import record_error

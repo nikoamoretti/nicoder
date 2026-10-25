@@ -62,7 +62,7 @@ def create_project(parent: str | Path, name: str) -> Path:
         raise ValueError("Choose a project name.")
     dest = Path(parent).expanduser().resolve() / cleaned
     if dest.exists() and dest.is_dir() and any(dest.iterdir()):
-        raise ValueError(f"{dest} already exists and is not empty.")
+        raise ValueError(f"A folder named {cleaned} already has files in it. Choose another name, or open that folder.")
     dest.mkdir(parents=True, exist_ok=True)
     return copy_starter(dest)
 

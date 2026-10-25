@@ -215,7 +215,10 @@ class RpcServer:
         if method == "new_project":
             from local_coder.general.starter import create_project
 
-            dest = create_project(params["parent"], params["name"])
+            try:
+                dest = create_project(params["parent"], params["name"])
+            except ValueError as exc:  # a missing name or a folder that has files: its own sentence, not "unexpected"
+                raise AppError(str(exc)) from exc
             remember_project(dest)
             from local_coder.general.inspect import inspect_project as general_inspect
 
