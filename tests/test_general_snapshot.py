@@ -378,6 +378,316 @@ def test_apply_delta_keeps_its_own_detail_and_list_for_the_mcp_apply(tmp_path):
     ]
 
 
+# --- Late failures: what Keep can know is refused before the first write -----------------------------------------
+#
+# Every scenario below deletes an executable (run.sh, mode 0755, mtime far in the past) besides what it adds, and the
+# project holds something in the way. A refusal found halfway would have deleted run.sh first and rolled it back from
+# its bytes: a new file with mode 0644 and a new mtime. So each refusal compares the whole folder, modes and times
+# included. Names LTn / LGn are the cut's probe scenarios (LT the gaps, LG the guards).
+
+SH = "#!/bin/sh\necho hi\n"
+
+
+def _stamps(root: Path) -> dict[str, tuple]:
+    """`_state` plus the mtime of every file in nanoseconds: 'nothing was touched' includes the clock, which a
+    rollback from bytes moves (it brings a deleted executable back as a new file)."""
+    found = _state(root)
+    for rel, row in found.items():
+        if row[0] == "file":
+            found[rel] = (*row, (root / rel).stat().st_mtime_ns)
+    return found
+
+
+def _late_trees(
+    tmp_path: Path, result: dict[str, str], *, start: dict[str, str] | None = None, now: dict[str, str] | None = None,
+) -> tuple[Path, Path, Path]:
+    """B, C and U for a request that DELETES the executable run.sh and writes `result` besides.
+
+    B is the README, run.sh and `start`; C is the README and `result`; U is B and `now`."""
+    before = {**README, "run.sh": SH, **(start or {})}
+    b, c, u = _trees(tmp_path, before, {**README, **result}, {**before, **(now or {})})
+    (b / "run.sh").chmod(0o755)
+    (u / "run.sh").chmod(0o755)
+    os.utime(u / "run.sh", ns=(LONG_AGO, LONG_AGO))
+    return b, c, u
+
+
+def _refused_before_writing(b: Path, c: Path, u: Path, *, locked: Path | None = None) -> dict:
+    """Keep is refused as `apply_failed` and nothing was written: the folder is as it was, modes and times included,
+    and the executable the request deletes is still 0755 and untouched. `locked` is a folder made unsearchable while
+    Keep runs (its permissions come back before the next line, or the temp folder could not be removed)."""
+    before = _stamps(u)
+    if locked is not None:
+        locked.chmod(0o000)
+    try:
+        result = apply_delta(u, b, c)
+    finally:
+        if locked is not None:
+            locked.chmod(0o755)
+    assert result["ok"] is False and result["code"] == "apply_failed" and result["applied"] == []
+    assert _stamps(u) == before, "the folder is byte-identical, modes and times included"
+    assert stat.S_IMODE((u / "run.sh").stat().st_mode) == 0o755 and (u / "run.sh").stat().st_mtime_ns == LONG_AGO
+    return result
+
+
+def test_lt1_a_file_where_a_folder_must_be_made_is_refused_before_anything_is_written(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"lib/x.ts": MOVED}, now={"lib": HIS})
+    _refused_before_writing(b, c, u)
+    assert (u / "lib").is_file() and (u / "lib").read_text(encoding="utf-8") == HIS
+
+
+@pytest.mark.parametrize("with_a_file_of_his", [True, False], ids=["lt2_with_a_file_in_it", "lt2b_empty"])
+def test_lt2_a_folder_where_an_added_file_goes_is_refused_before_anything_is_written(tmp_path, with_a_file_of_his):
+    """An empty folder too: the snapshot lists files only, so neither one shows up as a clash."""
+    b, c, u = _late_trees(tmp_path, {"b.ts": MOVED})
+    (u / "b.ts").mkdir()
+    if with_a_file_of_his:
+        (u / "b.ts" / "his.txt").write_text(HIS, encoding="utf-8")
+    _refused_before_writing(b, c, u)
+    assert (u / "b.ts").is_dir()
+    assert not with_a_file_of_his or (u / "b.ts" / "his.txt").read_text(encoding="utf-8") == HIS
+
+
+def test_lt3_a_hand_made_move_with_a_folder_at_the_source_is_refused_before_anything_is_written(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"src/new.ts": MOVED}, start={"src/old.ts": MOVED})
+    (u / "src" / "old.ts").rename(u / "src" / "new.ts")  # he made the same move...
+    (u / "src" / "old.ts").mkdir()  # ...and put a folder where the file was
+    _refused_before_writing(b, c, u)
+    assert (u / "src" / "old.ts").is_dir() and (u / "src" / "new.ts").read_text(encoding="utf-8") == MOVED
+
+
+def test_lt4_a_rename_into_a_new_folder_with_his_file_in_the_way_is_refused_before_anything_is_written(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"lib/new.ts": MOVED}, start={"src/old.ts": MOVED}, now={"lib": HIS})
+    _refused_before_writing(b, c, u)
+    assert (u / "src" / "old.ts").read_text(encoding="utf-8") == MOVED, "the move never started"
+    assert (u / "lib").read_text(encoding="utf-8") == HIS
+
+
+def test_lt5_a_dangling_link_as_the_parent_folder_is_refused_before_anything_is_written(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"d/a.ts": MOVED})
+    (u / "d").symlink_to("nowhere-at-all")
+    _refused_before_writing(b, c, u)
+    assert os.readlink(u / "d") == "nowhere-at-all"
+
+
+def test_lt6_a_link_that_loops_at_an_added_path_is_a_refusal_not_an_unhandled_error(tmp_path):
+    """`Path.resolve()` raises RuntimeError on a looping link (Python 3.12), which `except OSError` did not catch."""
+    b, c, u = _late_trees(tmp_path, {"a.ts": MOVED})
+    (u / "a.ts").symlink_to("a.ts")
+    _refused_before_writing(b, c, u)
+    assert os.readlink(u / "a.ts") == "a.ts"
+
+
+def test_lt7_a_link_that_loops_as_the_parent_folder_is_a_refusal_not_an_unhandled_error(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"d/a.ts": MOVED})
+    (u / "d").symlink_to("d")
+    _refused_before_writing(b, c, u)
+    assert os.readlink(u / "d") == "d"
+
+
+def test_lt9_a_file_two_folders_up_is_refused_before_anything_is_written(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"a/b/c.ts": MOVED}, now={"a": HIS})
+    _refused_before_writing(b, c, u)
+    assert (u / "a").is_file() and (u / "a").read_text(encoding="utf-8") == HIS
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root searches any folder")
+def test_lt10_a_folder_he_cannot_search_is_a_refusal_not_an_unhandled_error(tmp_path):
+    """The check itself meets the permission error (`lstat` of a path inside the folder): every line of it is inside
+    the one `try`, not only the first two loops."""
+    b, c, u = _late_trees(tmp_path, {"sub/x.ts": MOVED}, now={"sub/keep.txt": "k\n"})
+    _refused_before_writing(b, c, u, locked=u / "sub")
+    assert not (u / "sub" / "x.ts").exists() and (u / "sub" / "keep.txt").read_text(encoding="utf-8") == "k\n"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root searches any folder")
+def test_lt10b_a_rename_inside_a_folder_he_cannot_search_is_a_refusal_not_an_unhandled_error(tmp_path):
+    """The clash check meets it first: it looks at a rename's two ends on the disk (`is_symlink`), which raised
+    PermissionError inside the folder before the pre-flight even started. One `OSError` guard around the clash check
+    gives the same plain refusal as the other late failures, and nothing is written."""
+    b, c, u = _late_trees(tmp_path, {"sub/new.ts": MOVED}, start={"sub/old.ts": MOVED})
+    assert compute_delta(index_tree(b), index_tree(c)).renamed == [("sub/old.ts", "sub/new.ts")], "a real rename"
+    _refused_before_writing(b, c, u, locked=u / "sub")
+    assert (u / "sub" / "old.ts").read_text(encoding="utf-8") == MOVED and not (u / "sub" / "new.ts").exists()
+
+
+def test_a_looping_link_met_by_the_check_is_a_refusal_whatever_the_python_version(tmp_path, monkeypatch):
+    """LT6 and LT7 need a Python whose `resolve()` raises on a loop; this one makes it raise."""
+    b, c, u = _late_trees(tmp_path, {"a.ts": MOVED})
+
+    def loops(root: Path, rel: str) -> None:
+        raise RuntimeError(f"Symlink loop from '{root / rel}'")
+
+    monkeypatch.setattr(snap, "_assert_inside", loops)
+    result = _refused_before_writing(b, c, u)
+    assert "Symlink loop" in str(result["detail"])
+
+
+def test_a_loop_that_appears_after_the_check_is_rolled_back_not_raised(tmp_path, monkeypatch):
+    """The write loop catches RuntimeError as well as OSError: a loop that shows up between the check and a write
+    (his link, made meanwhile) is a refusal with the project restored from its bytes, not an unhandled error."""
+    b, c, u = _late_trees(tmp_path, {"a.ts": MOVED})
+    real_check, real_inside = snap._blocked_before_writing, snap._assert_inside
+    over = {"check": False}
+
+    def checked(user: Path, candidate: Path, delta: snap.Delta) -> str | None:
+        reason = real_check(user, candidate, delta)
+        over["check"] = True  # from here on the writes begin
+        return reason
+
+    def inside(root: Path, rel: str) -> None:
+        if over["check"] and rel == "a.ts":
+            raise RuntimeError(f"Symlink loop from '{root / rel}'")
+        real_inside(root, rel)
+
+    monkeypatch.setattr(snap, "_blocked_before_writing", checked)
+    monkeypatch.setattr(snap, "_assert_inside", inside)
+    result = apply_delta(u, b, c)
+    assert result["ok"] is False and result["code"] == "apply_failed" and result["applied"] == []
+    assert "Symlink loop" in str(result["detail"])
+    assert (u / "run.sh").read_text(encoding="utf-8") == SH, "the delete was rolled back"
+    assert not (u / "a.ts").exists() and (u / "README.md").read_text(encoding="utf-8") == README["README.md"]
+
+
+def test_a_disk_error_found_only_while_writing_is_still_rolled_back_from_its_bytes(tmp_path, monkeypatch):
+    """RL1: what Keep cannot know is unchanged: the second write fails, everything is put back from the bytes. (Named
+    limit, a later cut, `rollback-keeps-modes`: the deleted executable comes back as a new file.)"""
+    b, c, u = _late_trees(tmp_path, {"src/x.ts": MOVED, "src/y.ts": OTHER})
+    real, calls = snap._atomic_copy, {"n": 0}
+
+    def fails_on_the_second(src: Path, dst: Path) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(28, "No space left on device", str(dst))
+        real(src, dst)
+
+    monkeypatch.setattr(snap, "_atomic_copy", fails_on_the_second)
+    result = apply_delta(u, b, c)
+    assert result["ok"] is False and result["code"] == "apply_failed" and result["applied"] == []
+    assert (u / "run.sh").read_text(encoding="utf-8") == SH
+    assert not (u / "src" / "x.ts").exists() and not (u / "src" / "y.ts").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes into any folder")
+def test_a_read_only_folder_is_a_disk_error_found_only_while_writing(tmp_path):
+    """RL2: Keep does not guess permissions; the write fails and is rolled back from the bytes."""
+    b, c, u = _late_trees(tmp_path, {"sub/x.ts": MOVED}, now={"sub/keep.txt": "k\n"})
+    (u / "sub").chmod(0o555)
+    try:
+        result = apply_delta(u, b, c)
+    finally:
+        (u / "sub").chmod(0o755)
+    assert result["ok"] is False and result["code"] == "apply_failed" and result["applied"] == []
+    assert (u / "run.sh").read_text(encoding="utf-8") == SH and not (u / "sub" / "x.ts").exists()
+    assert (u / "sub" / "keep.txt").read_text(encoding="utf-8") == "k\n"
+
+
+def test_lg1_folders_that_do_not_exist_yet_are_made(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"deep/er/x.ts": MOVED})
+    result = apply_delta(u, b, c)
+    assert result["ok"] is True and result["applied"] == ["deep/er/x.ts", "run.sh"]
+    assert (u / "deep" / "er" / "x.ts").read_text(encoding="utf-8") == MOVED and not (u / "run.sh").exists()
+
+
+def test_lg2_an_existing_empty_folder_is_a_fine_parent(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"lib/x.ts": MOVED})
+    (u / "lib").mkdir()
+    result = apply_delta(u, b, c)
+    assert result["ok"] is True and (u / "lib" / "x.ts").read_text(encoding="utf-8") == MOVED
+
+
+def test_lg3_a_move_he_made_by_hand_still_goes_through(tmp_path):
+    b, c, u = _late_trees(tmp_path, {"src/new.ts": MOVED}, start={"src/old.ts": MOVED})
+    (u / "src" / "old.ts").rename(u / "src" / "new.ts")
+    result = apply_delta(u, b, c)
+    assert result["ok"] is True
+    assert (u / "src" / "new.ts").read_text(encoding="utf-8") == MOVED
+    assert not (u / "src" / "old.ts").exists() and not (u / "run.sh").exists()
+
+
+def test_lg6_a_link_to_a_folder_inside_the_project_is_a_parent_as_before(tmp_path):
+    """Only a parent that is not a folder is refused. A link to a folder is one, and the write goes through it."""
+    b, c, u = _late_trees(tmp_path, {"d/a.ts": MOVED})
+    (u / "real").mkdir()
+    (u / "d").symlink_to("real")
+    result = apply_delta(u, b, c)
+    assert result["ok"] is True and (u / "real" / "a.ts").read_text(encoding="utf-8") == MOVED
+
+
+# LG7: a parent that this Keep itself removes is no obstacle. The check reads the disk before the writes, and the
+# writes delete a file (or move it away) before they make the folder in its place.
+LG7_KEEPS = [
+    pytest.param(
+        {"config": "A=1\n"}, {"config/dev.json": "{}\n", "config/prod.json": '{"p": 1}\n'},
+        ["config", "config/dev.json", "config/prod.json"], id="lg7a_a_file_replaced_by_a_folder_of_files",
+    ),
+    pytest.param(
+        {"scripts/deploy": SH}, {"scripts/deploy/run.sh": SH.replace("hi", "hello")},
+        ["scripts/deploy", "scripts/deploy/run.sh"], id="lg7b_a_script_replaced_by_a_folder_with_one_inside",
+    ),
+    pytest.param(
+        {"lib": "text\n"}, {"lib.old": "text\n", "lib/x.ts": "new\n"},
+        ["lib", "lib.old", "lib/x.ts"], id="lg7c_a_file_moved_away_and_a_folder_made_where_it_was",
+    ),
+    pytest.param(
+        {"lib": "LIB\n", "x.ts": "X\n"}, {"lib.old": "LIB\n", "lib/x.ts": "X\n"},
+        ["lib", "lib.old", "lib/x.ts", "x.ts"], id="lg7d_a_file_moved_into_the_folder_that_replaces_another",
+    ),
+]
+
+
+@pytest.mark.parametrize(("start", "result", "applied"), LG7_KEEPS)
+def test_lg7_a_parent_that_this_keep_removes_or_moves_away_is_no_obstacle(tmp_path, start, result, applied):
+    b, c, u = _trees(tmp_path, {**README, **start}, {**README, **result}, {**README, **start})
+    kept = apply_delta(u, b, c)
+    assert kept["ok"] is True and kept["applied"] == applied
+    assert _state(u) == _state(c), "the project is the result, file for file"
+    assert all((u / name).is_file() for name in result)
+
+
+def _disk_ignores_case(root: Path) -> bool:
+    """True when this disk does not tell `X` from `x` (macOS by default)."""
+    probe = root / "case-probe"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        return (root / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def test_lg7e_a_file_replaced_by_a_folder_that_differs_only_in_case_goes_through(tmp_path):
+    """macOS does not tell `Docs` from `docs`: Keep deletes the file and makes the folder, as it always did. Comparing
+    the removed file's exact name with the parent refused this for good ("not a folder: docs")."""
+    if not _disk_ignores_case(tmp_path):
+        pytest.skip("this disk tells Docs from docs, so there is no such replacement to make")
+    start = {**README, "Docs": "A file named Docs\n"}
+    b, c, u = _trees(tmp_path, start, {**README, "docs/readme.md": "# docs\n"}, start)
+    kept = apply_delta(u, b, c)
+    assert kept["ok"] is True, kept
+    assert (u / "docs").is_dir() and (u / "docs" / "readme.md").read_text(encoding="utf-8") == "# docs\n"
+
+
+@pytest.mark.parametrize(
+    ("start", "result"),
+    [
+        pytest.param(
+            {"lib": "same\n"}, {"lib/index.txt": "same\n"}, id="a_file_moved_into_a_folder_made_at_its_own_name",
+        ),
+        pytest.param(
+            {"a.ts": "A\n", "lib": "LIB\n"}, {"lib/a.ts": "A\n", "lib.old": "LIB\n"},
+            id="a_move_into_the_folder_comes_before_the_move_that_clears_it",
+        ),
+    ],
+)
+def test_the_writes_make_a_folder_before_a_later_move_clears_its_name_so_the_check_refuses(tmp_path, start, result):
+    """The check follows the order of the writes: deletes, each rename (its folder first, then the move), then the
+    adds. A file still there when a folder is made on its name stops the write (Base fails these halfway too, with a
+    rollback from bytes), so it is refused before the first one."""
+    b, c, u = _late_trees(tmp_path, result, start=start)
+    _refused_before_writing(b, c, u)
+    assert all((u / name).is_file() for name in start)
+
+
 # --- The refusal sentence --------------------------------------------------------------------------------------
 
 HEAD = "Not kept: since these changes were started, "

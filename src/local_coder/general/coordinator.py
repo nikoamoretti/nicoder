@@ -58,6 +58,8 @@ from local_coder.general.request_state import (
     DROPPED,
     KEPT,
     KEPT_WITH,
+    UNDONE_BY,
+    UNDONE_SENTENCE,
     WAITING,
     built_on,
     dropped_files,
@@ -65,6 +67,7 @@ from local_coder.general.request_state import (
     request_outcome,
     request_state,
     waiting_on_top,
+    was_undone,
 )
 from local_coder.general.snapshot import (
     EMPTY_RESULT_SENTENCE,
@@ -575,7 +578,8 @@ def _newer_request_to_decide(metas: dict[str, dict[str, Any]], request_id: str) 
     """The newest request built on this one that still has changes to Keep or Discard, or None.
 
     Keeping that one puts this one's changes into the project too, so this one can not be decided alone.
-    A newer request with no files (it undid them) has nothing to keep and does not count.
+    A newer request with no files has nothing to keep and does not count: it failed, was stopped or changed nothing
+    (one that undid this one and ended normally has closed it instead, `_close_what_was_undone`).
     """
     deciding: list[str] = []
     for other in waiting_on_top(metas, request_id):
@@ -648,6 +652,73 @@ def _close_what_went_in(metas: dict[str, dict[str, Any]], request_id: str, appli
             continue
         older.update(record)
         closed.append(older_id)
+    return closed
+
+
+def _ended_normally(meta: dict[str, Any], cancel: threading.Event) -> bool:
+    """True when the run finished the way a run does: not stopped, not cut short and not failed.
+
+    Read from the run's own record, never from a model's words: Stop was not pressed, `stop_reason` is empty or
+    `checks_passed`, `stopped_incomplete` is unset, and for the hosted agent its last status is `answered` (not
+    `stopped`, `error`, `step_limit` or `time_limit`).
+    """
+    if cancel.is_set() or meta.get("stopped_incomplete") or meta.get("stop_reason") not in (None, "", "checks_passed"):
+        return False
+    if meta.get("engine") == "agent":
+        agent = meta.get("agent")
+        return isinstance(agent, dict) and agent.get("status") == "answered"
+    return True
+
+
+def _undid_the_stack(meta: dict[str, Any]) -> bool:
+    """True when the request has no files of its own and its working copy is exactly the start of the stack.
+
+    No files alone is not enough: an idle follow-up (a failure, an answer without edits) lists none either, because it
+    publishes its baseline, but its copy is the result it was built on. So the copy is read too: it must list exactly
+    the files the frozen baseline lists, with the same content. Anything that cannot be read is "no".
+    """
+    indexes = _result_indexes(meta)
+    if indexes is None or compute_delta(*indexes).touched():
+        return False
+    live = Path(str(meta.get("engine_cwd") or meta["candidate"]))
+    return live.is_dir() and _tree_hashes(live) == _identity(indexes[0])
+
+
+def _close_what_was_undone(meta: dict[str, Any], cancel: threading.Event) -> list[str]:
+    """Close every waiting request this one undid, nearest first; returns their ids. Called once, at the end of a run.
+
+    A request built on a waiting result that ended normally with no files of its own, because its working copy is
+    exactly the start of the stack, took every change of that stack back out. None of those files went into the
+    project and a Keep of them would put back what he asked to remove, so each one is closed as discarded with
+    `undone_by` naming this request: never as kept, since nothing went in. The walk is a Keep's (`_carried_chain`):
+    nearest first, and it stops at the first request with no files. A request that is not waiting keeps its own words
+    and a result that cannot be read is left as it was. A record that cannot be saved is left as it was too, and the
+    walk ends there: no older request is closed over it, because the newer one stays keepable and its Keep carries the
+    older one's files into the project, which the older one would then say were never added. Nothing here may fail the
+    run. Only request records are written: never the folder, never the working copy, never this request's own record.
+
+    A run that was stopped, failed or cut short closes nothing: Stop is "not that", a dropped stream is not a decision,
+    a run that stopped halfway may have done only the first half of what he asked, and the older result is intact on
+    disk, so its Keep still means what its card says (the copy is then at the start of the stack, so the next request is
+    not built on it: the `undo-stopped` cut).
+    """
+    if not meta.get(BUILT_ON) or not _ended_normally(meta, cancel):
+        return []
+    closed: list[str] = []
+    try:
+        if not _undid_the_stack(meta):
+            return []
+        request_id = str(meta["request_id"])
+        metas = {**_project_metas(str(meta["project_id"])), request_id: meta}
+        for older_id, older, files in _carried_chain(metas, request_id):
+            if request_state(older) != WAITING or files is None:
+                continue
+            record = {**older, "discarded": True, UNDONE_BY: request_id}
+            _save_meta(record)  # one that cannot be saved raises into the guard below: the walk ends there
+            older.update(record)
+            closed.append(older_id)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        pass  # a record or result that cannot be read leaves the rest as it was, and must never fail the run
     return closed
 
 
@@ -749,6 +820,9 @@ def run_general_request(
 
     With an agent-capable model (or `agent_chat` in tests), Local Coder's own
     agent edits the working copy with tools instead of the file-block path.
+
+    A request that ends normally with the working copy exactly as the stack it was built on started has undone that
+    stack: the waiting requests it was built on are closed before the review is made (`_close_what_was_undone`).
     """
     folder = Path(user_path).expanduser().resolve()
     problem = folder_problem(folder)
@@ -897,6 +971,7 @@ def run_general_request(
         meta["model_commentary"] = stopped_text(_has_file_changes(Path(meta["baseline"]), candidate))
     meta["generation_ledger"] = ledger.snapshot()
     _save_meta(meta)
+    _close_what_was_undone(meta, cancel)
     review = review_payload(meta["project_id"], request_id)
     from local_coder.general.chat_log import append_turn, load_chat
 
@@ -1592,6 +1667,8 @@ def _has_file_changes(before: Path, after: Path) -> bool:
 
 
 DISCARDED_SUMMARY = "Discarded. These changes were not added to your project."
+DISCARDED_KEEP = "This request was discarded, so there is nothing to keep."
+ALREADY_DISCARDED = "Already discarded."
 KEPT_SUMMARY = "These changes are in your project."
 KEPT_WITH_SUMMARY = "These changes went in with a later request you kept."
 ALREADY_KEPT = "These changes are already in your project."
@@ -1628,7 +1705,7 @@ def _discarded_payload(meta: dict[str, Any], project_id: str, request_id: str) -
         "preview": {},
         "project_id": project_id,
         "repo_path": meta["user_path"],
-        "summary": DISCARDED_SUMMARY,
+        "summary": UNDONE_SENTENCE if was_undone(meta) else DISCARDED_SUMMARY,
         "diff": "",
         "outcome": DISCARDED,
         "facts": {
@@ -1802,7 +1879,7 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
     metas = records_as_read(records)
     state = request_state(metas[request_id])
     if state == DISCARDED:
-        raise GeneralError("This request was discarded, so there is nothing to keep.", code="discarded")
+        raise GeneralError(UNDONE_SENTENCE if was_undone(metas[request_id]) else DISCARDED_KEEP, code="discarded")
     if state == KEPT:
         raise GeneralError(_closed_words(metas[request_id], ALREADY_KEPT), code="kept")
     own = request_delta(meta)
@@ -1888,7 +1965,8 @@ def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
     if state == KEPT:
         raise GeneralError(_closed_words(meta, ALREADY_KEPT_DISCARD), code="kept")
     if state == DISCARDED:
-        return {"ok": True, "discarded": True, "request_id": request_id, "detail": "Already discarded."}
+        said = UNDONE_SENTENCE if was_undone(meta) else ALREADY_DISCARDED
+        return {"ok": True, "discarded": True, "request_id": request_id, "detail": said}
     if _request_in_flight(project_id):
         raise GeneralError(
             "A request is still running in this project. Wait for it to finish, or stop it, then discard.",

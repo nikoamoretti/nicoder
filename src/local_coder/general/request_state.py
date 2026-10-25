@@ -20,6 +20,17 @@ built on it (left by an older build, or a record that could not be saved) is rea
 record; nothing is rewritten. A closed request can be neither kept nor discarded, and an older one can not be kept
 or discarded on its own while the newer one still has changes to decide.
 
+A request can also be undone. One built on a waiting result that ends normally with no files of its own, because its
+working copy is exactly the start of the stack (the files its baseline lists, with the same content: not the result it
+was built on, which an idle follow-up leaves there), took every change of that stack back out. It closes every waiting
+request it was built on, nearest first, as discarded with `undone_by` naming it: none of their files went into the
+project and a Keep would only put back what he asked to remove. The walk stops at the first request with no files, a
+request that is not waiting keeps its own words, and a result that cannot be read is left as it was. So is a record
+that cannot be saved, and the walk ends there: no older request is closed over it. Only the records are written. A
+run that was stopped, failed or cut short closes nothing (Stop is "not that", a dropped stream is not a decision): the
+copy is then at the start of the stack, so the next request is not built on that result, which stays keepable on its own
+(a named limit, the `undo-stopped` cut).
+
 A Discard puts the working copy back to where the request started: the result it was built on while that still
 waits, else its own baseline (a request with no files of its own leaves the copy as it is), so the stack
 survives it. A request built on an older one that ends with the copy exactly as that result has no result of its
@@ -41,6 +52,11 @@ DISCARDED = "discarded"
 BUILT_ON = "built_on"
 KEPT_WITH = "kept_with"
 DROPPED = "dropped"
+
+# The key in meta.json of a request that a later request undid (it names that request), and the one sentence the card,
+# Keep and Discard say of it. Such a request is also `discarded`, so every reader of the state agrees it is closed.
+UNDONE_BY = "undone_by"
+UNDONE_SENTENCE = "A later request undid these changes, so they were not added to your project."
 
 # The History word of a closed request that a later Keep took files back from.
 REPLACED = "replaced"
@@ -65,6 +81,11 @@ def request_state(meta: Any) -> str:
 def is_closed(meta: Any) -> bool:
     """True once the request was kept or discarded: its result can no longer be decided."""
     return request_state(meta) != WAITING
+
+
+def was_undone(meta: Any) -> bool:
+    """True for a request closed because a later request took all its changes back out (`undone_by` names it)."""
+    return request_state(meta) == DISCARDED and bool(meta.get(UNDONE_BY))
 
 
 def dropped_files(meta: Any) -> list[str]:

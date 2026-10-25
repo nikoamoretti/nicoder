@@ -128,12 +128,15 @@
   the disk ignores case): the destination must be free or hold the text the request
   wrote, the source must still be there unchanged unless he already made the move
   himself, and a link at either end refuses. `apply_delta` finds a result with no
-  files left while its baseline lists some, clashes, a link, a folder at a
-  rename's destination and a path leaving the project before its first write,
-  because `_rollback` restores bytes only; a plain file where a folder
-  must be made, a folder where an added file goes, a looping link and disk errors
-  are found only while writing and rolled back (a deleted file comes back 0644,
-  until the `keep-late-failures` cut). A clash refusal names the
+  files left while its baseline lists some, clashes, a link, a folder where a file
+  goes or where a rename's source was, a plain file (or a link that is not a
+  folder) where a folder must be made unless that Keep removes it first (checked
+  in the order of the writes), a looping link, a folder he cannot search and a
+  path leaving the project before its first write, because `_rollback` restores
+  bytes only; a disk error is the one thing found only while writing, and it is
+  rolled back (a deleted file comes back 0644, until the `rollback-keeps-modes`
+  cut). The refusals after the clashes keep the generic sentence (clashes and
+  `empty_result` have their own, below). A clash refusal names the
   files and what happened to each (`snapshot.conflict_sentence`: "Not kept: since
   these changes were started, src/a.ts was changed in your project. Your project
   was not changed."; at most three names, then a count); `apply_delta`'s own
@@ -195,10 +198,28 @@
   does not hold the older one back, its card forgets the check verdicts (the check log stays as evidence), and it keeps its
   History word (`error`, `stopped`, `review`). The next request passes over such
   requests and over discarded ones, and a question still finds the waiting result
-  behind them (`waiting.LOOK_AT`, 30). Known limits: a visible junk file (such as
-  `.coverage`), or a local request after a hosted one on a Babel project (the local
-  path's SWC rewrite), makes it a real stack as before; a run that crashes leaves its
-  stray files in the copy, so the next request starts from the folder.
+  behind them (`waiting.LOOK_AT`, 30). A request built on a waiting result that ends
+  normally with the working copy exactly as the stack started (no files of its own,
+  and the copy is the start of its baseline, not the result it was built on) closes
+  every waiting request it was built on, nearest first, as discarded with `undone_by`
+  (`coordinator._close_what_was_undone`, once, at the end of the run, from the two
+  trees and the run's recorded end, never the model's words; the walk stops at the
+  first request with no files; a request that is not waiting and a result that cannot
+  be read are left as they were; so is a record that cannot be saved, and the walk
+  ends there, so no older request is closed over it; the folder is never
+  written). The card, Keep (code `discarded`) and Discard (ok) say "A later request
+  undid these changes, so they were not added to your project."
+  (`request_state.UNDONE_SENTENCE`); a request he discarded himself keeps his words.
+  A run that was stopped, failed or cut short closes nothing: the copy is then at the
+  stack's start, so the next request is not built on that result, which stays
+  keepable on its own (a named limit, the `undo-stopped` cut). Known limits: a
+  visible junk file (such as `.coverage`), or a local request after a hosted one on a
+  Babel project (the local path's SWC rewrite), makes it a real stack as before; a
+  run that crashes leaves its stray files in the copy, so the next request starts
+  from the folder; a local undo on a project without `src/` does not end
+  `checks_passed` (the start state fails Local Coder's own checks, and the engine
+  retries its repairs first), which counts as cut short, so the old request stays
+  keepable there.
 - `src/local_coder/general/waiting.py` — a question asked while a result waits
   for Keep or Discard gets a note built from the request's own record (title,
   age, files, "not in the folder yet", and for the agent where to read the
