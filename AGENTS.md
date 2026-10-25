@@ -135,7 +135,8 @@
   path leaving the project before its first write, because `_rollback` restores
   bytes only; a disk error is the one thing found only while writing, and it is
   rolled back (a deleted file comes back 0644, until the `rollback-keeps-modes`
-  cut). Those refusals keep the generic sentence. A clash refusal names the
+  cut). The refusals after the clashes keep the generic sentence (clashes and
+  `empty_result` have their own, below). A clash refusal names the
   files and what happened to each (`snapshot.conflict_sentence`: "Not kept: since
   these changes were started, src/a.ts was changed in your project. Your project
   was not changed."; at most three names, then a count); `apply_delta`'s own

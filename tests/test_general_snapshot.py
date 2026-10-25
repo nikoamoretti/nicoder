@@ -500,6 +500,17 @@ def test_lt10_a_folder_he_cannot_search_is_a_refusal_not_an_unhandled_error(tmp_
     assert not (u / "sub" / "x.ts").exists() and (u / "sub" / "keep.txt").read_text(encoding="utf-8") == "k\n"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root searches any folder")
+def test_lt10b_a_rename_inside_a_folder_he_cannot_search_is_a_refusal_not_an_unhandled_error(tmp_path):
+    """The clash check meets it first: it looks at a rename's two ends on the disk (`is_symlink`), which raised
+    PermissionError inside the folder before the pre-flight even started. One `OSError` guard around the clash check
+    gives the same plain refusal as the other late failures, and nothing is written."""
+    b, c, u = _late_trees(tmp_path, {"sub/new.ts": MOVED}, start={"sub/old.ts": MOVED})
+    assert compute_delta(index_tree(b), index_tree(c)).renamed == [("sub/old.ts", "sub/new.ts")], "a real rename"
+    _refused_before_writing(b, c, u, locked=u / "sub")
+    assert (u / "sub" / "old.ts").read_text(encoding="utf-8") == MOVED and not (u / "sub" / "new.ts").exists()
+
+
 def test_a_looping_link_met_by_the_check_is_a_refusal_whatever_the_python_version(tmp_path, monkeypatch):
     """LT6 and LT7 need a Python whose `resolve()` raises on a loop; this one makes it raise."""
     b, c, u = _late_trees(tmp_path, {"a.ts": MOVED})

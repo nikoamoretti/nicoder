@@ -242,6 +242,16 @@ def test_lt10_a_folder_he_cannot_search(project):
     assert not (project / "sub" / "x.ts").exists()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root searches any folder")
+def test_lt10b_a_rename_inside_a_folder_he_cannot_search(project):
+    """Was code `internal` too: the clash check looks at a rename's two ends on the disk, inside the folder, before the
+    pre-flight starts (QA's repro). The request moves src/old.ts to src/new.ts; src is then made unsearchable."""
+    local(project, "r1", deletes_run_sh_and(moves("src/old.ts", "src/new.ts")))
+    refused_before_writing(project, "r1", stamps(project), locked=project / "src")
+    assert (project / "src" / "old.ts").read_text(encoding="utf-8") == MOVED
+    assert not (project / "src" / "new.ts").exists()
+
+
 # === The guards: a Keep that can go through still does ============================================================
 
 

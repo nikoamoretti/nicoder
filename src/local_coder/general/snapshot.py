@@ -411,7 +411,8 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
     """Apply B→C onto U transactionally. Refuses on conflict or path escape.
 
     Found before the first delete or write, in one pass: a result with no files left while the baseline lists some
-    (`would_empty_project`), a clash with what he changed (both ends of every rename included) and whatever else
+    (`would_empty_project`), a clash with what he changed (both ends of every rename included; looking at them on the
+    disk inside a folder he cannot search is an `OSError`, refused as `apply_failed` like the rest) and whatever else
     `_blocked_before_writing` can know (a link, a folder or a file in the way, a looping link, a folder he cannot
     search, a path leaving the project). Found only while writing: a disk error (a full disk, a folder that is
     read-only). It is rolled back, but `_rollback` restores bytes only: a deleted executable comes back as a new
@@ -426,7 +427,10 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
     if would_empty_project(b_index, c_index):
         return {"ok": False, "code": EMPTY_RESULT_CODE, "detail": EMPTY_RESULT_SENTENCE, "applied": []}
     u_index = index_tree(user)
-    conflicts = find_conflicts(b_index, c_index, u_index)
+    try:
+        conflicts = find_conflicts(b_index, c_index, u_index)
+    except OSError as exc:  # a rename's two ends are looked at on the disk: inside a folder he cannot search that fails
+        return {"ok": False, "code": "apply_failed", "detail": str(exc), "applied": []}
     if conflicts:
         return {
             "ok": False,
