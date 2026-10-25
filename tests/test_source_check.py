@@ -68,3 +68,19 @@ def test_a_regex_class_and_apostrophes_in_jsx_are_not_errors():
         "export const Note = () => <p>It's the commune's latest figure (don't round it)</p>;\n"
     )
     assert scan_text("src/ingestion/normalise.tsx", text) == []
+
+
+def test_a_broken_file_is_still_caught_without_a_build():
+    assert scan_text("src/App.tsx", "export default function App(){return <h1>Tasks</h1\n")
+
+
+def test_apostrophes_in_words_do_not_unbalance_the_count():
+    text = "export const N = () => <p>Vider l'entrepôt ? C'est fini (vraiment). It's done {count}.</p>;\n"
+    assert scan_text("src/App.tsx", text) == []
+
+
+def test_a_regex_with_quotes_and_brackets_is_not_an_error():
+    # From Nico's upload.ts: the quotes inside the pattern were read as strings.
+    text = 'for (const m of s.matchAll(/<Rel[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)) { use(m) }\n'
+    assert scan_text("src/ingestion/upload.ts", text) == []
+    assert scan_text("src/a.ts", "const half = (a + b) / 2; const r = total / count;\n") == []
