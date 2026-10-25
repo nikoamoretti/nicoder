@@ -7,7 +7,7 @@ struct LocalCoderApp: App {
     @StateObject private var model = AppModel.shared
 
     var body: some Scene {
-        Window("Local Coder", id: "main") {
+        Window("Nicoder", id: "main") {
             WindowRoot()
                 .environmentObject(model)
         }

@@ -125,7 +125,7 @@ private struct ChecksRow: View {
         let ran = rows.filter { $0.1 != "not_run" }
         HStack(spacing: 6) {
             if ran.isEmpty {
-                Label("Local Coder did not run checks for this project", systemImage: "minus.circle")
+                Label("Nicoder did not run checks for this project", systemImage: "minus.circle")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(ran, id: \.0) { name, word in

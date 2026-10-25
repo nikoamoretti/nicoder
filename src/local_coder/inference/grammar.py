@@ -1,4 +1,4 @@
-"""GBNF grammars for the Local Coder action protocol.
+"""GBNF grammars for the Nicoder action protocol.
 
 v1 mirrors protocol.py v1 exactly (unified-diff PATCH, legacy control).
 v2 mirrors the exact-replacement PATCH; v3 mirrors span-ID selection PATCH.

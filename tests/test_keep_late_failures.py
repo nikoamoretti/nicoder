@@ -2,7 +2,7 @@
 
 Keep deletes first and writes after. A refusal found halfway is rolled back from the bytes, so an executable the request
 deleted comes back as a new file (mode 0644, a new mtime), and a few shapes were not even refused: a looping link and a
-folder he cannot search were an unhandled error ("Local Coder hit an unexpected problem"). Now everything Keep can know
+folder he cannot search were an unhandled error ("Nicoder hit an unexpected problem"). Now everything Keep can know
 is found first: a plain file or a link that is not a folder where a folder must be made, a folder where a file goes,
 a folder where a hand-made move's source was, a looping link, a folder he cannot search. A parent that this Keep removes
 or moves away itself is no obstacle. The sentence is the generic one, as for a link or a folder at a rename's
@@ -28,7 +28,7 @@ from local_coder.general import snapshot as snapshot_module
 from local_coder.general.coordinator import list_requests, run_general_request
 
 GENERIC = (
-    "Local Coder could not write these changes into your project. "
+    "Nicoder could not write these changes into your project. "
     "Check that its folder and files can be changed, then try Keep again."
 )
 SH = "#!/bin/sh\necho hi\n"
@@ -198,7 +198,7 @@ def test_lt5_a_dangling_link_as_the_parent_folder(project):
 
 
 def test_lt6_a_link_that_loops_at_an_added_path(project):
-    """Was "Local Coder hit an unexpected problem" (code `internal`): `resolve()` raises RuntimeError on a loop."""
+    """Was "Nicoder hit an unexpected problem" (code `internal`): `resolve()` raises RuntimeError on a loop."""
     local(project, "r1", deletes_run_sh_and(adds("a.ts", "A\n")))
     (project / "a.ts").symlink_to("a.ts")
     refused_before_writing(project, "r1", stamps(project))

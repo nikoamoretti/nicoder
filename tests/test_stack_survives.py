@@ -919,7 +919,7 @@ def edit_app(old: str, new: str, call_id: str = "e") -> dict:
 
 
 def test_a_failed_follow_up_on_a_vite_app_runs_no_check_and_the_retry_is_checked_as_a_whole(home):
-    """ID9: it used to list src/App.tsx, run Local Coder's checks and record `checks_passed` for a failed model.
+    """ID9: it used to list src/App.tsx, run Nicoder's checks and record `checks_passed` for a failed model.
 
     A web app that already holds the starter's files, as an older build's New Project left it (an empty folder gets
     the starter in the request's working copy instead: the next test).
@@ -1029,7 +1029,7 @@ def test_a_babel_vite_project_keeps_package_json_and_vite_config_out_of_every_re
 
 
 def test_a_local_model_that_re_emits_a_file_unchanged_is_idle_costs_one_model_call_and_runs_no_check(home):
-    """x1b: `apply_files` counts an identical rewrite as written. The follow-up used to run Local Coder's checks on
+    """x1b: `apply_files` counts an identical rewrite as written. The follow-up used to run Nicoder's checks on
     the baseline copy, fail 'the preview is still the empty starter page' and spend three model calls on it.
 
     A web app that already holds the starter's files, as an older build's New Project left it (an empty folder gets
@@ -1084,7 +1084,7 @@ def test_a_local_model_that_re_emits_a_file_unchanged_on_a_first_request_in_an_e
 
 
 def test_an_idle_publish_leaves_no_stale_check_text_on_the_card(home):
-    """x6: the agent breaks App.tsx, Local Coder's check fails, the agent reverts to R1's exact text. The card must not
+    """x6: the agent breaks App.tsx, Nicoder's check fails, the agent reverts to R1's exact text. The card must not
     keep 'I wrote 0 files, but the in-app preview does not run ... Keep only if you want these files anyway'."""
     folder = home / "Local Coder Projects" / "board"
     folder.mkdir(parents=True)

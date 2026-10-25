@@ -1,7 +1,7 @@
 """Delegation for other agents (Claude Code through MCP): cheap-model reading and drafted changes.
 
 Always uses the hosted Nemotron 3.5 Super 120B catalog entry, whatever model the
-Local Coder app has selected. `explore` is read-only and stays inside the given
+Nicoder app has selected. `explore` is read-only and stays inside the given
 project. `create_draft` changes a private copy of the project; nothing reaches
 the project until `apply_draft` (which refuses if the same files changed
 meanwhile), and `discard_draft` throws the copy away.

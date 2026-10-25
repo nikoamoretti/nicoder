@@ -1,6 +1,6 @@
 """Cut hosted-follow-up: on the hosted model a follow-up builds on the result that still waits for Keep.
 
-Talk and act run Local Coder's own agent on a hosted model. Like every other engine, that agent's request finds
+Talk and act run Nicoder's own agent on a hosted model. Like every other engine, that agent's request finds
 the result that still waits in the project's sticky working copy and is built on it (`built_on`): its baseline is
 that result's baseline, its agent starts in the copy as that result left it, its review lists both requests'
 files, and one Keep takes both and closes the older request. Before, the follow-up read the folder (the old
@@ -369,7 +369,7 @@ def test_keeping_a_follow_up_on_another_file_takes_both_files_and_keeps_his_edit
 
 
 def test_a_follow_up_on_a_vite_web_app_is_checked_as_a_whole_with_the_waiting_result(home):
-    """HF9: the daily-driver shape. Local Coder's own checks run on the stack and the follow-up reads the heading.
+    """HF9: the daily-driver shape. Nicoder's own checks run on the stack and the follow-up reads the heading.
 
     A web app that already holds the starter's files, as an older build's New Project left it: an empty folder gets
     the starter in the request's working copy instead (the next test), and this one is about the checks and the stack.
@@ -472,7 +472,7 @@ BABEL_INDEX = (
 
 @pytest.fixture
 def babel(home) -> Path:
-    """A Vite project on the Babel React plugin: Local Coder's preview setup rewrites it to the SWC plugin."""
+    """A Vite project on the Babel React plugin: Nicoder's preview setup rewrites it to the SWC plugin."""
     root = home / "projects" / "babel-app"
     (root / "src").mkdir(parents=True)
     (root / "package.json").write_text(json.dumps(BABEL_PACKAGE, indent=2) + "\n", encoding="utf-8")

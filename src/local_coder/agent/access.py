@@ -187,7 +187,7 @@ class AccessPolicy:
         if self.workdir_real is None:
             raise AccessDenied(
                 "This conversation cannot change files. Describe the change; the user can ask "
-                "Local Coder to make it in the project."
+                "Nicoder to make it in the project."
             )
         path = self.redirect(self.expand(raw, base))
         if not _under(path, self.workdir_real) or path == self.workdir_real:

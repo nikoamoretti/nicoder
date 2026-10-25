@@ -1,4 +1,4 @@
-"""Local Coder command line.
+"""Nicoder command line.
 
 Installed entry point: ``local-coder``. Commands:
 init, setup, doctor, server start|status|stop, run, inspect, resume, diff,
@@ -695,7 +695,7 @@ def build_parser() -> argparse.ArgumentParser:
             _add_llama_args(p)
         p.set_defaults(func=func)
 
-    p = sub.add_parser("app-rpc", help="JSON-lines helper for Local Coder.app (not a network service)")
+    p = sub.add_parser("app-rpc", help="JSON-lines helper for Nicoder.app (not a network service)")
     p.set_defaults(func=_cmd_app_rpc)
 
     return parser

@@ -12,8 +12,8 @@ import traceback
 
 from local_coder.engines.opencode_config import data_root
 
-UNEXPECTED = "Local Coder hit an unexpected problem and could not finish that. Please try again."
-NOT_FOUND = "Local Coder could not find that. It may have been moved or deleted."
+UNEXPECTED = "Nicoder hit an unexpected problem and could not finish that. Please try again."
+NOT_FOUND = "Nicoder could not find that. It may have been moved or deleted."
 LOG_NAME = "helper-errors.log"
 MAX_LOG_BYTES = 512_000
 

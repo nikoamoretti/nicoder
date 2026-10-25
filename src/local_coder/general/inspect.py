@@ -79,7 +79,7 @@ def folder_problem(path: str | Path) -> dict[str, str] | None:
     """Why this path cannot be a project folder, in plain words, or None when it can be one.
 
     Cheap on purpose (no scan of the project), so a request can ask before it starts anything.
-    Local Coder never creates a folder for an old project: only New Project and the welcome
+    Nicoder never creates a folder for an old project: only New Project and the welcome
     chat make folders.
     """
     repo = Path(path).expanduser().resolve()
@@ -105,7 +105,7 @@ def _unreadable(name: str) -> dict[str, str]:
     return {
         "verdict": "unreadable",
         "summary": (
-            f"Local Coder cannot read the folder “{name}”. Check its permissions in Finder, or open another project."
+            f"Nicoder cannot read the folder “{name}”. Check its permissions in Finder, or open another project."
         ),
     }
 
@@ -212,7 +212,7 @@ def _inspect_folder(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
         }
         if report["git"]["dirty"]:
             report["notes"].append(
-                "This folder has uncommitted work. Local Coder will copy the current files, "
+                "This folder has uncommitted work. Nicoder will copy the current files, "
                 "including those edits, and will not require a commit."
             )
     else:
@@ -224,7 +224,7 @@ def _inspect_folder(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
         report["verdict"] = "empty"
         report["can_create"] = True
         report["summary"] = (
-            "This folder is empty. Describe the application you want, and Local Coder "
+            "This folder is empty. Describe the application you want, and Nicoder "
             "will try to build it here."
         )
         return report

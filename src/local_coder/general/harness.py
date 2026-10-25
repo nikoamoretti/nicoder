@@ -1,4 +1,4 @@
-"""Tiny candidate-only tools. Local Coder applies them; the model never owns the tree."""
+"""Tiny candidate-only tools. Nicoder applies them; the model never owns the tree."""
 from __future__ import annotations
 
 import hashlib

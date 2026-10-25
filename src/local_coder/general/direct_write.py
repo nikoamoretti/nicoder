@@ -1,6 +1,6 @@
 """Ask the local model for file bodies and apply them onto a snapshot.
 
-Local Coder owns apply. The model cannot write the original tree. Keep/Discard
+Nicoder owns apply. The model cannot write the original tree. Keep/Discard
 still decide what lands in the user's folder.
 """
 from __future__ import annotations
@@ -94,7 +94,7 @@ class CompletionResult:
 
 @dataclass
 class ReplyOutcome:
-    """What Local Coder did with one model reply. Runtime facts, not the model's claims."""
+    """What Nicoder did with one model reply. Runtime facts, not the model's claims."""
 
     kind: str
     files: list[str] = field(default_factory=list)
@@ -109,7 +109,7 @@ class ReplyOutcome:
         if self.kind == "applied":
             return (
                 f"Your previous reply was applied: it changed {', '.join(self.files)}. "
-                "Local Coder reran the checks; the diagnostic below is the result after that change."
+                "Nicoder reran the checks; the diagnostic below is the result after that change."
             )
         if self.kind == "read":
             extra = ""
@@ -121,7 +121,7 @@ class ReplyOutcome:
                 )
             refused = f" Not read: {problems}." if self.problems else ""
             return (
-                f"You asked to read {', '.join(self.reads)}. Local Coder queued those reads. "
+                f"You asked to read {', '.join(self.reads)}. Nicoder queued those reads. "
                 "The Source section and 'This request includes' list what is actually in THIS "
                 f"request.{extra}{refused} Nothing was changed yet."
             )
@@ -143,7 +143,7 @@ class ReplyOutcome:
             )
         if self.kind == "no_action":
             return (
-                "Your previous reply had no edit, write, or read block that Local Coder could run, "
+                "Your previous reply had no edit, write, or read block that Nicoder could run, "
                 "so nothing was read or applied. To read files, send one read fence per file exactly "
                 "as in the Blocks section below; to change code, use edit blocks."
             )
@@ -306,7 +306,7 @@ def implement_prompt(
     return (
         f"{retry}"
         "Implement the user's request now. "
-        "Do not plan. Do not say the work must happen outside Local Coder. "
+        "Do not plan. Do not say the work must happen outside Nicoder. "
         "First write 2-4 sentences for the user: what changed and how the app "
         "looks or behaves now. No code, no file-path dump. "
         "Then use only these blocks. No bash, no shell, no other tools.\n"
@@ -439,7 +439,7 @@ def local_complete(prompt: str) -> CompletionResult:
         except ServerError:
             pass
     system = (
-        "You change files in Local Coder with write, edit, or read blocks. "
+        "You change files in Nicoder with write, edit, or read blocks. "
         "First a short plain-language summary. No plans. No shell."
     )
     max_tokens = max(256, int(cfg.max_tokens or 2048))

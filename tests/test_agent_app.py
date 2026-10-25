@@ -191,7 +191,7 @@ def test_failed_checks_go_back_to_the_agent(monkeypatch, home):
     )
     review = run_general_request(folder, "Show Tasks", agent_chat=script, start_preview_after=False)
     feedback = script.sent[2][-1]["content"]
-    assert feedback.startswith("Local Coder checked the working copy")
+    assert feedback.startswith("Nicoder checked the working copy")
     assert "Missing" in feedback
     meta = load_meta(review["project_id"], review["request_id"])
     assert meta["stop_reason"] == "checks_passed"
@@ -303,12 +303,12 @@ def test_requests_list_their_text_and_how_they_ended(tmp_path):
     second["agent"] = {"status": "stopped"}
     _save_meta(second)
     (Path(second["baseline"]).parent / "agent_transcript.json").write_text(json.dumps({"messages": [
-        {"role": "system", "content": "You are Local Coder."},
+        {"role": "system", "content": "You are Nicoder."},
         {"role": "user", "content": "An earlier question"},
         {"role": "assistant", "content": "An earlier answer"},
         {"role": "user", "content": "Make the header sticky\nand blue"},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
-        {"role": "user", "content": "Local Coder's check failed"},
+        {"role": "user", "content": "Nicoder's check failed"},
     ]}), encoding="utf-8")
     rows = {row["request_id"]: row for row in list_requests(repo)}
     assert (rows["ep-1"]["request"], rows["ep-1"]["outcome"]) == ("Add a dark mode toggle", "kept")

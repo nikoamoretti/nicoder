@@ -1,7 +1,7 @@
 """The result that is waiting for Keep or Discard, described for a question about it.
 
 A question asked while a change waits would otherwise be answered from the project folder, which does not
-hold the change yet, and the model would call correct work "never applied". Local Coder tells the model
+hold the change yet, and the model would call correct work "never applied". Nicoder tells the model
 what is waiting, from the request's own record and never from model text. The note is for the model only:
 it is not saved in the chat.
 """
@@ -129,7 +129,7 @@ def waiting_note(user_path: str | Path | None, *, can_read: bool) -> str:
         title = f" “{waiting.title}”" if waiting.title else ""
         age = age_text(time.time() - waiting.created_ts)
         return (
-            f"Local Coder's own record, not the user's words: the request{title} (made {age}) {what}. "
+            f"Nicoder's own record, not the user's words: the request{title} (made {age}) {what}. "
             "That result is waiting for the user to Keep or Discard, so it is not in the folder yet: the "
             "project's own files still show the old code, which does not mean the change failed. "
             f"To check what the change does, read the waiting copy (read-only) in {waiting.candidate}, "

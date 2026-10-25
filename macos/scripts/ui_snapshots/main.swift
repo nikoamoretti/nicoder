@@ -1,4 +1,4 @@
-// Offscreen snapshots of Local Coder's screens with sample data (no engine, nothing on the user's screen).
+// Offscreen snapshots of Nicoder's screens with sample data (no engine, nothing on the user's screen).
 // Run: macos/scripts/ui_snapshots/snapshots.sh <out-dir> [--light]
 import AppKit
 import SwiftUI

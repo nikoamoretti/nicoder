@@ -116,7 +116,7 @@ def test_implement_prompt_covers_first_build_and_wrap(tmp_path):
         tmp_path,
     )
     assert "Can you make this a standalone mac app?" in prompt
-    assert "outside Local Coder" in prompt
+    assert "outside Nicoder" in prompt
     assert "electron/" in prompt
     assert "2-4 sentences" in prompt
     assert "App.css" in prompt

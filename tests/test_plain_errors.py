@@ -214,7 +214,7 @@ def test_a_worker_failure_is_one_plain_sentence_and_not_a_done(repo_copy, monkey
 
 
 def test_a_deliberate_refusal_in_the_worker_keeps_its_own_sentence(repo_copy, monkeypatch):
-    sentence = "A model server is already running at http://127.0.0.1:8080 but Local Coder did not start it."
+    sentence = "A model server is already running at http://127.0.0.1:8080 but Nicoder did not start it."
 
     def refuse(*_args, **_kwargs):
         raise GeneralError(sentence, code="foreign_server")

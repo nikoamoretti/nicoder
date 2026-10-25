@@ -77,7 +77,7 @@ def test_write_engine_home_does_not_touch_user_opencode(tmp_path, monkeypatch):
     assert not (tmp_path / "real-home" / ".config" / "opencode" / "opencode.json").exists()
     agents = path.parent / "AGENTS.md"
     assert agents.is_file()
-    assert "Local Coder" in agents.read_text(encoding="utf-8")
+    assert "Nicoder" in agents.read_text(encoding="utf-8")
     leftover = path.parent.parent.parent / ".claude" / "skills" / "trap"
     leftover.mkdir(parents=True, exist_ok=True)
     (leftover / "SKILL.md").write_text("should-be-removed", encoding="utf-8")

@@ -602,7 +602,7 @@ def test_a_local_undo_closes_only_where_local_coders_own_checks_pass(home, files
 
 
 def test_the_hosted_agent_closes_on_a_flat_project_too(home):
-    """The agent skips Local Coder's checks when there are no files, so a flat project is no exception for it."""
+    """The agent skips Nicoder's checks when there are no files, so a flat project is no exception for it."""
     project = tiny_project(home, {"app.py": "print('hi')\n"})
     hosted(project, "r1", ("edit", "app.py", "print('hi')", "print('hello')"))
     hosted(project, "r2", ("edit", "app.py", "print('hello')", "print('hi')"))

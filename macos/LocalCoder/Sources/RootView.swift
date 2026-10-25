@@ -23,7 +23,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 200, max: 320)
         } detail: {
             SessionView()
-                .navigationTitle(model.projectPath == nil ? "Local Coder" : model.projectName)
+                .navigationTitle(model.projectPath == nil ? "Nicoder" : model.projectName)
                 .navigationSubtitle(Self.tildePath(model.projectPath) ?? "Any folder on this Mac")
                 .toolbar { toolbar }
                 .inspector(isPresented: $model.inspectorShown) {
@@ -200,7 +200,7 @@ struct SessionView: View {
         Group {
             if let error = model.startupError {
                 ContentUnavailableView(
-                    "Local Coder could not start",
+                    "Nicoder could not start",
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )

@@ -1,4 +1,4 @@
-"""Local Coder owns a tiny candidate-only read / write / edit loop."""
+"""Nicoder owns a tiny candidate-only read / write / edit loop."""
 from __future__ import annotations
 
 import pytest

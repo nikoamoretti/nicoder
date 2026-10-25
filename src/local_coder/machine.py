@@ -104,7 +104,7 @@ def write_machine_config(cfg: MachineConfig) -> Path:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# Local Coder machine-local configuration (not committed, no secrets).",
+        "# Nicoder machine-local configuration (not committed, no secrets).",
         f'model_file = "{cfg.model_file}"',
         f'model_alias = "{cfg.model_alias}"',
         f'endpoint = "{cfg.endpoint}"',

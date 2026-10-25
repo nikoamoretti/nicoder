@@ -23,7 +23,7 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_NAME = "local-coder"
 INSTRUCTIONS = (
     "Cost saver: these tools hand work to NVIDIA's Nemotron 3.5 Super 120B (free, slower and less reliable than "
-    "Claude) through Local Coder's sandboxed agent, so Claude spends far fewer tokens. Use nemotron_explore for "
+    "Claude) through Nicoder's sandboxed agent, so Claude spends far fewer tokens. Use nemotron_explore for "
     "reading-heavy questions (summarize a repo or module, find where something is implemented, trace a flow, scan "
     "large files) instead of reading many files yourself, then spot-check its key claims in one or two of the "
     "files it cites. Use nemotron_draft_change for well-specified, mechanical edits (give exact instructions and "

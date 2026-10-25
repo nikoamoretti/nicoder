@@ -1,7 +1,7 @@
-"""Local Coder's agent loop: the model calls tools until it answers.
+"""Nicoder's agent loop: the model calls tools until it answers.
 
 Tool calls use the OpenAI-compatible `tools` field, so any chat endpoint that
-supports it can drive the loop. Local Coder runs every call itself
+supports it can drive the loop. Nicoder runs every call itself
 (tools.py); the model never touches files or a shell directly. When the
 conversation outgrows the context, the oldest tool output is dropped first.
 """

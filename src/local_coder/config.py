@@ -88,7 +88,7 @@ def default_commands(python: str = "python3") -> dict[str, list[str]]:
 
 
 EXAMPLE_TOML = """\
-# Local Coder repository configuration (trusted, human-edited).
+# Nicoder repository configuration (trusted, human-edited).
 # The model cannot read or change this file during an episode.
 version = 1
 execution = "trusted-local"  # "isolated" (default) or "trusted-local" (explicit, NOT a sandbox)

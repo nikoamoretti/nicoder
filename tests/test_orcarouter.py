@@ -180,7 +180,7 @@ def test_a_new_key_replaces_every_older_item(keychain):
 
 def _hit(url: str) -> None:
     with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 — loopback test server
-        assert b"Local Coder" in response.read()
+        assert b"Nicoder" in response.read()
 
 
 def test_sign_in_in_the_browser_keeps_the_new_key(keychain, monkeypatch):
@@ -210,12 +210,12 @@ def test_sign_in_in_the_browser_keeps_the_new_key(keychain, monkeypatch):
     said: list[str] = []
     status = orcarouter.sign_in(open_url=browser, on_status=said.append)
     assert status["connected"] is True and keychain.values == [KEY]
-    assert opened["code_challenge_method"] == "S256" and opened["app_name"] == "Local Coder"
+    assert opened["code_challenge_method"] == "S256" and opened["app_name"] == "Nicoder"
     assert opened["scope"] == "api"
     digest = hashlib.sha256(exchanged["code_verifier"].encode()).digest()
     assert base64.urlsafe_b64encode(digest).rstrip(b"=").decode() == opened["code_challenge"]
     assert exchanged["url"] == "https://www.orcarouter.ai/api/v1/auth/keys" and exchanged["code"] == "one-time-code"
-    assert said[0].startswith("Approve Local Coder")
+    assert said[0].startswith("Approve Nicoder")
     assert KEY not in json.dumps(status)
 
 
@@ -424,7 +424,7 @@ def test_sign_in_runs_beside_other_calls_and_can_be_cancelled(monkeypatch):
     from local_coder import app_rpc
 
     def waiting_sign_in(listener, cancel):
-        listener({"type": "orca_sign_in", "phrase": "Approve Local Coder in the browser window that just opened."})
+        listener({"type": "orca_sign_in", "phrase": "Approve Nicoder in the browser window that just opened."})
         assert cancel.wait(5)
         raise AppError("Sign-in was cancelled.", code="orcarouter")
 

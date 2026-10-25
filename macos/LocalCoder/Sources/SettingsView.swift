@@ -96,7 +96,7 @@ private struct OrcaRouterSettings: View {
             }
             Section {
                 LabeledContent("Models") {
-                    Text(model.routerModels.isEmpty ? "Not loaded yet" : "\(model.routerModels.count) can use Local Coder's tools")
+                    Text(model.routerModels.isEmpty ? "Not loaded yet" : "\(model.routerModels.count) can use Nicoder's tools")
                 }
                 Link("Open the OrcaRouter console", destination: URL(string: "https://www.orcarouter.ai/console")!)
             }
@@ -129,7 +129,7 @@ private struct AdvancedSettings: View {
                 }
                 .onChange(of: model.profile) { _, _ in model.saveProfile() }
             } footer: {
-                Text("Hosted models always use Local Coder's own agent. These settings only matter for models that run on this Mac.")
+                Text("Hosted models always use Nicoder's own agent. These settings only matter for models that run on this Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

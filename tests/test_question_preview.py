@@ -2,7 +2,7 @@
 
 "Open the app" used to run `npm install` and the dev server in the project's own folder: `node_modules` and a rewritten
 `package-lock.json` landed there before any Keep. Now the preview runs from the result that waits for Keep or Discard
-(that request's own `candidate/`) or from a copy of the folder under Local Coder's data folder. `start_preview` is
+(that request's own `candidate/`) or from a copy of the folder under Nicoder's data folder. `start_preview` is
 replaced by a recorder here (it stands in for npm: it "installs" when the folder it is given has no `node_modules`);
 the real npm and Vite runs are the probes of the cut. The numbered tests are the cut's checks 1 to 6.
 """

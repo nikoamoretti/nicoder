@@ -32,7 +32,7 @@ _BYTES_PER_TOKEN = 2
 
 
 def agent_capable(cfg: MachineConfig) -> bool:
-    """Whether the selected model drives Local Coder's agent (it must return native tool calls)."""
+    """Whether the selected model drives Nicoder's agent (it must return native tool calls)."""
     return is_hosted(cfg)
 
 

@@ -1,4 +1,4 @@
-"""Models Local Coder can switch between: installed local files plus hosted models.
+"""Models Nicoder can switch between: installed local files plus hosted models.
 
 Local entries are a discovery list of files already on the Mac; this never
 downloads weights. Bonsai 2 must use the PrismML llama-server; the Qwen files

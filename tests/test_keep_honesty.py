@@ -27,7 +27,7 @@ from local_coder.general.coordinator import GeneralError, list_requests, run_gen
 HEAD = "Not kept: since these changes were started, "
 TAIL = "Your project was not changed."
 GENERIC = (
-    "Local Coder could not write these changes into your project. "
+    "Nicoder could not write these changes into your project. "
     "Check that its folder and files can be changed, then try Keep again."
 )
 WENT_IN = "These changes went in with a later request you kept."

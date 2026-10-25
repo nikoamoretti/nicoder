@@ -1,7 +1,7 @@
 """OrcaRouter: connect an account, keep its key in the Keychain, and list its models.
 
 OrcaRouter (api.orcarouter.ai) is an OpenAI-compatible router to many providers'
-models. Local Coder calls it like any hosted provider (`hosted.py`, provider
+models. Nicoder calls it like any hosted provider (`hosted.py`, provider
 "orcarouter"); this module covers the rest:
 
 - The key lives in the Keychain item `key:ORCAROUTER_API_KEY`, the same item
@@ -13,7 +13,7 @@ models. Local Coder calls it like any hosted provider (`hosted.py`, provider
   to 127.0.0.1 and is exchanged for a new key.
 - The model list is OrcaRouter's public /v1/models joined with its public
   benchmark board (intelligence index, speed, price), cached for the picker.
-  Only chat models that can call tools are offered: Local Coder's agent needs
+  Only chat models that can call tools are offered: Nicoder's agent needs
   tool calls.
 """
 from __future__ import annotations
@@ -175,7 +175,7 @@ def pkce_pair() -> tuple[str, str]:
     return verifier, _b64url(hashlib.sha256(verifier.encode()).digest())
 
 
-_DONE_PAGE = """<!doctype html><meta charset="utf-8"><title>Local Coder</title>
+_DONE_PAGE = """<!doctype html><meta charset="utf-8"><title>Nicoder</title>
 <body style="font: 15px -apple-system, system-ui; display: grid; place-items: center; height: 90vh; margin: 0;
 color-scheme: light dark"><div style="text-align: center"><h2 style="font-weight: 600">{title}</h2>
 <p style="opacity: .7">{body}</p></div></body>"""
@@ -204,9 +204,9 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             return
         query = {name: values[0] for name, values in parse_qs(parsed.query).items() if values}
         failed = bool(query.get("error")) or not query.get("code")
-        title = "Local Coder could not connect" if failed else "OrcaRouter is connected"
-        body = ("You can close this tab and try again from Local Coder." if failed
-                else "You can close this tab and go back to Local Coder.")
+        title = "Nicoder could not connect" if failed else "OrcaRouter is connected"
+        body = ("You can close this tab and try again from Nicoder." if failed
+                else "You can close this tab and go back to Nicoder.")
         page = _DONE_PAGE.format(title=title, body=body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -263,14 +263,14 @@ def sign_in(
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": state,
-        "app_name": "Local Coder",
+        "app_name": "Nicoder",
         "scope": "api",
     })
     worker = threading.Thread(target=server.serve_forever, name="orcarouter-callback", daemon=True)
     worker.start()
     try:
         (open_url or _open_in_browser)(url)
-        say("Approve Local Coder in the browser window that just opened.")
+        say("Approve Nicoder in the browser window that just opened.")
         deadline = time.monotonic() + timeout_s
         while not server.arrived.wait(0.25):
             if cancel is not None and cancel.is_set():

@@ -109,7 +109,7 @@ def test_chat_mac_app_question_uses_the_model(tmp_path, config_home, monkeypatch
     assert payload["messages"][-1]["content"] == "Is this a Mac app?"
     system = payload["messages"][0]["content"]
     assert "Do not paste the fact list" in system
-    assert "outside Local Coder" in system
+    assert "outside Nicoder" in system
 
 
 def test_chat_open_app_starts_preview_and_asks_the_model(tmp_path, config_home, monkeypatch):
@@ -167,7 +167,7 @@ def test_chat_uses_local_model(tmp_path, config_home, monkeypatch):
     assert isinstance(payload, dict)
     system = payload["messages"][0]["content"]
     assert "already have the project facts" in system
-    assert "outside Local Coder" in system
+    assert "outside Nicoder" in system
     assert "Project folder:" in system
     assert payload["messages"][-1]["content"] == "Does it work well?"
     assert result["model_commentary"] == result["summary"]

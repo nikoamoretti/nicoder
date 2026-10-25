@@ -145,7 +145,7 @@ def test_find_project_prefers_real_code_over_an_empty_starter(home):
     lines = [row for row in result.text.splitlines() if re.match(r"^\d+\. ", row)]
     assert lines[0].startswith("1. ~/projects/nicos-prototypes — Nico — Prototypes; git: example.com/nico/prototypes")
     assert "subfolder app/prototypes/shadow-paris" in lines[0]
-    assert "empty Local Coder starter" in lines[1]
+    assert "empty Nicoder starter" in lines[1]
 
 
 def test_find_project_never_walks_into_desktop_documents_or_downloads(home, monkeypatch):

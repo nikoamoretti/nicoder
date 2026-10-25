@@ -42,7 +42,7 @@ def preview_project(folder: str | Path) -> dict[str, Any]:
 
     The folder is only read: a result that waits is previewed from its own `candidate/`, else a copy of the folder
     is brought up to date and previewed. A refusal is `{"ok": False, "code", "detail"}` with one plain sentence and
-    leaves nothing behind: a path that is gone or is a file, one inside Local Coder's data folder (its working
+    leaves nothing behind: a path that is gone or is a file, one inside Nicoder's data folder (its working
     copies are not projects), and a folder with no `package.json` (and no waiting result that has one).
     """
     text = str(folder).strip()
@@ -55,7 +55,7 @@ def preview_project(folder: str | Path) -> dict[str, Any]:
     if _inside_data_root(path):
         return _refusal(
             "inside_data_root",
-            "That is inside Local Coder's own data folder, not a project, so no preview was started.",
+            "That is inside Nicoder's own data folder, not a project, so no preview was started.",
         )
     project_id = project_id_for(path)
     waiting = _waiting_candidate(path)

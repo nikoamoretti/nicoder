@@ -186,7 +186,7 @@ def test_the_model_hears_nothing_about_a_change_that_is_already_in(calc, monkeyp
     keep_changes("req-2", calc)
     chat_request(calc, "What does add(2, 3) return?")
     told = "\n".join(str(message.get("content") or "") for message in sent[-1])
-    assert "not in the folder yet" not in told and "Local Coder's own record" not in told
+    assert "not in the folder yet" not in told and "Nicoder's own record" not in told
     assert sent[-1][-1]["content"] == "What does add(2, 3) return?", "the question goes as it is"
 
 

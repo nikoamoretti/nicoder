@@ -1,4 +1,4 @@
-"""Isolated OpenCode configuration owned by Local Coder.
+"""Isolated OpenCode configuration owned by Nicoder.
 
 Never reads or writes the user's personal ~/.config/opencode or
 ~/.local/share/opencode. The process HOME is redirected to an app-owned
@@ -239,7 +239,7 @@ def write_engine_home(config: dict[str, Any]) -> Path:
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     agents = cfg_dir / "AGENTS.md"
     agents.write_text(
-        "Local Coder engine profile. Work only in this project folder.\n"
+        "Nicoder engine profile. Work only in this project folder.\n"
         "Do not use host skills, cloud providers, or parent-directory instructions.\n"
         "Clipped tool results can be continued with "
         "`local-coder-observe <observation_id> <offset>` via the bash tool.\n",

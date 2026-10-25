@@ -1,4 +1,4 @@
-"""Pinned OpenCode identity used by Local Coder.
+"""Pinned OpenCode identity used by Nicoder.
 
 The product talks to this exact local build. A Homebrew or npm upgrade of a
 user-installed OpenCode must not silently change the app's engine.

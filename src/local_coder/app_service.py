@@ -263,7 +263,7 @@ def inspect_legacy_project(path: str | Path) -> dict[str, Any]:
     if js_files >= 8 and python_files < 3:
         report["verdict"] = "unsupported"
         report["summary"] = (
-            "This looks like a JavaScript/TypeScript project. Local Coder currently "
+            "This looks like a JavaScript/TypeScript project. Nicoder currently "
             "edits small, testable Python projects."
         )
         report["issues"].append({"code": "language", "message": report["summary"], "blocking": True})
@@ -284,7 +284,7 @@ def inspect_legacy_project(path: str | Path) -> dict[str, Any]:
     if report["git"]["dirty"]:
         report["verdict"] = "dirty"
         report["summary"] = (
-            "This project has uncommitted changes. Local Coder will not start an "
+            "This project has uncommitted changes. Nicoder will not start an "
             "edit until the folder is clean, so it cannot mix its work with yours."
         )
         report["issues"].append({"code": "dirty", "message": report["summary"], "blocking": True})
@@ -331,7 +331,7 @@ def classify_legacy_request(text: str, inspection: dict[str, Any] | None = None)
         if not _PYTHON_WEB.search(blob) and "Python" in (inspection or {}).get("languages", ["Python"]):
             return {"kind": "unsupported",
                     "summary": "That sounds like a web or UI change this engine cannot do.",
-                    "detail": "Local Coder currently repairs small, testable Python behavior, not front-end widgets."}
+                    "detail": "Nicoder currently repairs small, testable Python behavior, not front-end widgets."}
     if inspection and not inspection.get("supported"):
         return {"kind": "unsupported",
                 "summary": inspection.get("summary") or "This project is not ready.",
@@ -569,7 +569,7 @@ def _project_brief(repo: Path) -> str:
         if isinstance(deps, dict) and deps:
             lines.append("dependencies: " + ", ".join(sorted(deps)[:12]))
         lines.append(
-            "This is a Local Coder web project folder (typically React/Vite). "
+            "This is a Nicoder web project folder (typically React/Vite). "
             "It is not a separate Mac .app. The running UI is opened with the in-app preview."
         )
         missing = _missing_web_files(repo)
@@ -631,16 +631,16 @@ def _local_chat_completion(
     cfg = load_machine_config()
     brief = _project_brief(project_path) if project_path is not None else "No project folder is open yet."
     system = (
-        "You are Local Coder, a local coding assistant inside a Mac app. "
+        "You are Nicoder, a local coding assistant inside a Mac app. "
         "You already have the project facts below — never claim you cannot see the "
         "project folder, the user's screen, or the code path. "
         "Use the recent conversation when the user refers to it. "
         "Do not claim you forgot earlier messages in this session. "
         "Answer like a person in a few sentences. Do not paste the fact list. "
         "Do not dump package.json, npm scripts, or dependency names unless asked. "
-        "This project is edited inside Local Coder; the usual way to see the UI is the "
+        "This project is edited inside Nicoder; the usual way to see the UI is the "
         "web preview, not Dock/Spotlight. "
-        "Do not say the work must happen outside Local Coder. "
+        "Do not say the work must happen outside Nicoder. "
         "Do not claim you edited files.\n\n"
         f"{brief}"
     )
@@ -974,7 +974,7 @@ def ensure_server(*, wait_s: int = 300) -> dict[str, Any]:
         return {"ok": True, "started": False, "status": status}
     if status["healthy"] and not status["owned"]:
         raise AppError(
-            f"A model server is already running at {cfg.endpoint} but Local Coder "
+            f"A model server is already running at {cfg.endpoint} but Nicoder "
             "did not start it. Stop that server yourself, or the app will not take it over.",
             code="foreign_server",
         )

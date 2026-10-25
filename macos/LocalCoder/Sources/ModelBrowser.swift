@@ -22,7 +22,7 @@ private struct ModelBrowserSheet: ViewModifier {
     }
 }
 
-/// Every OrcaRouter model that can use Local Coder's tools: search, sort, pick.
+/// Every OrcaRouter model that can use Nicoder's tools: search, sort, pick.
 struct ModelBrowser: View {
     /// How tall the window is below its toolbar. The sheet hangs from the top of that area and is never taller.
     var room: CGFloat = 800
@@ -142,7 +142,7 @@ struct ModelBrowser: View {
 
     private var subtitle: String {
         if let error = model.routerError, model.routerModels.isEmpty { return error }
-        var text = "\(model.routerModels.count) models that can use Local Coder's tools"
+        var text = "\(model.routerModels.count) models that can use Nicoder's tools"
         if let date = model.routerFetchedAt {
             text += " · updated \(date.formatted(.relative(presentation: .named)))"
         }
@@ -313,7 +313,7 @@ struct ConnectOrcaRouterView: View {
             VStack(spacing: 6) {
                 Text("Connect OrcaRouter")
                     .font(.title2.weight(.semibold))
-                Text("One account for \(model.routerModels.isEmpty ? "150+" : String(model.routerModels.count)) models from OpenAI, Anthropic, Google, DeepSeek, Qwen and more. You pay each provider's own price, and Local Coder shows what every request cost.")
+                Text("One account for \(model.routerModels.isEmpty ? "150+" : String(model.routerModels.count)) models from OpenAI, Anthropic, Google, DeepSeek, Qwen and more. You pay each provider's own price, and Nicoder shows what every request cost.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

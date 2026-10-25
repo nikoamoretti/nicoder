@@ -72,7 +72,7 @@ def assert_identity(requested: str, cfg: MachineConfig | None = None) -> ModelId
         raise ModelIdentityError(
             f"llama.cpp is serving {identity.served!r}, not the requested "
             f"{requested!r}. Stop that server or load the configured model. "
-            "Local Coder will not switch models silently."
+            "Nicoder will not switch models silently."
         )
     return identity
 

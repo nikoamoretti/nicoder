@@ -1,4 +1,4 @@
-"""JSON-lines helper used by Local Coder.app.
+"""JSON-lines helper used by Nicoder.app.
 
 One request object per stdin line:
   {"id": "1", "method": "inspect_project", "params": {"path": "..."}}

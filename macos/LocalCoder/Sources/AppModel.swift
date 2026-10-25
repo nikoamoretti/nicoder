@@ -128,7 +128,16 @@ final class AppModel: ObservableObject {
     @Published var history: [HistoryRow] = []
     @Published var requestText = ""
     @Published var progress = "Ready."
-    @Published var running = false
+    @Published var running = false {
+        didSet {
+            // The Dock's hominin walks while a request runs and sits down to meditate when it ends.
+            if running && !oldValue {
+                DockFigure.shared.walk()
+            } else if !running && oldValue {
+                DockFigure.shared.meditate()
+            }
+        }
+    }
     @Published var snapshot: [String: Any]?
     @Published var readiness: [String: Any]?
     @Published var profile = "d2"
@@ -174,7 +183,7 @@ final class AppModel: ObservableObject {
     }
 
     var projectName: String {
-        inspection?["name"] as? String ?? "Local Coder"
+        inspection?["name"] as? String ?? "Nicoder"
     }
 
     var projectSummary: String {
@@ -370,7 +379,7 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let parent = panel.url else { return }
         let alert = NSAlert()
         alert.messageText = "Name the new project"
-        alert.informativeText = "Local Coder creates an empty React starter here. The model writes the app after you describe it."
+        alert.informativeText = "Nicoder creates an empty React starter here. The model writes the app after you describe it."
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(string: "my-app")
@@ -399,7 +408,7 @@ final class AppModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Choose the project folder Local Coder should work in."
+        panel.message = "Choose the project folder Nicoder should work in."
         panel.prompt = "Open"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         selectProject(url.path)
@@ -467,7 +476,7 @@ final class AppModel: ObservableObject {
                 guard let path else {
                     running = false
                     finishTrace(cost: nil)
-                    banner = "Local Coder could not create a project from that message."
+                    banner = "Nicoder could not create a project from that message."
                     return
                 }
                 let classified = try await engine.call("classify_request", ["path": path, "text": text])

@@ -98,11 +98,11 @@ MAX_CHECK_REPAIRS = 8
 AGENT_REPAIR_ROUNDS = 2
 AGENT_MAX_STEPS = 80
 _VITE_CONFIGS = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
-# What makes a change a web change: Local Coder's checks (source scan, build, preview, empty page) look at these.
+# What makes a change a web change: Nicoder's checks (source scan, build, preview, empty page) look at these.
 _WEB_SUFFIXES = (".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".mts", ".cts", ".css", ".scss", ".sass", ".less",
                  ".html", ".vue", ".svelte")
 _WEB_FOLDERS = ("src", "public")
-_NO_WEB_FILES = ("This change touched no web files, so Local Coder's web checks (build, preview, page) did not run.")
+_NO_WEB_FILES = ("This change touched no web files, so Nicoder's web checks (build, preview, page) did not run.")
 
 
 class _GenerationLedger:
@@ -799,7 +799,7 @@ def ensure_model_server() -> dict[str, Any]:
         return {"ok": True, "started": False, "status": status}
     if status["healthy"] and not status["owned"]:
         raise GeneralError(
-            f"A model server is already running at {cfg.endpoint} but Local Coder "
+            f"A model server is already running at {cfg.endpoint} but Nicoder "
             "did not start it. Stop that server, or the app will not take it over.",
             code="foreign_server",
         )
@@ -830,7 +830,7 @@ def run_general_request(
 ) -> dict[str, Any]:
     """Snapshot, ask the model for files, apply them, then review.
 
-    With an agent-capable model (or `agent_chat` in tests), Local Coder's own
+    With an agent-capable model (or `agent_chat` in tests), Nicoder's own
     agent edits the working copy with tools instead of the file-block path.
 
     A request that ends normally with the working copy exactly as the stack it was built on started has undone that
@@ -1035,7 +1035,7 @@ def _skip_web_checks(meta: dict[str, Any], candidate: Path) -> bool:
 
 
 def _is_vite_app(root: Path) -> bool:
-    """Local Coder's own checks (source scan, build, preview) are built for Vite web apps."""
+    """Nicoder's own checks (source scan, build, preview) are built for Vite web apps."""
     return (
         (root / "package.json").is_file()
         and (root / "src").is_dir()
@@ -1062,13 +1062,13 @@ def _agent_steps(ledger: _GenerationLedger) -> int:
 
 
 def _check_feedback(meta: dict[str, Any]) -> str:
-    """Local Coder's latest failed check, phrased for the agent's next turn."""
+    """Nicoder's latest failed check, phrased for the agent's next turn."""
     checks = meta.get("checks") or []
     errors = [str(row) for row in (checks[-1].get("errors") or [])] if checks else []
     health = meta.get("preview_health") if isinstance(meta.get("preview_health"), dict) else {}
     detail = "\n".join(errors[:40]) or str((health or {}).get("detail") or "the check failed without details")
     return (
-        "Local Coder checked the working copy (source check, build and preview) and it failed:\n"
+        "Nicoder checked the working copy (source check, build and preview) and it failed:\n"
         f"{detail[:6000]}\n"
         "Fix these problems in the working copy, run the build again, then reply."
     )
@@ -1090,7 +1090,7 @@ def _run_agent_request(
     fresh: bool,
     start_preview_after: bool,
 ) -> None:
-    """Local Coder's own agent edits the working copy; Local Coder checks what it wrote."""
+    """Nicoder's own agent edits the working copy; Nicoder checks what it wrote."""
     from local_coder.agent.runner import build_session
     from local_coder.general.chat_log import recent_messages
 
@@ -1101,7 +1101,7 @@ def _run_agent_request(
         # result this request is built on (copied, never linked: the agent writes into this copy and that
         # result's candidate is evidence), else the folder as it is now, with the blank starter laid over it when
         # the folder was empty (the baseline is empty then, and syncing from it alone would delete the starter the
-        # agent is meant to edit). Never skipped: the workspace has just rewritten the copy for Local Coder's
+        # agent is meant to edit). Never skipped: the workspace has just rewritten the copy for Nicoder's
         # preview (SWC), and that must not reach the review or Keep. node_modules in the live copy stay.
         sync_source_tree(_agent_start_tree(meta, baseline), engine_cwd)
         if _lays_starter(meta):
@@ -1132,7 +1132,7 @@ def _run_agent_request(
             if not web_app or _skip_web_checks(meta, candidate):
                 meta["verification"] = {
                     "local_checks": "not_run",
-                    "detail": (_NO_WEB_FILES if web_app else "Local Coder's own checks cover Vite web apps.")
+                    "detail": (_NO_WEB_FILES if web_app else "Nicoder's own checks cover Vite web apps.")
                     + " The agent ran the project's commands.",
                     "agent_commands": session.toolbox.commands[-20:],
                 }
@@ -1148,7 +1148,7 @@ def _run_agent_request(
             if rounds >= AGENT_REPAIR_ROUNDS or run.status != "answered" or not ledger.can_generate():
                 break
             rounds += 1
-            _emit(listener, "activity", {"detail": "Sending Local Coder's check results back to the model."})
+            _emit(listener, "activity", {"detail": "Sending Nicoder's check results back to the model."})
             run = session.ask(
                 _check_feedback(meta), max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s(),
             )
@@ -2011,7 +2011,7 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
                 code="not_a_folder",
             )
         raise GeneralError(
-            f"Local Coder cannot read the folder “{name}”, so there is nowhere to keep these changes.",
+            f"Nicoder cannot read the folder “{name}”, so there is nowhere to keep these changes.",
             code=problem["verdict"],
         )
     result = apply_delta(Path(user_path), Path(meta["baseline"]), Path(meta["candidate"]))
@@ -2021,7 +2021,7 @@ def keep_request(project_id: str, request_id: str, user_path: str | Path) -> dic
             # The detail is the operating system's own text; the app gets a sentence, the log gets the text.
             record_error("keep: could not write the changes", str(result.get("detail") or ""))
             raise GeneralError(
-                "Local Coder could not write these changes into your project. "
+                "Nicoder could not write these changes into your project. "
                 "Check that its folder and files can be changed, then try Keep again.",
                 code=code,
             )
@@ -2086,7 +2086,7 @@ def discard_request(project_id: str, request_id: str) -> dict[str, Any]:
         _reset_live_copy(meta)
     except OSError as exc:
         raise GeneralError(
-            "Local Coder could not clear this request's working copy, so it was not discarded. Try again.",
+            "Nicoder could not clear this request's working copy, so it was not discarded. Try again.",
             code="discard_failed",
         ) from exc
     stop_owned()

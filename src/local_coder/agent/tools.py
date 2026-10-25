@@ -1,4 +1,4 @@
-"""The agent's tools, run by Local Coder: list, glob, grep, read, write, edit, bash, open_project.
+"""The agent's tools, run by Nicoder: list, glob, grep, read, write, edit, bash, open_project.
 
 Every path goes through AccessPolicy and every command through the sandbox.
 A tool never raises: refusals and failures come back as text the model can
@@ -147,7 +147,7 @@ def _readme_title(text: str) -> str:
 
 
 def is_empty_starter(path: Path) -> bool:
-    """True for a Local Coder starter nobody has built anything in yet."""
+    """True for a Nicoder starter nobody has built anything in yet."""
     for rel in ("src/App.tsx", "src/App.jsx"):
         try:
             text = (path / rel).read_text(encoding="utf-8", errors="replace")[:4000].lower()
@@ -158,7 +158,7 @@ def is_empty_starter(path: Path) -> bool:
 
 
 def inside_data_root(path: Path) -> bool:
-    """True for Local Coder's own data folder or anything in it (the waiting copies live there)."""
+    """True for Nicoder's own data folder or anything in it (the waiting copies live there)."""
     from local_coder.engines.opencode_config import data_root
 
     root = Path(os.path.realpath(data_root()))
@@ -272,7 +272,7 @@ class ToolBox:
         specs = {
             "find_project": _spec(
                 "find_project",
-                "Find projects and repos on this Mac by name or topic. Searches ~/projects, ~/Local Coder "
+                "Find projects and repos on this Mac by name or topic. Searches ~/projects, ~/Nicoder "
                 "Projects and the home folder (not ~/Desktop, ~/Documents or ~/Downloads); matches the words in any "
                 "order against folder names, subfolder names, package names, README files and git remotes. "
                 "Use it first whenever the user mentions a project, app or repo.",
@@ -342,7 +342,7 @@ class ToolBox:
             ),
             "open_project": _spec(
                 "open_project",
-                "Make a folder the current project in Local Coder so the user's next requests apply to it. "
+                "Make a folder the current project in Nicoder so the user's next requests apply to it. "
                 "Call it only when the user asks to open a project or to work on one, not to answer a question.",
                 {"path": _str("The project's folder.")},
                 ["path"],
@@ -510,7 +510,7 @@ class ToolBox:
             changed = 0.0
         facts = []
         if starter:
-            facts.append("empty Local Coder starter, no code yet")
+            facts.append("empty Nicoder starter, no code yet")
         elif description:
             facts.append(description)
         if git:
@@ -756,7 +756,7 @@ class ToolBox:
             raise ValueError("the command is empty")
         if not sandbox_available():
             return ToolResult(
-                "Commands are unavailable: this Mac has no /usr/bin/sandbox-exec, and Local Coder never runs "
+                "Commands are unavailable: this Mac has no /usr/bin/sandbox-exec, and Nicoder never runs "
                 "commands without a sandbox.",
                 "Commands are unavailable (no sandbox)",
                 ok=False,
@@ -801,7 +801,7 @@ class ToolBox:
             raise ValueError("That is the whole home folder. Open the project's own folder.")
         if inside_data_root(path):
             raise ValueError(
-                "That is Local Coder's own working copy of a result, not a project. Open the project's own folder."
+                "That is Nicoder's own working copy of a result, not a project. Open the project's own folder."
             )
         if not looks_like_project(path):
             raise ValueError(
@@ -810,7 +810,7 @@ class ToolBox:
             )
         self.opened = path
         return ToolResult(
-            f"Opened {shown} as the current project. Local Coder shows it to the user after your answer; "
+            f"Opened {shown} as the current project. Nicoder shows it to the user after your answer; "
             "their next requests apply to it.",
             f"Opening {shown}",
             target=shown,

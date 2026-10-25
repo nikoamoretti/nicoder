@@ -10,7 +10,7 @@ enum EngineError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notStarted:
-            return "The Local Coder helper is not running."
+            return "The Nicoder helper is not running."
         case .helperFailed(let detail):
             return detail
         case .refused(_, let detail):
@@ -239,7 +239,7 @@ final class EngineClient {
         try create.run()
         create.waitUntilExit()
         guard create.terminationStatus == 0 else {
-            throw EngineError.helperFailed("Could not create the Local Coder Python environment.")
+            throw EngineError.helperFailed("Could not create the Nicoder Python environment.")
         }
         try installWheel(python: destination.appendingPathComponent("bin/python"))
     }
@@ -281,7 +281,7 @@ final class EngineClient {
         try pip.run()
         pip.waitUntilExit()
         if pip.terminationStatus != 0 {
-            throw EngineError.helperFailed("Could not install the Local Coder engine into the app environment.")
+            throw EngineError.helperFailed("Could not install the Nicoder engine into the app environment.")
         }
     }
 }

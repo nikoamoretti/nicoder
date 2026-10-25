@@ -1,11 +1,13 @@
 #!/bin/bash
-# Build a launchable Local Coder.app from this checkout.
+# Build a launchable Nicoder.app from this checkout (the app was Local Coder until 2026-10-25; the engine,
+# CLI and data folders keep the local-coder name, and the bundle id stays app.localcoder.desktop so macOS keeps
+# its folder answers and settings).
 # Usage: macos/scripts/package_macos.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DIST="$ROOT/dist/macos"
-APP="$DIST/Local Coder.app"
+APP="$DIST/Nicoder.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
@@ -21,7 +23,7 @@ SIGN_ID="${LOCAL_CODER_SIGN_IDENTITY:-$(security find-identity -v -p codesigning
   | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)}"
 SIGN_ID="${SIGN_ID:--}"
 
-echo "Building Local Coder $VERSION from $ROOT (signing: $SIGN_ID)"
+echo "Building Nicoder $VERSION from $ROOT (signing: $SIGN_ID)"
 
 cd "$ROOT"
 if [[ ! -x "$PYTHON" ]]; then
@@ -57,7 +59,7 @@ BIN="$(swift build -c release --package-path "$SWIFT_PKG" --show-bin-path)/Local
 
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RES"
-cp "$BIN" "$MACOS/Local Coder"
+cp "$BIN" "$MACOS/Nicoder"
 cp "$ROOT/macos/Info.plist" "$CONTENTS/Info.plist"
 cp "$WHEEL" "$RES/"
 cp -R "$ROOT/docker" "$RES/docker"
@@ -66,17 +68,18 @@ if [[ -f "$ROOT/macos/AppIcon.icns" ]]; then
   cp "$ROOT/macos/AppIcon.icns" "$RES/AppIcon.icns"
 fi
 
-chmod +x "$MACOS/Local Coder"
+chmod +x "$MACOS/Nicoder"
 codesign --force --deep --sign "$SIGN_ID" "$APP"  # fails here, before the installed app is touched
 xattr -cr "$APP" || true
 
 USER_APPS="$HOME/Applications"
 mkdir -p "$USER_APPS"
-rm -rf "$USER_APPS/Local Coder.app"
-cp -R "$APP" "$USER_APPS/Local Coder.app"
-codesign --force --deep --sign "$SIGN_ID" "$USER_APPS/Local Coder.app"
+rm -rf "$USER_APPS/Nicoder.app"
+cp -R "$APP" "$USER_APPS/Nicoder.app"
+codesign --force --deep --sign "$SIGN_ID" "$USER_APPS/Nicoder.app"
+rm -rf "$USER_APPS/Local Coder.app"  # the same app under its old name
 
 echo "Built:"
 echo "  $APP"
-echo "  $USER_APPS/Local Coder.app"
-echo "Open with Finder, or: open \"$USER_APPS/Local Coder.app\""
+echo "  $USER_APPS/Nicoder.app"
+echo "Open with Finder, or: open \"$USER_APPS/Nicoder.app\""
