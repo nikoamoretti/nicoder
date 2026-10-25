@@ -204,8 +204,9 @@
   every waiting request it was built on, nearest first, as discarded with `undone_by`
   (`coordinator._close_what_was_undone`, once, at the end of the run, from the two
   trees and the run's recorded end, never the model's words; the walk stops at the
-  first request with no files; a request that is not waiting, a result that cannot be
-  read and a record that cannot be saved are left as they were; the folder is never
+  first request with no files; a request that is not waiting and a result that cannot
+  be read are left as they were; so is a record that cannot be saved, and the walk
+  ends there, so no older request is closed over it; the folder is never
   written). The card, Keep (code `discarded`) and Discard (ok) say "A later request
   undid these changes, so they were not added to your project."
   (`request_state.UNDONE_SENTENCE`); a request he discarded himself keeps his words.
@@ -215,9 +216,10 @@
   visible junk file (such as `.coverage`), or a local request after a hosted one on a
   Babel project (the local path's SWC rewrite), makes it a real stack as before; a
   run that crashes leaves its stray files in the copy, so the next request starts
-  from the folder; a local undo on a project without `src/` ends `not_repaired` (the
-  start state fails Local Coder's own checks), which counts as cut short, so the old
-  request stays keepable there.
+  from the folder; a local undo on a project without `src/` does not end
+  `checks_passed` (the start state fails Local Coder's own checks, and the engine
+  retries its repairs first), which counts as cut short, so the old request stays
+  keepable there.
 - `src/local_coder/general/waiting.py` — a question asked while a result waits
   for Keep or Discard gets a note built from the request's own record (title,
   age, files, "not in the folder yet", and for the agent where to read the

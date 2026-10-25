@@ -25,10 +25,11 @@ working copy is exactly the start of the stack (the files its baseline lists, wi
 was built on, which an idle follow-up leaves there), took every change of that stack back out. It closes every waiting
 request it was built on, nearest first, as discarded with `undone_by` naming it: none of their files went into the
 project and a Keep would only put back what he asked to remove. The walk stops at the first request with no files, a
-request that is not waiting keeps its own words, and a result that cannot be read or a record that cannot be saved is
-left as it was. Only the records are written. A run that was stopped, failed or cut short closes nothing (Stop is "not
-that", a dropped stream is not a decision): the copy is then at the start of the stack, so the next request is not
-built on that result, which stays keepable on its own (a named limit, the `undo-stopped` cut).
+request that is not waiting keeps its own words, and a result that cannot be read is left as it was. So is a record
+that cannot be saved, and the walk ends there: no older request is closed over it. Only the records are written. A
+run that was stopped, failed or cut short closes nothing (Stop is "not that", a dropped stream is not a decision): the
+copy is then at the start of the stack, so the next request is not built on that result, which stays keepable on its own
+(a named limit, the `undo-stopped` cut).
 
 A Discard puts the working copy back to where the request started: the result it was built on while that still
 waits, else its own baseline (a request with no files of its own leaves the copy as it is), so the stack

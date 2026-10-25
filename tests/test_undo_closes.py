@@ -19,6 +19,7 @@ the helper's RPC dispatch are the real code. Every refusal compares the folder b
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -26,6 +27,7 @@ import shutil
 import stat
 import sys
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -54,6 +56,7 @@ UNDONE = "A later request undid these changes, so they were not added to your pr
 DISCARDED_CARD = "Discarded. These changes were not added to your project."
 KEEP_OF_DISCARDED = "This request was discarded, so there is nothing to keep."
 ALREADY_DISCARDED = "Already discarded."
+WENT_IN = "These changes went in with a later request you kept."
 
 darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="the agent's bash runs in sandbox-exec: macOS only")
 
@@ -584,8 +587,10 @@ def tiny_project(home: Path, files: dict[str, str]) -> Path:
     ],
 )
 def test_a_local_undo_closes_only_where_local_coders_own_checks_pass(home, files, stop_reason, closed):
-    """Named limit: the local engine checks the finished copy, and a project without `src/` fails that check
-    (`not_repaired`), which counts as cut short: the older request stays keepable there, as it was before this cut."""
+    """Named limit: the local engine checks the finished copy, and a project without `src/` fails that check, so the run
+    does not end `checks_passed` and counts as cut short: the older request stays keepable there, as it was before this
+    cut. (A fake engine has no model to repair with and ends `not_repaired`; the real engine retries its repairs first
+    and ends in another stop. Either way it is not `checks_passed`.)"""
     project = tiny_project(home, files)
     local(project, "r1", write("gen.py", "GEN = 1\n"))
     local(project, "r2", remove("gen.py"))
@@ -739,6 +744,106 @@ def test_a_record_that_cannot_be_saved_is_left_as_it_was_and_the_step_does_not_r
         patch.setattr(coordinator, "_save_meta", disk_full)
         assert step(meta, threading.Event()) == []
     assert_still_open(project, "r1", ["src/gen.py"])
+
+
+# --- A chain of three: what the walk does with a record it cannot save, a result it cannot read, a damaged record ---
+
+
+@contextlib.contextmanager
+def record_that_cannot_be_saved(project: Path, request_id: str, how: str, monkeypatch) -> Iterator[None]:
+    """This request's record cannot be written for the length of the block: a read-only meta.json (as in QA's E2, not
+    as root) or a save that raises (any user). Every other record saves as usual."""
+    if how == "read_only_file":
+        if os.geteuid() == 0:
+            pytest.skip("root writes to any file")
+        path = request_dir(project_id_for(project), request_id) / "meta.json"
+        path.chmod(0o444)
+        try:
+            yield
+        finally:
+            path.chmod(0o644)
+        return
+    real = coordinator._save_meta
+
+    def save(meta: dict) -> None:
+        if meta.get("request_id") == request_id:
+            raise OSError(13, "Permission denied", "meta.json")
+        real(meta)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(coordinator, "_save_meta", save)
+        yield
+
+
+@pytest.mark.parametrize("how", ["read_only_file", "save_raises"])
+def test_m20_a_record_that_cannot_be_saved_ends_the_walk_and_no_older_request_is_closed(project, monkeypatch, how):
+    """QA's E2. R1 adds gen.py, R2 adds extra.py, R3 removes both, and R2's record cannot be saved: R2 stays open and
+    the walk ends there. Had it gone on, R1 would read "not added to your project" while a Keep of R2, still open,
+    writes gen.py (it carries R1's result). The run does not fail."""
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    local(project, "r2", write("src/extra.py", "EXTRA = 1\n"))
+    with record_that_cannot_be_saved(project, "r2", how, monkeypatch):
+        local(project, "r3", both(remove("src/gen.py"), remove("src/extra.py")))  # must not raise
+    assert record(project, "r3")["built_on"] == "r2" and card(project, "r3")["files"] == []
+    assert_still_open(project, "r2", ["src/extra.py", "src/gen.py"])
+    held = card(project, "r1")
+    assert held["blocked_by"] == "r2" and held["outcome"] == "review", "R1 is open, held back by the open R2"
+    meta = record(project, "r1")
+    assert not meta.get("discarded") and not meta.get("kept") and "undone_by" not in meta
+    assert history(project) == [("r3", "review"), ("r2", "review"), ("r1", "review")]
+    kept = keep_changes("r2", project)  # what the open R2 still does: it carries R1 in, and R1 says so
+    assert kept["ok"] is True and kept["applied"] == ["src/extra.py", "src/gen.py"] and kept["also_kept"] == ["r1"]
+    assert card(project, "r1")["summary"] == WENT_IN and (project / "src" / "gen.py").exists()
+
+
+def raises(error: type[Exception]):
+    def damaged(_metas, _request_id):
+        raise error("a damaged record")
+
+    return damaged
+
+
+@pytest.mark.parametrize("error", [AttributeError, KeyError, OSError, TypeError, ValueError], ids=lambda e: e.__name__)
+def test_m21_a_record_or_result_that_cannot_be_read_ends_the_step_without_closing_or_raising(
+    undone_stack, monkeypatch, error,
+):
+    """The walk reads every record and result of the stack. A damaged one (a field that does not parse, a missing key, a
+    result that cannot be opened) leaves the older request as it was and never fails the step."""
+    project, meta, step = undone_stack
+    with monkeypatch.context() as patch:
+        patch.setattr(coordinator, "_carried_chain", raises(error))
+        assert step(meta, threading.Event()) == []
+    assert_still_open(project, "r1", ["src/gen.py"])
+    assert step(meta, threading.Event()) == ["r1"], "the same call without the damage does close it"
+
+
+def test_m21_a_damaged_record_met_at_the_end_of_a_run_does_not_fail_that_run(project, monkeypatch):
+    """The step runs after the work is done and saved: a failure in it would turn a finished run into an error."""
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    with monkeypatch.context() as patch:
+        patch.setattr(coordinator, "_carried_chain", raises(ValueError))
+        local(project, "r2", remove("src/gen.py"))  # must not raise
+    own = card(project, "r2")
+    assert own["files"] == [] and own["outcome"] == "review" and own["can_keep"] is False
+    assert record(project, "r2")["built_on"] == "r1" and record(project, "r2")["stop_reason"] == "checks_passed"
+    assert_still_open(project, "r1", ["src/gen.py"])
+    assert history(project) == [("r2", "review"), ("r1", "review")]
+
+
+def test_m26_a_result_that_cannot_be_read_is_left_as_it_was(project):
+    """QA's E1. R1 adds gen.py, R2 adds extra.py, and R1's candidate/ is gone when R3 removes both. R2 is closed, but
+    R1's result cannot be read, so its record is not touched: it would say "undone" about changes nobody can see."""
+    local(project, "r1", write("src/gen.py", "GEN = 1\n"))
+    local(project, "r2", write("src/extra.py", "EXTRA = 1\n"))
+    pid = project_id_for(project)
+    shutil.rmtree(request_dir(pid, "r1") / "candidate")
+    before = (request_dir(pid, "r1") / "meta.json").read_bytes()
+    local(project, "r3", both(remove("src/gen.py"), remove("src/extra.py")))
+    assert record(project, "r3")["built_on"] == "r2" and card(project, "r3")["files"] == []
+    assert_undone(project, "r2", "r3")
+    assert (request_dir(pid, "r1") / "meta.json").read_bytes() == before, "R1's record is not touched"
+    meta = record(project, "r1")
+    assert not meta.get("discarded") and not meta.get("kept") and "undone_by" not in meta
 
 
 def test_a_request_in_the_middle_that_is_not_waiting_keeps_its_own_record(project, monkeypatch):

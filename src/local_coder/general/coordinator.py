@@ -691,8 +691,10 @@ def _close_what_was_undone(meta: dict[str, Any], cancel: threading.Event) -> lis
     exactly the start of the stack, took every change of that stack back out. None of those files went into the
     project and a Keep of them would put back what he asked to remove, so each one is closed as discarded with
     `undone_by` naming this request: never as kept, since nothing went in. The walk is a Keep's (`_carried_chain`):
-    nearest first, and it stops at the first request with no files. A request that is not waiting keeps its own words;
-    a result that cannot be read and a record that cannot be saved are left as they were, and nothing here may fail the
+    nearest first, and it stops at the first request with no files. A request that is not waiting keeps its own words
+    and a result that cannot be read is left as it was. A record that cannot be saved is left as it was too, and the
+    walk ends there: no older request is closed over it, because the newer one stays keepable and its Keep carries the
+    older one's files into the project, which the older one would then say were never added. Nothing here may fail the
     run. Only request records are written: never the folder, never the working copy, never this request's own record.
 
     A run that was stopped, failed or cut short closes nothing: Stop is "not that", a dropped stream is not a decision,
@@ -712,10 +714,7 @@ def _close_what_was_undone(meta: dict[str, Any], cancel: threading.Event) -> lis
             if request_state(older) != WAITING or files is None:
                 continue
             record = {**older, "discarded": True, UNDONE_BY: request_id}
-            try:
-                _save_meta(record)
-            except (KeyError, OSError):
-                continue
+            _save_meta(record)  # one that cannot be saved raises into the guard below: the walk ends there
             older.update(record)
             closed.append(older_id)
     except (AttributeError, KeyError, OSError, TypeError, ValueError):
