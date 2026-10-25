@@ -1,6 +1,18 @@
 import AppKit
 import SwiftUI
 
+/// What the app's window shows: the split view and the least size the window may be given. With Changes open the
+/// columns need more than 920 pt (the sidebar counts twice): at 920 the layout ran wider than the window and cut off
+/// the sidebar and the inspector. Open, the minimum is the layout's own and the window grows to it; closed, it is 920.
+struct WindowRoot: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        RootView()
+            .frame(minWidth: model.inspectorShown ? nil : 920, minHeight: 600)
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @State private var columns = NavigationSplitViewVisibility.all
@@ -8,7 +20,7 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 236, max: 320)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 200, max: 320)
         } detail: {
             SessionView()
                 .navigationTitle(model.projectPath == nil ? "Local Coder" : model.projectName)
@@ -16,17 +28,14 @@ struct RootView: View {
                 .toolbar { toolbar }
                 .inspector(isPresented: $model.inspectorShown) {
                     ChangesInspector()
-                        .inspectorColumnWidth(min: 340, ideal: 460, max: 760)
+                        .inspectorColumnWidth(min: 340, ideal: 420, max: 760)
                 }
         }
         .sheet(isPresented: $model.showConnect) {
             ConnectOrcaRouterView()
                 .environmentObject(model)
         }
-        .sheet(isPresented: $model.showBrowser) {
-            ModelBrowser()
-                .environmentObject(model)
-        }
+        .modelBrowserSheet(isPresented: $model.showBrowser)
     }
 
     @ToolbarContentBuilder
@@ -331,8 +340,8 @@ private struct ChangesPill: View {
             HStack(spacing: 8) {
                 Image(systemName: "doc.on.doc")
                 Text("\(model.changedFiles.count) file\(model.changedFiles.count == 1 ? "" : "s") changed")
-                Text("+\(stats.added)").foregroundStyle(.green)
-                Text("−\(stats.removed)").foregroundStyle(.red)
+                Text("+\(stats.added)").foregroundStyle(.passText)
+                Text("−\(stats.removed)").foregroundStyle(.failText)
                 Text("Review")
                     .fontWeight(.semibold)
                 Image(systemName: "chevron.right")
@@ -521,6 +530,9 @@ struct ComposerBar: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        // On a light window the glass alone has no edge: a hairline and a soft lift keep it readable as a surface.
+        .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(.separator) }
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
         .frame(maxWidth: 760)
         .padding(.horizontal, 24)
         .padding(.bottom, 18)

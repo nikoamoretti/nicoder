@@ -24,7 +24,7 @@ func capture(_ window: NSWindow, _ name: String) {
     task.arguments = ["-x", "-o", "-l", String(window.windowNumber), path]
     try? task.run()
     task.waitUntilExit()
-    print(path)
+    print(FileManager.default.fileExists(atPath: path) ? path : "NOT CAPTURED (is the Mac locked?): \(path)")
 }
 
 @MainActor
@@ -286,5 +286,8 @@ MainActor.assumeIsolated {
         capture(settings, "15-settings-\(tab)")
         settings.orderOut(nil)
     }
+
+    // 7. The states the ui-fixes items touch (items.swift).
+    itemFixtures()
 }
 exit(0)

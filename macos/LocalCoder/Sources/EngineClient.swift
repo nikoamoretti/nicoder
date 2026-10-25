@@ -44,6 +44,8 @@ final class EngineClient {
     private var nextID = 1
     private var pending: [String: (Result<[String: Any], Error>) -> Void] = [:]
     var onEvent: ((EngineEvent) -> Void)?
+    /// Answers calls in place of the helper process. Only the screenshot harness sets it; the app never does.
+    var stub: ((String, [String: Any]) -> [String: Any])?
 
     var isRunning: Bool {
         process?.isRunning == true
@@ -82,6 +84,7 @@ final class EngineClient {
     }
 
     func call(_ method: String, _ params: [String: Any] = [:], timeoutSeconds: Double = 12) async throws -> [String: Any] {
+        if let stub { return stub(method, params) }
         try start()
         let id: String = lock.withLock {
             nextID += 1

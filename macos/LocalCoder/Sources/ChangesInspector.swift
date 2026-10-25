@@ -72,6 +72,11 @@ private struct ChangesList: View {
         files.first(where: { $0.id == selectedFile }) ?? files.first
     }
 
+    /// As tall as the rows (an inset list adds 10 pt above and below them); a long list scrolls at 200 pt.
+    static func listHeight(rows: Int) -> CGFloat {
+        min(CGFloat(rows) * FileRow.height + 20, 200)
+    }
+
     var body: some View {
         let totals = DiffParser.totals(files)
         VStack(alignment: .leading, spacing: 0) {
@@ -80,9 +85,9 @@ private struct ChangesList: View {
                     Text("\(files.count) file\(files.count == 1 ? "" : "s") changed")
                         .font(.headline)
                     Text("+\(totals.added)")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(.passText)
                     Text("−\(totals.removed)")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.failText)
                     Spacer()
                 }
                 .font(.callout.monospacedDigit())
@@ -96,7 +101,8 @@ private struct ChangesList: View {
                     .tag(Optional(file.id))
             }
             .listStyle(.inset)
-            .frame(height: min(CGFloat(files.count) * 30 + 12, 200))
+            .environment(\.defaultMinListRowHeight, FileRow.height)
+            .frame(height: Self.listHeight(rows: files.count))
             Divider()
             if let shown {
                 DiffView(file: shown)
@@ -122,9 +128,10 @@ private struct ChecksRow: View {
                 Label("Local Coder did not run checks for this project", systemImage: "minus.circle")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(ran, id: \.0) { name, status in
-                    Label(name, systemImage: status == "ok" ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(status == "ok" ? .green : .red)
+                ForEach(ran, id: \.0) { name, word in
+                    let passed = CheckWord.passed(word)
+                    Label(name, systemImage: passed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(passed ? Color.passText : Color.failText)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(.quaternary.opacity(0.5), in: .capsule)
@@ -135,7 +142,16 @@ private struct ChecksRow: View {
     }
 }
 
+/// The engine says "pass" or "fail" for the build and the source check and "ok" or "failed" for the preview. Only a
+/// pass is drawn as one; a word this does not know reads as a failure, never as a success.
+enum CheckWord {
+    static func passed(_ word: String) -> Bool {
+        word == "pass" || word == "ok"
+    }
+}
+
 private struct FileRow: View {
+    static let height: CGFloat = 24
     let file: DiffFile
 
     var body: some View {
@@ -146,6 +162,7 @@ private struct FileRow: View {
             Text(file.name)
                 .fontWeight(.medium)
                 .lineLimit(1)
+                .layoutPriority(1)
             Text(file.folder)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -153,11 +170,13 @@ private struct FileRow: View {
             Spacer(minLength: 6)
             if file.added > 0 {
                 Text("+\(file.added)")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.passText)
+                    .fixedSize()
             }
             if file.removed > 0 {
                 Text("−\(file.removed)")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.failText)
+                    .fixedSize()
             }
             DiffBar(added: file.added, removed: file.removed)
         }
@@ -232,8 +251,20 @@ private struct DiffLineView: View {
 private struct ReviewBar: View {
     @EnvironmentObject private var model: AppModel
 
+    /// Why Keep is off: the engine's own sentence about this result.
+    private var keepReason: String? {
+        model.canKeep ? nil : model.snapshotSummary
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let keepReason {
+                Text(keepReason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("keepReason")
+            }
             CostCaption()
             HStack(spacing: 10) {
                 Button("Discard", role: .destructive) { model.discard() }
@@ -249,7 +280,7 @@ private struct ReviewBar: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("k", modifiers: [.command])
                 .disabled(!model.canKeep)
-                .help("Copy these changes into your project (⌘K)")
+                .help(keepReason ?? "Copy these changes into your project (⌘K)")
                 .accessibilityIdentifier("keepButton")
             }
             .controlSize(.large)
@@ -396,8 +427,8 @@ struct DiffLine: Identifiable, Hashable {
 
         var tint: Color {
             switch self {
-            case .added: return .green
-            case .removed: return .red
+            case .added: return .passText
+            case .removed: return .failText
             default: return .secondary
             }
         }

@@ -155,11 +155,14 @@ private struct ThinkingRow: View {
     let label: String
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            // The walker overhangs the 22 pt rail so the timeline line still meets his head.
-            Rail(first: first, last: true, icon: AnyView(
-                HomininSpinner(size: 50)
-                    .frame(width: 22, height: 50)
+        // The row is as tall as a step's: the same rail, the same text padding and the label in the steps' column. The
+        // walker is bigger than his 22 pt slot and overhangs it, so his head reaches the end of the line from the step
+        // above (that step's rail already runs to the top of this row) and his stick rises beside it.
+        HStack(alignment: .top, spacing: 10) {
+            Rail(first: true, last: true, icon: AnyView(
+                Color.clear
+                    .frame(width: 22, height: 22)
+                    .overlay { HomininSpinner(size: 50).offset(y: 1.5) }
             ))
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 HStack(alignment: .firstTextBaseline) {
@@ -172,9 +175,12 @@ private struct ThinkingRow: View {
                         .contentTransition(.numericText())
                 }
                 .font(.callout)
-                .padding(.leading, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
             }
         }
+        // With no step above him his stick would touch the header's text.
+        .padding(.top, first ? 4 : 0)
         .fixedSize(horizontal: false, vertical: true)
     }
 }

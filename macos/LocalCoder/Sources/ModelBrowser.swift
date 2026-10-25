@@ -1,7 +1,31 @@
 import SwiftUI
 
+extension View {
+    /// Presents the model browser as a sheet that fits the window it hangs from, so Cancel and Use Model stay on screen.
+    func modelBrowserSheet(isPresented: Binding<Bool>) -> some View {
+        modifier(ModelBrowserSheet(isPresented: isPresented))
+    }
+}
+
+private struct ModelBrowserSheet: ViewModifier {
+    @EnvironmentObject private var model: AppModel
+    @Binding var isPresented: Bool
+    @State private var room: CGFloat = 800
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { room = $0 }
+            .sheet(isPresented: $isPresented) {
+                ModelBrowser(room: room)
+                    .environmentObject(model)
+            }
+    }
+}
+
 /// Every OrcaRouter model that can use Local Coder's tools: search, sort, pick.
 struct ModelBrowser: View {
+    /// How tall the window is below its toolbar. The sheet hangs from the top of that area and is never taller.
+    var room: CGFloat = 800
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -58,7 +82,7 @@ struct ModelBrowser: View {
             table
             footer
         }
-        .frame(width: 860, height: 620)
+        .frame(width: 860, height: min(620, max(300, room - 20)))
         .onAppear {
             selection = currentID
             if model.routerModels.isEmpty { model.loadRouterModels() }
@@ -174,7 +198,7 @@ struct ModelBrowser: View {
             TableColumn("Price per million tokens") { row in
                 Text(row.priceLabel)
                     .monospacedDigit()
-                    .foregroundStyle(row.free ? AnyShapeStyle(.green) : AnyShapeStyle(.primary))
+                    .foregroundStyle(row.free ? AnyShapeStyle(.passText) : AnyShapeStyle(.primary))
             }
             .width(min: 130, ideal: 170)
             TableColumn("Context") { row in
@@ -336,7 +360,7 @@ struct ConnectOrcaRouterView: View {
             if let error = model.connectError {
                 Label(error, systemImage: "exclamationmark.circle")
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.failText)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 400)
             }

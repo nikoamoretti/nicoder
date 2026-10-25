@@ -8,9 +8,8 @@ struct LocalCoderApp: App {
 
     var body: some Scene {
         Window("Local Coder", id: "main") {
-            RootView()
+            WindowRoot()
                 .environmentObject(model)
-                .frame(minWidth: 920, minHeight: 600)
         }
         .defaultSize(width: 1220, height: 800)
         .windowToolbarStyle(.unified)

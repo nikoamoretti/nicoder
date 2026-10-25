@@ -161,7 +161,7 @@ final class AppModel: ObservableObject {
     @Published var settingsTab = "models"
     @Published var reasoningOn = true
 
-    private let engine = EngineClient()
+    let engine = EngineClient()
     private var activeEpisode: String?
     /// The project the active request runs in (the window may not switch away until it ends).
     private var activeEpisodePath: String?
@@ -558,6 +558,7 @@ final class AppModel: ObservableObject {
             do {
                 _ = try await engine.call("keep", ["episode_id": episode, "path": path])
                 snapshot = try await engine.call("snapshot", ["episode_id": episode, "path": path])
+                previewURL = nil
                 banner = "The changes are in your project now. Ask for the next one."
                 followUpReady = true
                 inspectorShown = false
@@ -578,6 +579,7 @@ final class AppModel: ObservableObject {
                 }
                 _ = try await engine.call("discard", params)
                 snapshot = try await engine.call("snapshot", params)
+                previewURL = nil
                 banner = "The changes were thrown away. Your project is as it was."
                 followUpReady = false
                 inspectorShown = false

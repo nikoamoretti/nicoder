@@ -60,10 +60,7 @@ private struct ModelsSettings: View {
             }
         }
         .formStyle(.grouped)
-        .sheet(isPresented: $browsing) {
-            ModelBrowser()
-                .environmentObject(model)
-        }
+        .modelBrowserSheet(isPresented: $browsing)
     }
 }
 
@@ -77,7 +74,7 @@ private struct OrcaRouterSettings: View {
                 LabeledContent("Status") {
                     if model.orcaConnected {
                         Label("Connected", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                            .foregroundStyle(.passText)
                     } else {
                         Label("Not connected", systemImage: "circle.dashed")
                             .foregroundStyle(.secondary)
