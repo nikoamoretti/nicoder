@@ -281,8 +281,11 @@
   (sandbox-exec profile and runner), `tools.py`, `loop.py`, `prompts.py`,
   `runner.py` (app entry points). Change requests run it in
   `coordinator._run_agent_request`; Local Coder's own checks run only on Vite
-  web apps, failures go back to the agent (two rounds), other projects record
-  `local_checks: not_run`. Transcripts: `agent_transcript.json` per request,
+  web apps and only for a change that touched web files (`src/`, `public/`, a
+  web suffix, `package.json`, `tsconfig*`; the blank starter's own files don't
+  count), failures go back to the agent (two rounds), everything else records
+  `local_checks: not_run` with no repair round. The agent's scratch folders
+  (`.agenttmp`, `.cache`) stay out of every snapshot. Transcripts: `agent_transcript.json` per request,
   `~/.local/share/local-coder/agent-runs/` for questions.
 - `src/local_coder/mcp_server.py` + `agent/delegate.py` — delegation for other
   agents (Nico, 2026-10-22: "claude is very expensive"). A stdio MCP server,

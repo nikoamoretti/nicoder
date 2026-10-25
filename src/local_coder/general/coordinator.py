@@ -11,7 +11,7 @@ import json
 import shutil
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -98,6 +98,11 @@ MAX_CHECK_REPAIRS = 8
 AGENT_REPAIR_ROUNDS = 2
 AGENT_MAX_STEPS = 80
 _VITE_CONFIGS = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
+# What makes a change a web change: Local Coder's checks (source scan, build, preview, empty page) look at these.
+_WEB_SUFFIXES = (".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".mts", ".cts", ".css", ".scss", ".sass", ".less",
+                 ".html", ".vue", ".svelte")
+_WEB_FOLDERS = ("src", "public")
+_NO_WEB_FILES = ("This change touched no web files, so Local Coder's web checks (build, preview, page) did not run.")
 
 
 class _GenerationLedger:
@@ -998,6 +1003,37 @@ def _agent_capable() -> bool:
     return agent_capable(load_machine_config())
 
 
+def _touches_web(files: Iterable[str]) -> bool:
+    """True when a change touched the web app: its sources, its page, or its package and build config."""
+    for rel in files:
+        path = Path(rel)
+        if path.parts and path.parts[0] in _WEB_FOLDERS:
+            return True
+        if path.suffix.lower() in _WEB_SUFFIXES or path.name == "package.json" or path.name.startswith("tsconfig"):
+            return True
+    return False
+
+
+def _changed_beyond_starter(meta: dict[str, Any], candidate: Path) -> list[str]:
+    """What the change touched, leaving out files that are only the blank starter.
+
+    A request on an empty folder gets the starter in its working copy (and so does one built on it); those files
+    on their own are not a change the web checks should judge.
+    """
+    tree = index_tree(candidate)
+    starter = index_tree(starter_root()).files
+    return sorted(
+        rel for rel in compute_delta(_frozen_baseline(Path(meta["baseline"])), tree).touched()
+        if not (rel in starter and rel in tree.files and tree.files[rel].sha256 == starter[rel].sha256)
+    )
+
+
+def _skip_web_checks(meta: dict[str, Any], candidate: Path) -> bool:
+    """True when the change has files of its own and none of them is a web file (an empty change is not one)."""
+    changed = _changed_beyond_starter(meta, candidate)
+    return bool(changed) and not _touches_web(changed)
+
+
 def _is_vite_app(root: Path) -> bool:
     """Local Coder's own checks (source scan, build, preview) are built for Vite web apps."""
     return (
@@ -1093,10 +1129,11 @@ def _run_agent_request(
                 break
             if not _has_file_changes(baseline, candidate):
                 break
-            if not web_app:
+            if not web_app or _skip_web_checks(meta, candidate):
                 meta["verification"] = {
                     "local_checks": "not_run",
-                    "detail": "Local Coder's own checks cover Vite web apps; the agent ran the project's commands.",
+                    "detail": (_NO_WEB_FILES if web_app else "Local Coder's own checks cover Vite web apps.")
+                    + " The agent ran the project's commands.",
                     "agent_commands": session.toolbox.commands[-20:],
                 }
                 break
@@ -1204,6 +1241,11 @@ def _verify_and_repair(
     allow_repair: bool,
 ) -> None:
     """Check the candidate and, if needed, ask the model to fix it in this request."""
+    if _skip_web_checks(meta, candidate):
+        # Nothing the web checks look at changed: no check, no repair round, no "empty page" for a Python file.
+        meta["verification"] = {"local_checks": "not_run", "detail": _NO_WEB_FILES}
+        _save_meta(meta)
+        return
     repairs = 0
     same = 0
     stalled = 0

@@ -34,6 +34,9 @@ from pathlib import Path
 from local_coder.paths import EXCLUDE_DIRS, EXCLUDE_GLOBS, sha256_file
 
 EXTRA_EXCLUDE_DIRS = {
+    # Scratch the agent's own tools leave in the working copy (seen: 696 files of browsers and a uv cache).
+    ".agenttmp",
+    ".cache",
     ".local-coder",
     ".opencode",
     "coverage",
@@ -631,7 +634,9 @@ def read_index(path: Path) -> TreeIndex:
     index = TreeIndex(root=root)
     files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
     for rel, row in files.items():
-        if not isinstance(row, dict):
+        # An index frozen by an older build can name a folder that is excluded now (.cache, .agenttmp): drop it, or
+        # the review would list those files as deleted and the next request would stop stacking on this one.
+        if not isinstance(row, dict) or is_excluded(str(rel)):
             continue
         index.files[str(rel)] = FileEntry(
             rel=str(rel),
