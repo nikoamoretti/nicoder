@@ -35,11 +35,11 @@ PROJECT_MARKERS = (
 PROJECT_ROOTS = (
     ("projects", 2),
     ("Local Coder Projects", 1),
-    ("Downloads", 1),
-    ("Desktop", 1),
-    ("Documents", 1),
     ("", 1),
 )
+# Folders macOS guards with a permission prompt. find_project never walks into them on its own; the agent reads
+# them only when the user points there.
+GUARDED_HOME_DIRS = frozenset({"Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music"})
 _STOP_WORDS = frozenset({
     "the", "and", "app", "apps", "repo", "repos", "repository", "project", "projects", "code", "codebase",
     "folder", "mac", "macbook", "my", "on", "for", "with", "containing", "contains", "called", "named",
@@ -273,7 +273,7 @@ class ToolBox:
             "find_project": _spec(
                 "find_project",
                 "Find projects and repos on this Mac by name or topic. Searches ~/projects, ~/Local Coder "
-                "Projects, ~/Downloads, ~/Desktop, ~/Documents and the home folder; matches the words in any "
+                "Projects and the home folder (not ~/Desktop, ~/Documents or ~/Downloads); matches the words in any "
                 "order against folder names, subfolder names, package names, README files and git remotes. "
                 "Use it first whenever the user mentions a project, app or repo.",
                 {"query": _str("Words that name the project, e.g. 'paris shadow'.")},
@@ -343,7 +343,7 @@ class ToolBox:
             "open_project": _spec(
                 "open_project",
                 "Make a folder the current project in Local Coder so the user's next requests apply to it. "
-                "Call it once you have found the project or repo the user is asking about.",
+                "Call it only when the user asks to open a project or to work on one, not to answer a question.",
                 {"path": _str("The project's folder.")},
                 ["path"],
             ),
@@ -461,6 +461,8 @@ class ToolBox:
             return
         for child in children:
             if child.name.startswith(".") or child.name in PRUNE_DIRS:
+                continue
+            if folder == self.policy.home_real and child.name in GUARDED_HOME_DIRS:
                 continue
             real = Path(os.path.realpath(child))
             if real in seen or self.policy.denied_reason(real):

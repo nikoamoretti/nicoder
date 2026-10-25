@@ -160,6 +160,7 @@ class RpcServer:
                 str(params.get("text") or ""),
                 listener=self._on_event,
                 cancel=self.chat_cancel,
+                history=params.get("history"),
             )
         if method == "load_chat":
             return load_project_chat(params["path"])

@@ -512,6 +512,10 @@ final class AppModel: ObservableObject {
         var params: [String: Any] = ["text": text]
         if let path {
             params["path"] = path
+        } else {
+            // A chat without a project has no saved history in the engine: send what this window shows
+            // (the question itself is the last turn).
+            params["history"] = chatTurns.dropLast().suffix(10).map { ["role": $0.role, "text": $0.text] }
         }
         let result: [String: Any]
         do {

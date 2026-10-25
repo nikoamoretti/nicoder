@@ -14,7 +14,14 @@ VERSION="0.4.0"
 PYTHON="${LOCAL_CODER_PYTHON:-/usr/local/bin/python3}"
 DURABLE_VENV="${LOCAL_CODER_VENV:-$HOME/.local/share/local-coder-venv}"
 
-echo "Building Local Coder $VERSION from $ROOT"
+# Sign with a stable identity so macOS remembers the folder access granted to Local Coder across updates. An ad-hoc
+# signature ("-") changes with every build, so macOS asked again for Desktop, Documents and Downloads after each
+# install. LOCAL_CODER_SIGN_IDENTITY overrides; without an Apple Development identity the build stays ad-hoc.
+SIGN_ID="${LOCAL_CODER_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
+  | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)}"
+SIGN_ID="${SIGN_ID:--}"
+
+echo "Building Local Coder $VERSION from $ROOT (signing: $SIGN_ID)"
 
 cd "$ROOT"
 if [[ ! -x "$PYTHON" ]]; then
@@ -60,14 +67,14 @@ if [[ -f "$ROOT/macos/AppIcon.icns" ]]; then
 fi
 
 chmod +x "$MACOS/Local Coder"
-codesign --force --deep --sign - "$APP"
+codesign --force --deep --sign "$SIGN_ID" "$APP"  # fails here, before the installed app is touched
 xattr -cr "$APP" || true
 
 USER_APPS="$HOME/Applications"
 mkdir -p "$USER_APPS"
 rm -rf "$USER_APPS/Local Coder.app"
 cp -R "$APP" "$USER_APPS/Local Coder.app"
-codesign --force --deep --sign - "$USER_APPS/Local Coder.app"
+codesign --force --deep --sign "$SIGN_ID" "$USER_APPS/Local Coder.app"
 
 echo "Built:"
 echo "  $APP"

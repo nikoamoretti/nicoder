@@ -6,12 +6,10 @@ models keep their own paths.
 """
 from __future__ import annotations
 
-import os
 import secrets
 import shutil
 import threading
 import time
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +21,7 @@ from local_coder.machine import MachineConfig, is_hosted
 from .access import AccessPolicy
 from .loop import AgentRun, AgentSession, ChatFn
 from .prompts import ask_prompt, build_prompt
-from .tools import ToolBox, project_root
+from .tools import ToolBox
 
 ASK_STEPS = 40
 ASK_SECONDS = 480
@@ -65,16 +63,6 @@ def context_chars_for(cfg: MachineConfig) -> int:
     """Conversation size the loop keeps under, counted conservatively at two bytes per token."""
     output = min(_OUTPUT_TOKENS, int(cfg.max_tokens or _OUTPUT_TOKENS))
     return max(40_000, (int(cfg.n_ctx) - output - 1024) * _BYTES_PER_TOKEN)
-
-
-def dominant_project(files: list[Path], home: Path, *, minimum: int = 3, share: float = 0.6) -> Path | None:
-    """The one repo most of the read files belong to, if there clearly is one."""
-    home_real = Path(os.path.realpath(home))
-    roots = Counter(root for root in (project_root(path, home_real) for path in files) if root is not None)
-    if not roots:
-        return None
-    root, count = roots.most_common(1)[0]
-    return root if count >= minimum and count >= share * len(files) else None
 
 
 def runs_dir() -> Path:
@@ -132,10 +120,7 @@ def run_ask(
         on_step=on_step,
     )
     run = session.ask(question, max_steps=max_steps, deadline=time.monotonic() + seconds, hurry_after=0.5)
-    opened = toolbox.opened
-    if opened is None and project is None and run.status == "answered":
-        # The model read one repo but forgot open_project: open it so follow-ups apply there.
-        opened = dominant_project(toolbox.read_files, home)
+    opened = toolbox.opened  # only an explicit open_project: reading a repo to answer never switches to it
     transcript = session.save(
         run_root / "transcript.json", mode="ask", status=run.status, steps=run.steps,
         project=str(project) if project else None, opened=str(opened) if opened else None,

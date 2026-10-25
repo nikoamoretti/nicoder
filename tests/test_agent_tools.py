@@ -148,6 +148,23 @@ def test_find_project_prefers_real_code_over_an_empty_starter(home):
     assert "empty Local Coder starter" in lines[1]
 
 
+def test_find_project_never_walks_into_desktop_documents_or_downloads(home, monkeypatch):
+    # Each walk made macOS ask for access again (Nico, 2026-10-25).
+    for guarded in ("Desktop", "Documents", "Downloads"):
+        (home / guarded / "shadow-notes" / ".git").mkdir(parents=True)
+    touched: list[str] = []
+    real_iterdir = Path.iterdir
+
+    def watching(self):
+        touched.append(str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", watching)
+    result = _ask_box(home).call("find_project", {"query": "shadow"})
+    assert "Desktop" not in result.text and "Documents" not in result.text and "Downloads" not in result.text
+    assert not [path for path in touched if any(f"/{name}" in path for name in ("Desktop", "Documents", "Downloads"))]
+
+
 def test_open_project_needs_a_real_project(home):
     box = _ask_box(home, allow_open_project=True)
     assert "whole home folder" in box.call("open_project", {"path": "~"}).text

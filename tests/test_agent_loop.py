@@ -170,22 +170,6 @@ def test_headings_and_tables_become_chat_friendly():
     assert plain_answer("Plain | text with a pipe") == "Plain | text with a pipe"
 
 
-def test_dominant_project_needs_a_clear_majority(tmp_path):
-    from local_coder.agent.runner import dominant_project
-
-    home = Path(os.path.realpath(tmp_path))
-    repo = home / "projects" / "repo"
-    (repo / ".git").mkdir(parents=True)
-    (repo / "lib" / "deep").mkdir(parents=True)
-    other = home / "projects" / "other"
-    other.mkdir(parents=True)
-    (other / "package.json").write_text("{}")
-    files = [repo / "lib" / "deep" / f"{name}.ts" for name in "abc"]
-    assert dominant_project(files, home) == repo
-    assert dominant_project(files[:2], home) is None
-    assert dominant_project(files + [other / f"{name}.ts" for name in "defg"], home) is None
-
-
 def test_hurry_note_is_sent_once_halfway(home):
     loop_call = _call("list", {"path": "~"}, "c")
     script = Script(*[_reply(calls=[{**loop_call, "id": f"c{n}"}]) for n in range(3)], _reply("Answer."))

@@ -387,12 +387,14 @@ def chat_request(
     *,
     listener: EventListener | None = None,
     cancel: threading.Event | None = None,
+    history: Any = None,
 ) -> dict[str, Any]:
     """Answer an ordinary question. No canned replies.
 
     With an agent-capable model the agent searches and reads the Mac itself and
     may open the project it found (`open_project` in the result). `path` is
-    None when no project is open yet.
+    None when no project is open yet; then `history` is the conversation the app shows (the engine keeps
+    none for a chat without a project), so a follow-up knows what came before.
     """
     from local_coder.agent.runner import agent_capable
     from local_coder.general.inspect import asked_to_see_ui
@@ -411,13 +413,14 @@ def chat_request(
     waiting = _waiting_note(repo, can_read=with_tools)
     if waiting:
         extra = f"{extra}\n{waiting}".strip()
+    shown = _shown_history(history) if repo is None else None
     if with_tools:
-        result = _agent_chat(repo, question, extra=extra, listener=listener, cancel=cancel)
+        result = _agent_chat(repo, question, extra=extra, listener=listener, cancel=cancel, history=shown)
     else:
         from local_coder.general.chat_log import recent_messages
 
         reply = _local_chat_completion(
-            question, repo, extra=extra, history=recent_messages(repo) if repo is not None else None,
+            question, repo, extra=extra, history=recent_messages(repo) if repo is not None else shown,
         )
         if repo is not None:
             result = _chat_result(repo, question, reply)
@@ -426,6 +429,21 @@ def chat_request(
     if preview is not None:
         result["preview"] = preview
     return result
+
+
+def _shown_history(rows: Any, *, limit: int = 10, max_chars: int = 1500) -> list[dict[str, str]] | None:
+    """The turns the app shows in a chat without a project, clipped the way a project's saved chat is."""
+    if not isinstance(rows, list):
+        return None
+    clean: list[dict[str, str]] = []
+    for row in rows[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "")
+        text = str(row.get("text") or row.get("content") or "").strip()
+        if role in {"user", "assistant"} and text:
+            clean.append({"role": role, "content": text if len(text) <= max_chars else text[: max_chars - 1] + "…"})
+    return clean or None
 
 
 def _waiting_note(repo: Path | None, *, can_read: bool) -> str:
@@ -446,6 +464,7 @@ def _agent_chat(
     extra: str,
     listener: EventListener | None,
     cancel: threading.Event | None,
+    history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """A question answered by the agent with read-only tools across the home folder."""
     from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
@@ -463,7 +482,7 @@ def _agent_chat(
         project=repo,
         chat=hosted_tool_chat(cfg, cancel=cancel),
         context_chars=context_chars_for(cfg),
-        history=recent_messages(repo, limit=10, max_chars=1500) if repo is not None else None,
+        history=recent_messages(repo, limit=10, max_chars=1500) if repo is not None else history,
         cancel=cancel,
         on_step=step,
     )

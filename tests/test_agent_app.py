@@ -243,7 +243,9 @@ def test_stopping_a_change_request_keeps_the_partial_result_reviewable(monkeypat
     assert meta["model_commentary"].startswith("Stopped.")
 
 
-def test_question_opens_the_repo_it_read_when_the_model_forgot(monkeypatch, home):
+def test_a_question_without_a_project_never_switches_to_the_repo_it_read(monkeypatch, home):
+    # Nico (2026-10-25): "why does it default to going to the Prototypes folder". Reading a repo to answer
+    # used to open it; only an explicit open_project does now.
     repo = home / "projects" / "prototypes"
     (repo / ".git").mkdir()
     for name in ("a", "b", "c"):
@@ -254,8 +256,20 @@ def test_question_opens_the_repo_it_read_when_the_model_forgot(monkeypatch, home
     )
     _use_hosted(monkeypatch, script)
     result = chat_request(None, "What is in the prototypes app folder?")
-    assert result["open_project"] == str(repo)
-    assert load_chat(repo)["turns"][-1]["text"] == "Three small modules."
+    assert result["open_project"] is None
+    assert result["model_commentary"] == "Three small modules."
+    assert load_chat(repo)["turns"] == []
+
+
+def test_a_chat_without_a_project_remembers_what_the_window_shows(monkeypatch, home):
+    script = Script(_reply("Paris."))
+    _use_hosted(monkeypatch, script)
+    shown = [{"role": "user", "text": "Tell me about France"}, {"role": "assistant", "text": "France is in Europe."}]
+    result = chat_request(None, "And its capital?", history=shown)
+    assert result["model_commentary"] == "Paris."
+    sent = [(row["role"], row["content"]) for row in script.sent[0] if row["role"] in ("user", "assistant")]
+    assert sent[:2] == [("user", "Tell me about France"), ("assistant", "France is in Europe.")]
+    assert "And its capital?" in sent[-1][1]
 
 
 def test_a_new_chat_keeps_the_old_one_in_the_archive(tmp_path):
