@@ -328,7 +328,8 @@ def prepare_workspace(
         sync_source_tree(baseline, live_candidate)
     # The starter is part of this request's working copy, not of its baseline: Keep writes what the copy has beyond the
     # baseline, so a starter in the baseline would be one Keep never wrote. A request built on a waiting result has
-    # its starter already; one whose inherited baseline could not be used starts from the folder, so it lays it.
+    # its starter already. One that found a waiting result but could not use its baseline starts from the folder
+    # without the starter (rare: the evidence was damaged; the starter-fresh-start later cut lays it there too).
     starter_used = bool(empty and allow_starter and carried is None)
     if starter_used:
         lay_starter(live_candidate)
