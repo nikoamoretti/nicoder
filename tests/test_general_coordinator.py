@@ -16,6 +16,7 @@ from local_coder.general.coordinator import (
     run_general_request,
 )
 from local_coder.general.direct_write import CompletionResult
+from local_coder.general.snapshot import index_tree
 
 
 def test_has_file_changes_detects_new_source(tmp_path):
@@ -258,8 +259,11 @@ def test_starter_used_for_empty_folder(tmp_path):
     user.mkdir()
     meta = prepare_workspace(user, "req-empty", allow_starter=True)
     assert meta["starter_used"] is True
-    assert (user / "package.json").exists()
-    assert "task" not in (user / "src" / "App.tsx").read_text(encoding="utf-8").lower()
+    assert list(user.iterdir()) == [], "a request never writes into the folder it was asked about"
+    assert index_tree(Path(meta["baseline"])).files == {}, "its baseline is the folder as it is: empty"
+    working_copy = Path(meta["engine_cwd"])
+    assert (working_copy / "package.json").exists(), "the starter is in the request's working copy"
+    assert "task" not in (working_copy / "src" / "App.tsx").read_text(encoding="utf-8").lower()
     review = review_payload(meta["project_id"], "req-empty")
     assert review["engine"] == "local"
 

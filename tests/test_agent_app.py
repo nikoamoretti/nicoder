@@ -11,13 +11,16 @@ import pytest
 
 from local_coder import machine
 from local_coder.app_rpc import RpcServer
-from local_coder.app_service import chat_request, classify_request, load_prefs
+from local_coder.app_service import chat_request, classify_request, keep_changes, load_prefs
 from local_coder.general.chat_log import load_chat
 from local_coder.general.coordinator import load_meta, run_general_request
+from local_coder.general.snapshot import index_tree
+from local_coder.general.starter import starter_root
 
 STARTER_BLOCK = (
     "<h1>New app</h1>\n      <p>This starter is empty on purpose. Describe what you want to build.</p>"
 )
+STARTER_FILES = sorted(index_tree(starter_root()).files)
 HOSTED = machine.MachineConfig(
     model_alias="nvidia/nemotron-3.5-super-vl-120b-a12b",
     endpoint="https://integrate.api.nvidia.com",
@@ -164,7 +167,13 @@ def test_change_request_in_a_web_app_is_checked_and_reviewable(monkeypatch, home
     meta = load_meta(review["project_id"], review["request_id"])
     assert meta["stop_reason"] == "checks_passed"
     assert meta["agent"]["changed"] == ["src/App.tsx"]
-    assert "Tasks" not in (folder / "src" / "App.tsx").read_text()
+    # The starter is part of the request's working copy, so the review lists its files as the request's own new files
+    # (the edit is in the new App.tsx), and nothing is in his folder until Keep writes them.
+    assert review["facts"]["files"] == STARTER_FILES
+    assert list(folder.rglob("*")) == []
+    kept = keep_changes(review["request_id"], folder)
+    assert sorted(kept["applied"]) == STARTER_FILES
+    assert "<h1>Tasks</h1>" in (folder / "src" / "App.tsx").read_text()
 
 
 def test_failed_checks_go_back_to_the_agent(monkeypatch, home):

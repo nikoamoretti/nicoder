@@ -11,7 +11,8 @@ that now exist in U are also conflicts, and so is a rename's destination when
 U holds other text there than the request wrote. A rename is checked at both
 ends: its source must still be there unchanged, or the move must already have
 been made by hand. Found before the first write: a result that lists no files
-while its baseline lists some (Keep would empty the project), a clash at either
+while its baseline lists some (Keep would empty the project), a result whose
+`candidate/` folder is gone (whatever the baseline lists), a clash at either
 end of a rename, a link, a folder where a file goes or where a rename's source
 was, a plain file or a link that is not a folder where a folder must be made
 (unless this Keep removes it first), a looping link, a folder he cannot search
@@ -65,6 +66,13 @@ SENTENCE_TAIL = "Your project was not changed."
 EMPTY_RESULT_CODE = "empty_result"
 EMPTY_RESULT_SENTENCE = (
     "This result has no files left, so Keep would empty your project. Your project was not changed."
+)
+# A `candidate/` folder that is gone has nothing to keep, whatever the baseline lists. The guard above needs a baseline
+# that lists files, and a first request on an empty folder has none: the gone folder would read as a result that
+# changed nothing, and Keep would answer ok with nothing written and mark the request kept.
+RESULT_GONE_CODE = "result_gone"
+RESULT_GONE_SENTENCE = (
+    "This result's working copy is gone, so there is nothing to keep. Your project was not changed."
 )
 # (reason, how the sentence says it), in the order the clauses are written.
 _CLAUSES = (
@@ -411,11 +419,12 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
     """Apply B→C onto U transactionally. Refuses on conflict or path escape.
 
     Found before the first delete or write, in one pass: a result with no files left while the baseline lists some
-    (`would_empty_project`), a clash with what he changed (both ends of every rename included; looking at them on the
-    disk inside a folder he cannot search is an `OSError`, refused as `apply_failed` like the rest) and whatever else
-    `_blocked_before_writing` can know (a link, a folder or a file in the way, a looping link, a folder he cannot
-    search, a path leaving the project). Found only while writing: a disk error (a full disk, a folder that is
-    read-only). It is rolled back, but `_rollback` restores bytes only: a deleted executable comes back as a new
+    (`would_empty_project`), a `candidate/` that is not a folder (gone, whatever the baseline lists: the check above
+    only sees a baseline that lists files), a clash with what he changed (both ends of every rename included; looking
+    at them on the disk inside a folder he cannot search is an `OSError`, refused as `apply_failed` like the rest) and
+    whatever else `_blocked_before_writing` can know (a link, a folder or a file in the way, a looping link, a folder
+    he cannot search, a path leaving the project). Found only while writing: a disk error (a full disk, a folder that
+    is read-only). It is rolled back, but `_rollback` restores bytes only: a deleted executable comes back as a new
     file with mode 0644. The `detail` of a conflict stays as it is for the MCP apply, which prints it with the
     list; Keep builds Nico's sentence from that list (`conflict_sentence`).
     """
@@ -426,6 +435,8 @@ def apply_delta(user: Path, baseline: Path, candidate: Path) -> dict[str, object
     c_index = index_tree(candidate)
     if would_empty_project(b_index, c_index):
         return {"ok": False, "code": EMPTY_RESULT_CODE, "detail": EMPTY_RESULT_SENTENCE, "applied": []}
+    if not candidate.is_dir():
+        return {"ok": False, "code": RESULT_GONE_CODE, "detail": RESULT_GONE_SENTENCE, "applied": []}
     u_index = index_tree(user)
     try:
         conflicts = find_conflicts(b_index, c_index, u_index)
