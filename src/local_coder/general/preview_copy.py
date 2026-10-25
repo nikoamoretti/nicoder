@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
+from local_coder.general import packages
 from local_coder.general import preview as preview_module
 from local_coder.general.coordinator import project_dir, project_id_for
 from local_coder.general.inspect import folder_problem
@@ -30,7 +30,6 @@ from local_coder.general.waiting import find_waiting_result
 COPY_FOLDER = "preview"
 SOURCE_WAITING = "waiting"
 SOURCE_COPY = "copy"
-CLONE_SECONDS = 120
 
 
 def preview_copy_dir(project_id: str) -> Path:
@@ -122,27 +121,15 @@ def _clone_modules(folder: Path, target: Path) -> None:
 
     Only when `target` has none, the folder's are a real folder (not a link: the dev server and Vite's cache write
     into `target`'s own) and `target` has the folder's `package.json`, byte for byte (packages installed for another
-    one would be wrong). The clone is made beside `target` and moved in only when whole, so a clone that fails or is
-    cut short never leaves half a `node_modules` that `start_preview` would trust: it installs in `target` instead.
-    The folder's `node_modules` are only read.
+    one would be wrong). The clone is made beside `target` and moved in only when whole and when no link in it leads
+    out of `target` (`packages.clone_modules`), so a clone that fails or is cut short never leaves half a
+    `node_modules` that `start_preview` would trust: it installs in `target` instead. The folder's `node_modules`
+    are only read.
     """
-    source, destination = folder / "node_modules", target / "node_modules"
-    if os.path.lexists(destination) or source.is_symlink() or not source.is_dir():
-        return
     package = _bytes(target / "package.json")
     if package is None or package != _bytes(folder / "package.json"):
         return
-    staging = target.parent / f".{target.name}-modules"
-    shutil.rmtree(staging, ignore_errors=True)
-    try:
-        done = subprocess.run(
-            ["/bin/cp", "-cR", str(source), str(staging)], capture_output=True, timeout=CLONE_SECONDS, check=False,
-        )
-        if done.returncode == 0:
-            os.rename(staging, destination)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    shutil.rmtree(staging, ignore_errors=True)
+    packages.clone_modules(folder / packages.MODULES, target)
 
 
 def _remove(path: Path) -> None:

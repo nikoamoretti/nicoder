@@ -109,10 +109,12 @@ def git_is_dirty(repo: Path) -> bool:
     """Whether a git checkout has uncommitted changes.
 
     Read-only: `git status` would otherwise take index.lock and refresh `.git/index` in the user's folder, which a
-    question or opening a project must not do.
+    question or opening a project must not do. `core.fsmonitor` is off for this one call for the same reason: in a
+    repository that sets it to true, `git status` starts a file-system monitor daemon and leaves its socket and
+    cookie files in `.git`.
     """
     try:
-        proc = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+        proc = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", str(repo), "status", "--porcelain"],
                               capture_output=True, text=True, timeout=10,
                               env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
     except (OSError, ValueError):

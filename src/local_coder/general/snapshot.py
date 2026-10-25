@@ -22,7 +22,6 @@ clash refusal names the files; the others keep the generic sentence.
 """
 from __future__ import annotations
 
-import filecmp
 import json
 import os
 import shutil
@@ -53,6 +52,7 @@ NOISE_NAMES = {
     "bun.lock",
     "bun.lockb",
 }
+COMPARE_CHUNK = 1 << 20  # bytes read from each of two files at a time when they are compared
 
 
 # Why a path is a conflict. `Conflict.reason` carries one of these as it is: the MCP apply prints them, and
@@ -210,11 +210,22 @@ def copy_snapshot(source: Path, dest: Path) -> TreeIndex:
 
 
 def _holds_same_bytes(source: Path, target: Path) -> bool:
-    """True when target is a plain file with exactly the bytes of source."""
+    """True when target is a plain file with exactly the bytes of source.
+
+    Compared byte by byte, every time. `filecmp.cmp` remembers its answer for a pair of files by their size and
+    modification time, even with `shallow=False`: in the long-running helper an edit that keeps both (`cp -p`,
+    `touch -r`) after an earlier "same" would read "same" again, and the dev server's copy would keep the old file.
+    """
     try:
-        if target.is_symlink() or not target.is_file():
+        if target.is_symlink() or not target.is_file() or source.stat().st_size != target.stat().st_size:
             return False
-        return source.stat().st_size == target.stat().st_size and filecmp.cmp(source, target, shallow=False)
+        with source.open("rb") as left, target.open("rb") as right:
+            while True:
+                chunk = left.read(COMPARE_CHUNK)
+                if chunk != right.read(COMPARE_CHUNK):
+                    return False
+                if not chunk:
+                    return True
     except OSError:
         return False
 

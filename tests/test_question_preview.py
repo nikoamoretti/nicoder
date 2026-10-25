@@ -24,8 +24,8 @@ from local_coder import machine
 from local_coder.app_rpc import RpcServer
 from local_coder.app_service import chat_request, explain_request, keep_changes
 from local_coder.engines.opencode_config import data_root
+from local_coder.general import packages, preview_copy
 from local_coder.general import preview as preview_module
-from local_coder.general import preview_copy
 from local_coder.general.coordinator import live_dir, load_meta, project_id_for, run_general_request
 from local_coder.general.preview_copy import preview_project
 
@@ -224,7 +224,7 @@ def test_1_a_failed_clone_falls_back_to_npm_install_in_the_copy(folder, fake, mo
             return subprocess.CompletedProcess(argv, 1, b"", b"clonefile failed")
         return real_run(argv, *args, **kwargs)
 
-    monkeypatch.setattr(preview_copy.subprocess, "run", broken_cp)
+    monkeypatch.setattr(packages.subprocess, "run", broken_cp)
     before = digest(folder)
     result = chat_request(folder, "open the app")
     assert result["preview"]["ok"] is True
@@ -240,7 +240,7 @@ def test_1_a_clone_that_cannot_start_falls_back_too(folder, fake, model, monkeyp
     def no_cp(argv, *args, **kwargs):
         raise FileNotFoundError("/bin/cp")
 
-    monkeypatch.setattr(preview_copy.subprocess, "run", no_cp)
+    monkeypatch.setattr(packages.subprocess, "run", no_cp)
     chat_request(folder, "open the app")
     assert fake.installed == [copy_of(folder)]
 

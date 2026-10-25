@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -15,8 +16,15 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from local_coder.engines.opencode_config import data_root
+from local_coder.general import packages
 
 PREVIEW_HOST = "127.0.0.1"
+INSTALL_SECONDS = 180
+# How a preview got its `node_modules` (the "packages" key of the record `start_preview` answers with).
+PACKAGES_PRESENT = "present"
+PACKAGES_CLONED = "cloned"
+PACKAGES_CLONED_AND_UPDATED = "cloned+installed"
+PACKAGES_INSTALLED = "installed"
 _SCRIPT_SRC = re.compile(
     r"""<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']""",
     re.I,
@@ -49,6 +57,23 @@ def project_port(project_id: str, *, base: int = 5173) -> int:
 
 
 def _alive(pid: int) -> bool:
+    """True while the process runs.
+
+    A dev server this process started and has not waited for is a zombie once it exits, and `kill(pid, 0)` still finds
+    a zombie: `stop_preview` then waited out its whole deadline (5 s, for every preview that replaced another and for
+    every Discard) for a server that was already gone. `waitpid` collects such a child; any other pid is asked of the
+    process table.
+    """
+    if pid <= 0:
+        return False
+    try:
+        done, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass  # not our child
+    except OSError:
+        return False
+    else:
+        return done == 0
     try:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
@@ -88,7 +113,7 @@ def stop_preview() -> dict[str, Any]:
                 pass
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and _alive(pid):
-            time.sleep(0.2)
+            time.sleep(0.05)
         if _alive(pid):
             try:
                 os.killpg(pid, signal.SIGKILL)
@@ -111,7 +136,7 @@ def start_preview(project_dir: Path, project_id: str, *, wait_s: int = 45) -> di
         stop_preview()
         freed = time.monotonic() + 4
         while time.monotonic() < freed and _port_open(PREVIEW_HOST, project_port(project_id)):
-            time.sleep(0.2)
+            time.sleep(0.05)
     port = project_port(project_id)
     if _port_open(PREVIEW_HOST, port):
         return {
@@ -125,22 +150,13 @@ def start_preview(project_dir: Path, project_id: str, *, wait_s: int = 45) -> di
         return {"ok": False, "code": "npm_missing", "detail": "npm was not found on this Mac."}
     if not (project_dir / "package.json").exists():
         return {"ok": False, "code": "no_package", "detail": "This project has no package.json yet."}
-    if not (project_dir / "node_modules").is_dir():
-        install = subprocess.run(
-            [npm, "install", "--no-fund", "--no-audit"],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        if install.returncode != 0:
-            return {
-                "ok": False,
-                "code": "install_failed",
-                "detail": (install.stderr or install.stdout)[-400:],
-            }
     log = data_root() / "logs" / f"preview-{project_id}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    how = PACKAGES_PRESENT
+    if not (project_dir / "node_modules").is_dir():
+        how, failure = _provide_packages(npm, project_dir, project_id, log)
+        if failure is not None:
+            return failure
     env = os.environ.copy()
     env["BROWSER"] = "none"
     env["HOST"] = PREVIEW_HOST
@@ -171,12 +187,77 @@ def start_preview(project_dir: Path, project_id: str, *, wait_s: int = 45) -> di
                 "dir": str(project_dir),
                 "project_id": project_id,
                 "log": str(log),
+                "packages": how,
             }
             write_preview_record(record)
             return record
-        time.sleep(0.4)
+        time.sleep(0.1)
     stop_preview()
     return {"ok": False, "code": "preview_timeout", "detail": f"Preview did not start within {wait_s}s."}
+
+
+def _provide_packages(npm: str, project_dir: Path, project_id: str, log: Path) -> tuple[str, dict[str, Any] | None]:
+    """Give `project_dir` its `node_modules`: a donor's clone when there is one, then `npm install` unless it was exact.
+
+    Answers how they came (`PACKAGES_*`) and, when they could not, the refusal `start_preview` returns. Reusing
+    packages is only a shortcut: whatever goes wrong with a donor, the plain `npm install` runs as it always did, and a
+    clone that npm cannot finish is thrown away and installed from scratch. A failed install leaves no `node_modules`
+    behind, which the next start would trust.
+    """
+    try:
+        adoption = packages.adopt_packages(project_dir, project_id)
+    except Exception:  # noqa: BLE001 - a bad donor must never stop a preview
+        adoption = packages.Adoption(packages.NONE)
+    _note(log, adoption.describe())
+    if adoption.how == packages.EXACT:
+        return PACKAGES_CLONED, None
+    failure = _npm_install(npm, project_dir)
+    if adoption.how == packages.CLOSE:
+        if failure is None:
+            return PACKAGES_CLONED_AND_UPDATED, None
+        _remove_packages(project_dir)
+        _note(log, "npm could not finish the clone, so the packages are installed from scratch")
+        failure = _npm_install(npm, project_dir)
+    if failure is not None:
+        _remove_packages(project_dir)
+    return PACKAGES_INSTALLED, failure
+
+
+def _npm_install(npm: str, project_dir: Path) -> dict[str, Any] | None:
+    """Run `npm install` in `project_dir`: None when it worked, else the refusal `start_preview` returns."""
+    try:
+        install = subprocess.run(
+            [npm, "install", "--no-fund", "--no-audit"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=INSTALL_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "code": "install_failed", "detail": f"npm install took longer than {INSTALL_SECONDS} s."}
+    except OSError as exc:
+        return {"ok": False, "code": "install_failed", "detail": f"npm could not run: {exc.strerror or exc}."}
+    if install.returncode != 0:
+        return {"ok": False, "code": "install_failed", "detail": (install.stderr or install.stdout)[-400:]}
+    return None
+
+
+def _remove_packages(project_dir: Path) -> None:
+    """Delete `project_dir`'s `node_modules` (a folder, or a link to one), whatever state it is in."""
+    modules = project_dir / packages.MODULES
+    if modules.is_symlink():
+        modules.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(modules, ignore_errors=True)
+
+
+def _note(log: Path, line: str) -> None:
+    """Add one line to the preview's log, so a slow or odd start can be explained afterwards."""
+    try:
+        with log.open("ab") as handle:
+            handle.write(f"[local-coder] {line}\n".encode())
+    except OSError:
+        pass
 
 
 def _http_ok(url: str) -> bool:
@@ -447,6 +528,4 @@ def _looks_like_module_url(url: str) -> bool:
 
 
 def _which(name: str) -> str | None:
-    import shutil
-
     return shutil.which(name)

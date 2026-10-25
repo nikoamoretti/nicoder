@@ -104,7 +104,8 @@
   (`general/preview_copy.py`, behind `app_service._start_preview_note` and RPC
   `preview_start`, which never runs npm in the path it is given). The copy has its
   own `node_modules`: a copy-on-write clone of the folder's when they are for the
-  same `package.json`, else `npm install` in the copy. Known limit: the copy is a
+  same `package.json`, else a clone of another working copy's or `npm install` in the copy
+  (`general/packages.py`, below). Known limit: the copy is a
   snapshot until he asks again, and `.env`, links and lock files are not copied.
   Errors reach the app as plain sentences:
   `AppError` and `GeneralError` keep their own code and detail, anything
@@ -251,6 +252,23 @@
   `checks_passed` (the start state fails Local Coder's own checks, and the engine
   retries its repairs first), which counts as cut short, so the old request stays
   keepable there.
+- `src/local_coder/general/packages.py` — where a preview's `node_modules` come from. `start_preview` (a
+  request's `candidate/`, the question preview's copy and the waiting result alike) clones a donor's before it
+  runs `npm install`: APFS copy-on-write, `cp -cR`, about 0.1 s and no disk until a file changes, against
+  seconds and 60+ MB for every request. Donors, best first: the sticky copy (`live/candidate`, not while another
+  request runs), the question-preview copy, the newest earlier requests' `candidate/` (at most eight) and his own
+  folder. A donor whose `package.json` is the candidate's and holds every package it names is used as it is
+  (`packages: "cloned"`); else the donor with the fewest differing dependencies is cloned and `npm install` brings
+  it up to date inside the candidate (`"cloned+installed"`; a tree npm did not make, with no hidden lock file,
+  is never a head start). A donor is only read: his folder's `node_modules` are cloned, never written or linked,
+  and the clone is made beside the candidate and moved in whole only when no link in it is absolute or leads out of
+  the candidate. No donor, a clone that fails, a lookup that raises or an `npm install` that cannot finish the
+  clone (it is deleted and installed from scratch) all end in today's plain install (`"installed"`). A failed or
+  timed-out install is `install_failed` and leaves no `node_modules` for the next start to trust. `node_modules`
+  stays out of every snapshot (`snapshot.EXCLUDE`), so none of it reaches a review, Keep or a later copy. Known
+  limit: the first request of a project has no donor and still installs. `preview._alive` collects a dev server that
+  has exited (a zombie child still answers `kill(pid, 0)`), so stopping a preview, which every second preview and
+  every Discard does, no longer waits 5 s.
 - `src/local_coder/general/waiting.py` — a question asked while a result waits
   for Keep or Discard gets a note built from the request's own record (title,
   age, files, "not in the folder yet", and for the agent where to read the

@@ -147,6 +147,27 @@ def test_sync_source_tree_skip_same_leaves_unchanged_files_alone(tmp_path):
     assert (dest / "vite.config.ts").stat().st_mtime != old
 
 
+def test_sync_source_tree_skip_same_sees_an_edit_that_keeps_size_and_mtime(tmp_path):
+    """`filecmp.cmp` remembers "same" by size and mtime: an edit that keeps both (`touch -r`) must still sync."""
+    from local_coder.general.snapshot import sync_source_tree
+
+    source, dest = tmp_path / "user", tmp_path / "copy"
+    _write(source, "src/App.tsx", "one\n")
+    big = bytes(range(256)) * 10_000  # 2.5 MB: more than one chunk
+    (source / "src" / "data.bin").write_bytes(big)
+    sync_source_tree(source, dest)
+    sync_source_tree(source, dest, skip_same=True)  # asked once and answered "same": the old answer was kept
+    for rel, changed in (("src/App.tsx", b"two\n"), ("src/data.bin", big[:-1] + b"X")):
+        before = (source / rel).stat()
+        (source / rel).write_bytes(changed)
+        os.utime(source / rel, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = (source / rel).stat()
+        assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    sync_source_tree(source, dest, skip_same=True)
+    assert (dest / "src" / "App.tsx").read_bytes() == b"two\n", "same size, same mtime, other bytes: written"
+    assert (dest / "src" / "data.bin").read_bytes() == big[:-1] + b"X", "a change in the last chunk is seen too"
+
+
 def test_sync_source_tree_preserves_node_modules(tmp_path):
     from local_coder.general.snapshot import sync_source_tree
 
