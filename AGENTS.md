@@ -95,7 +95,12 @@
   (JSON-lines helper, no network server). A request never creates its project
   folder: `general/inspect.folder_problem` refuses a path that is gone, a file or
   unreadable, in plain words, before any worker or model call (only `new_project`
-  and `start_chat` make folders). Errors reach the app as plain sentences:
+  and `start_chat` make folders). A request puts nothing into its folder before
+  Keep either, the starter included: on an empty folder it is laid in the working
+  copy (see `request_state.py` below). Known limit (the `preview-in-place` cut): a
+  question that asks for the preview runs `npm install` and the dev server in the
+  project's own folder (`app_service._start_preview_note`). Errors reach the app
+  as plain sentences:
   `AppError` and `GeneralError` keep their own code and detail, anything
   unexpected becomes one generic sentence, and the raw text and traceback go to
   stderr and `<data dir>/logs/helper-errors.log` (`errorlog.py`).
@@ -113,9 +118,21 @@
   in its meta.json, found by comparing the copy with that request's result: the
   newest request that is neither discarded nor without a result of its own decides,
   and when such requests were passed over the whole copy must equal that result).
+  A request on an empty folder never writes into it: the blank starter is laid into
+  the sticky copy only (`prepare_workspace`, `starter_used` in meta.json), never
+  into the baseline or the folder, so the baseline is the empty folder, the review
+  lists the starter's files as the request's own new files, Keep writes them and
+  Discard leaves the folder empty. A request built on a waiting starter result
+  inherits that result's baseline and copy and never lays the starter again. A
+  request whose copy is still exactly the starter has no result of its own, like
+  one that ends with the copy as the result it was built on
+  (`_baseline_at_the_starter`, decided from the two trees, never the model's
+  words): no files, no Keep or Discard, no check, no repair round, and one model
+  call for the agent.
   Every engine does this, the hosted agent included: its agent starts in the copy as that
   result left it (`_run_agent_request` re-syncs the copy from that request's
-  candidate, copied and never linked, else from the baseline; the re-sync stays
+  candidate, copied and never linked, else from the baseline, with the starter
+  laid over it when the folder was empty; the re-sync stays
   because it undoes the preview's SWC rewrite of `package.json` and
   `vite.config.ts`, which the agent's review and Keep must not carry; the local
   path still does, until the `swc-rewrite` cut). Such a request takes that
@@ -147,7 +164,15 @@
   (`snapshot.would_empty_project`, code `empty_result`: "This result has no files
   left, so Keep would empty your project. Your project was not changed."); the
   card then has `can_keep` false and `can_discard` true, says the same sentence
-  and keeps its files and diff. Known limit (the `frozen-candidate-index` cut): a
+  and keeps its files and diff. A result whose `candidate/` is gone is refused
+  whatever the baseline lists (`snapshot.RESULT_GONE_CODE`, code `result_gone`:
+  "This result's working copy is gone, so there is nothing to keep. Your project
+  was not changed."), also before any write and also for the MCP apply: a first
+  request on an empty folder has an empty baseline, which the check above cannot
+  see, and Keep would answer ok with nothing written and mark the request kept.
+  `empty_result` still wins when the baseline lists files, and a `candidate/` that
+  exists and is empty still applies onto an empty baseline. Known limit (the
+  `frozen-candidate-index` cut): a
   candidate missing one file, or with one unreadable subfolder, still deletes
   those files under a normal card. Known limit: what he edited
   after the first request started is not in the copy a follow-up's agent works
