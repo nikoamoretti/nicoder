@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import threading
 import time
 from pathlib import Path
 
 from local_coder.general.coordinator import run_general_request
-from local_coder.general.starter import starter_root
+from local_coder.general.starter import copy_starter
 
 REQUEST_1 = (
     "Build a polished task-board web app. It needs three columns: To do, In progress, "
@@ -39,7 +38,7 @@ def main() -> int:
     project.mkdir(parents=True, exist_ok=True)
     if args.step == "create" and not args.no_starter and not (project / "package.json").exists():
         if not any(project.iterdir()):
-            shutil.copytree(starter_root(), project, dirs_exist_ok=True)  # the trial seeds its own throwaway folder
+            copy_starter(project)
     events: list[dict] = []
 
     def listener(event: dict) -> None:

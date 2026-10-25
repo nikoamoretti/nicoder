@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 from local_coder.engines.opencode_client import OpenCodeError
 from local_coder.engines.opencode_server import client_from_record, stop_owned
 from local_coder.general.coordinator import run_general_request
-from local_coder.general.starter import starter_root
+from local_coder.general.starter import copy_starter
 from local_coder.machine import load_machine_config
 
 REQUEST_1 = (
@@ -81,7 +80,7 @@ def main() -> int:
     if USER_PROJECT.exists():
         raise SystemExit(f"refusing to reuse {USER_PROJECT}; delete it only if this is a fresh trial")
     USER_PROJECT.mkdir(parents=True)
-    shutil.copytree(starter_root(), USER_PROJECT, dirs_exist_ok=True)  # the trial seeds its own throwaway folder
+    copy_starter(USER_PROJECT)
     print("stopping leftover OpenCode", stop_owned(), flush=True)
     events: list[dict] = []
 

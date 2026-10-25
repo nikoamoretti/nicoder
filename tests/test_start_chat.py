@@ -29,14 +29,14 @@ def test_allocate_project_name_avoids_occupied_folders(tmp_path):
     assert allocate_project_name(parent, "task-board") == "task-board-2"
 
 
-def test_start_chat_creates_an_empty_folder_under_chosen_parent(config_home, tmp_path):
+def test_start_chat_creates_starter_under_chosen_parent(config_home, tmp_path):
     parent = tmp_path / "Local Coder Projects"
     result = start_chat("Build a task board", parent=parent)
     dest = Path(result["path"])
     assert dest.parent == parent
     assert dest.name == "task-board"
-    assert dest.is_dir() and sorted(dest.rglob("*")) == [], "the starter waits in the first request's working copy"
-    assert result["inspection"]["exists"] is True and result["inspection"]["verdict"] == "empty"
+    assert (dest / "package.json").is_file()
+    assert result["inspection"]["exists"] is True
     assert "Created task-board" in result["detail"]
 
 
@@ -54,5 +54,4 @@ def test_rpc_start_chat(config_home, tmp_path):
     })
     assert reply["ok"] is True
     assert Path(reply["result"]["path"]).is_dir()
-    assert sorted(Path(reply["result"]["path"]).rglob("*")) == [], "an empty folder: Keep writes the app later"
-    assert reply["result"]["inspection"]["verdict"] == "empty"
+    assert (Path(reply["result"]["path"]) / "package.json").is_file()

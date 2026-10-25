@@ -370,7 +370,7 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let parent = panel.url else { return }
         let alert = NSAlert()
         alert.messageText = "Name the new project"
-        alert.informativeText = "Creates an empty folder. The app is added when you press Keep."
+        alert.informativeText = "Local Coder creates an empty React starter here. The model writes the app after you describe it."
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(string: "my-app")

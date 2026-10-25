@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from local_coder.controller import git_is_dirty, git_revision
-from local_coder.general.starter import is_blank_folder
 
 
 def _count_by_suffix(root: Path, suffixes: tuple[str, ...], limit: int = 400) -> int:
@@ -206,7 +205,7 @@ def _inspect_folder(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
     else:
         report["notes"].append("This folder is not a git checkout. That is fine.")
 
-    empty = is_blank_folder(repo) if repo.is_dir() else True
+    empty = not any(repo.iterdir()) if repo.is_dir() else True
     if empty and not languages:
         report["supported"] = True
         report["verdict"] = "empty"

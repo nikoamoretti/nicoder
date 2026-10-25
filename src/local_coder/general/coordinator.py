@@ -85,7 +85,7 @@ from local_coder.general.snapshot import (
     write_index,
 )
 from local_coder.general.source_check import parse_retry_message
-from local_coder.general.starter import is_blank_folder, lay_starter, starter_root
+from local_coder.general.starter import lay_starter, starter_root
 from local_coder.general.toolchain import ensure_ts_preview
 from local_coder.hosted import provider_place
 from local_coder.machine import is_hosted, load_machine_config
@@ -290,13 +290,13 @@ def prepare_workspace(
     """Snapshot the current user tree, including uncommitted work.
 
     The folder must already exist: a request never creates it. Only New Project and the welcome
-    chat make folders, and they make them empty. A request never writes into the folder either: its baseline is
-    the folder as it is, and on an empty folder (when `allow_starter`; a Finder `.DS_Store` is not content) the
-    blank starter is laid into the sticky working copy (`live/candidate`) and nowhere else, so the review lists
-    the starter's files as the request's own new files and only a Keep writes them. A request built on a result
-    that still waits (`_open_request_in`, which passes over discarded requests and requests that ended with no
-    files of their own) takes that result's baseline as its own instead: its diff and its Keep are then measured
-    from one starting point, so what was changed in the folder meanwhile is neither shown as the model's work nor
+    chat make folders. A request never writes into it either: its baseline is the folder as it is, and on an
+    empty folder (when `allow_starter`) the blank starter is laid into the sticky working copy (`live/candidate`)
+    and nowhere else, so the review lists the starter's files as the request's own new files and only a Keep
+    writes them. A request built on a result that still waits (`_open_request_in`, which passes over
+    discarded requests and requests that ended with no files of their own) takes that
+    result's baseline as its own instead: its diff and its Keep are then measured from one starting
+    point, so what was changed in the folder meanwhile is neither shown as the model's work nor
     reverted by Keep; it also takes that result's working copy as it is and never lays the starter again, which
     would overwrite the earlier request's edits. `carry=False` starts from the folder as it is now, whatever
     result still waits: a continuation does, which brings its own copy and inherits no baseline.
@@ -311,7 +311,7 @@ def prepare_workspace(
     candidate = root / "candidate"
     live_candidate = live_dir(pid) / "candidate"
     carried = _open_request_in(pid, request_id, live_candidate) if carry else None
-    empty = is_blank_folder(user_path)
+    empty = not any(user_path.iterdir())
     inherited = carried is not None and _inherit_baseline(pid, carried, baseline, root / "baseline.json")
     if not inherited:
         # Nothing waits, or not all of its baseline is there: start from the folder as it is now.
@@ -1448,18 +1448,16 @@ def _idle_baseline(engine_cwd: Path, meta: dict[str, Any]) -> Path | None:
 def _baseline_at_the_starter(engine_cwd: Path, meta: dict[str, Any]) -> Path | None:
     """The baseline of a request on an empty folder whose working copy is still exactly the blank starter, else None.
 
-    The copy as the request started is its baseline (empty, or a Finder `.DS_Store` only) with the starter laid over
-    it. Offering Keep for a page that says "New app" would be a fake result, and the hosted agent would be sent back
-    to repair it with a second paid model call. Same rule as `_idle_baseline`: the two trees are read, never the
-    model's words.
+    Offering Keep for a page that says "New app" would be a fake result, and the hosted agent would be sent back to
+    repair it with a second paid model call. Same rule as `_idle_baseline`: the two trees are read, never the model's
+    words.
     """
     if not _lays_starter(meta):
         return None
     try:
         baseline = Path(str(meta["baseline"]))
-        start = _identity(index_tree(baseline))
-        whole = start == _identity(read_index(baseline.parent / "baseline.json"))
-        at_the_starter = _tree_hashes(engine_cwd) == {**start, **_tree_hashes(starter_root())}
+        whole = _identity(index_tree(baseline)) == _identity(read_index(baseline.parent / "baseline.json"))
+        at_the_starter = _tree_hashes(engine_cwd) == _tree_hashes(starter_root())
     except (KeyError, OSError, ValueError):
         return None
     return baseline if whole and at_the_starter else None
