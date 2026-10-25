@@ -121,6 +121,32 @@ def test_new_candidate_path_that_exists_in_user_tree_is_conflict(tmp_path):
     assert any(row.path == "fresh.ts" for row in conflicts)
 
 
+def test_sync_source_tree_skip_same_leaves_unchanged_files_alone(tmp_path):
+    """A dev server watching dest sees a rewritten file as changed, same bytes or not: skip_same does not write it."""
+    from local_coder.general.snapshot import sync_source_tree
+
+    source, dest = tmp_path / "user", tmp_path / "copy"
+    _write(source, "src/App.tsx", "one\n")
+    _write(source, "vite.config.ts", "config\n")
+    _write(source, "gone.ts", "x\n")
+    sync_source_tree(source, dest)
+    old = 1_000_000_000
+    for rel in ("src/App.tsx", "vite.config.ts", "gone.ts"):
+        os.utime(dest / rel, (old, old))
+    (source / "gone.ts").unlink()
+    _write(source, "src/App.tsx", "two\n")
+    _write(source, "src/New.tsx", "new\n")
+    sync_source_tree(source, dest, skip_same=True)
+    assert (dest / "vite.config.ts").stat().st_mtime == old, "same bytes: not written"
+    assert (dest / "src" / "App.tsx").read_text(encoding="utf-8") == "two\n", "changed: written"
+    assert (dest / "src" / "New.tsx").read_text(encoding="utf-8") == "new\n"
+    assert not (dest / "gone.ts").exists(), "removed from the source: removed"
+    # the default still rewrites everything, as the requests rely on
+    os.utime(dest / "vite.config.ts", (old, old))
+    sync_source_tree(source, dest)
+    assert (dest / "vite.config.ts").stat().st_mtime != old
+
+
 def test_sync_source_tree_preserves_node_modules(tmp_path):
     from local_coder.general.snapshot import sync_source_tree
 

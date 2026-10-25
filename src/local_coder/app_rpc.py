@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from pathlib import Path
 from typing import Any, TextIO
 
 from . import BUILD_ID, __version__
@@ -225,11 +224,9 @@ class RpcServer:
             parent = params.get("parent")
             return start_chat(str(params.get("text") or ""), parent=parent)
         if method == "preview_start":
-            from local_coder.general.coordinator import project_id_for
-            from local_coder.general.preview import start_preview
+            from local_coder.general.preview_copy import preview_project
 
-            folder = Path(params["path"])
-            return start_preview(folder, params.get("project_id") or project_id_for(folder))
+            return preview_project(str(params.get("path") or ""))
         if method == "preview_stop":
             from local_coder.general.preview import stop_preview
 

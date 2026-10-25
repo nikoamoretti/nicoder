@@ -106,10 +106,15 @@ def git_revision(repo: Path) -> str:
 
 
 def git_is_dirty(repo: Path) -> bool:
-    """Whether a git checkout has uncommitted changes."""
+    """Whether a git checkout has uncommitted changes.
+
+    Read-only: `git status` would otherwise take index.lock and refresh `.git/index` in the user's folder, which a
+    question or opening a project must not do.
+    """
     try:
         proc = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
-                              capture_output=True, text=True, timeout=10)
+                              capture_output=True, text=True, timeout=10,
+                              env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
     except (OSError, ValueError):
         return False
     if proc.returncode != 0:

@@ -97,10 +97,16 @@
   unreadable, in plain words, before any worker or model call (only `new_project`
   and `start_chat` make folders). A request puts nothing into its folder before
   Keep either, the starter included: on an empty folder it is laid in the working
-  copy (see `request_state.py` below). Known limit (the `preview-in-place` cut): a
-  question that asks for the preview runs `npm install` and the dev server in the
-  project's own folder (`app_service._start_preview_note`). Errors reach the app
-  as plain sentences:
+  copy (see `request_state.py` below). A question that asks for the preview ("open
+  the app") writes nothing into the folder either: its preview runs from the result
+  that waits for Keep or Discard (that request's own `candidate/`), else from a copy
+  of the folder made just then at `<data dir>/projects/<id>/preview/`
+  (`general/preview_copy.py`, behind `app_service._start_preview_note` and RPC
+  `preview_start`, which never runs npm in the path it is given). The copy has its
+  own `node_modules`: a copy-on-write clone of the folder's when they are for the
+  same `package.json`, else `npm install` in the copy. Known limit: the copy is a
+  snapshot until he asks again, and `.env`, links and lock files are not copied.
+  Errors reach the app as plain sentences:
   `AppError` and `GeneralError` keep their own code and detail, anything
   unexpected becomes one generic sentence, and the raw text and traceback go to
   stderr and `<data dir>/logs/helper-errors.log` (`errorlog.py`).

@@ -490,16 +490,24 @@ def _agent_chat(
 
 
 def _start_preview_note(repo: Path) -> tuple[dict[str, Any] | None, str]:
-    """Start preview as an action. The model writes the user-facing reply."""
-    from local_coder.general.coordinator import project_id_for
-    from local_coder.general.preview import start_preview
+    """Start preview as an action. The model writes the user-facing reply.
 
-    if not (repo / "package.json").is_file():
+    The preview runs from the result that waits for Keep or Discard, or from a copy of the folder made now; the
+    note says which. Nothing is written into the folder (`general/preview_copy.py`).
+    """
+    from local_coder.general.preview_copy import SOURCE_WAITING, preview_project
+
+    preview = preview_project(repo)
+    if preview.get("code") == "no_package":
         return None, "There is no package.json, so a web preview could not be started."
-    preview = start_preview(repo, project_id_for(repo))
     url = str(preview.get("url") or "").strip()
-    if url:
-        return preview, f"A web preview is running at {url}."
+    if preview.get("ok") and url:
+        what = (
+            "the change that is waiting for Keep or Discard (not in the folder yet)"
+            if preview.get("source") == SOURCE_WAITING
+            else "a copy of the project, made just now,"
+        )
+        return preview, f"A web preview of {what} is running at {url}."
     detail = str(preview.get("detail") or "The preview did not start.")
     return preview, f"The preview did not start: {detail}"
 

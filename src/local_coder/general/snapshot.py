@@ -22,6 +22,7 @@ clash refusal names the files; the others keep the generic sentence.
 """
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import shutil
@@ -208,8 +209,22 @@ def copy_snapshot(source: Path, dest: Path) -> TreeIndex:
     return index_tree(dest)
 
 
-def sync_source_tree(source: Path, dest: Path) -> TreeIndex:
-    """Copy source files onto dest without deleting dest-only dirs such as node_modules."""
+def _holds_same_bytes(source: Path, target: Path) -> bool:
+    """True when target is a plain file with exactly the bytes of source."""
+    try:
+        if target.is_symlink() or not target.is_file():
+            return False
+        return source.stat().st_size == target.stat().st_size and filecmp.cmp(source, target, shallow=False)
+    except OSError:
+        return False
+
+
+def sync_source_tree(source: Path, dest: Path, *, skip_same: bool = False) -> TreeIndex:
+    """Copy source files onto dest without deleting dest-only dirs such as node_modules.
+
+    With `skip_same`, a file whose bytes dest already holds is not written again: a dev server that watches dest
+    sees every rewritten file as changed (and restarts when it is `vite.config.ts`), even with the same bytes.
+    """
     dest.mkdir(parents=True, exist_ok=True)
     incoming = {
         str(full.relative_to(source)).replace("\\", "/"): full
@@ -226,6 +241,8 @@ def sync_source_tree(source: Path, dest: Path) -> TreeIndex:
             continue
     for rel, full in incoming.items():
         target = dest / rel
+        if skip_same and _holds_same_bytes(full, target):
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(full, target)
     return index_tree(dest)
