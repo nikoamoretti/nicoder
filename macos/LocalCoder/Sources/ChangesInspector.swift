@@ -252,9 +252,12 @@ private struct DiffLineView: View {
 private struct ReviewBar: View {
     @EnvironmentObject private var model: AppModel
 
-    /// Why Keep is off: the engine's own sentence about this result.
+    /// Why Keep is off: a change running in another project, or the engine's own sentence about this result.
     private var keepReason: String? {
-        model.canKeep ? nil : model.snapshotSummary
+        if let other = model.decisionWaitsFor {
+            return "Keep and Discard wait until the change in \(other) finishes."
+        }
+        return model.canKeep ? nil : model.snapshotSummary
     }
 
     var body: some View {
@@ -269,7 +272,7 @@ private struct ReviewBar: View {
             CostCaption()
             HStack(spacing: 10) {
                 Button("Discard", role: .destructive) { model.discard() }
-                    .disabled(!model.canDiscard)
+                    .disabled(!model.canDiscard || model.decisionWaitsFor != nil)
                     .accessibilityIdentifier("discardButton")
                 Spacer()
                 Button {
@@ -280,7 +283,7 @@ private struct ReviewBar: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("k", modifiers: [.command])
-                .disabled(!model.canKeep)
+                .disabled(!model.canKeep || model.decisionWaitsFor != nil)
                 .help(keepReason ?? "Copy these changes into your project (⌘K)")
                 .accessibilityIdentifier("keepButton")
             }

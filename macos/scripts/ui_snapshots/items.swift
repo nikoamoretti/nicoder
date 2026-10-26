@@ -78,10 +78,7 @@ let threeFiles = [
 func resetForItems() {
     let model = AppModel.shared
     model.engine.stub = nil
-    model.running = false
-    model.trace = []
-    model.traceStart = nil
-    model.currentPrompt = nil
+    model.endDemoRun()
     model.chatTurns = []
     model.snapshot = nil
     model.previewURL = nil
@@ -101,8 +98,8 @@ func finishedConversation(prompt: String, answer: String) {
         ChatTurn(id: "u1", role: "user", text: prompt),
         ChatTurn(id: "a1", role: "assistant", text: answer),
     ]
-    model.traces[prompt] = TraceRecord(steps: steps(start: start), started: start, ended: start.addingTimeInterval(66),
-                                       cost: 0.041)
+    model.showDemoTrace(TraceRecord(steps: steps(start: start), started: start, ended: start.addingTimeInterval(66),
+                                    cost: 0.041), for: prompt)
 }
 
 // MARK: - Measurements
@@ -233,14 +230,11 @@ func itemFixtures() {
     let live = fitting(TraceTimeline(steps: sample, start: start, live: true), width: 600)
     let alone = fitting(TraceTimeline(steps: [], start: start, live: true), width: 600)
     print("MEASURE item07 step row \(two - one) pt, walker row \(live - two) pt, walker alone \(alone) pt")
-    model.currentPrompt = prompt
     model.chatTurns = [ChatTurn(id: "u1", role: "user", text: prompt)]
-    model.running = true
-    model.traceStart = start
-    model.trace = Array(steps(start: start).prefix(2))
+    model.showDemoRun(prompt: prompt, started: start, steps: Array(steps(start: start).prefix(2)))
     window = show(WindowRoot(), size: CGSize(width: 1100, height: 700))
     capture(window, "item07-walker-after-two-steps")
-    model.trace = []
+    model.showDemoRun(prompt: prompt, started: start, steps: [])
     capture(window, "item07-walker-starting")
     window.orderOut(nil)
 
@@ -304,5 +298,72 @@ func itemFixtures() {
     inspector = show(ChangesInspector(), size: CGSize(width: 340, height: 360))
     capture(inspector, "item10-file-rows-at-340")
     inspector.orderOut(nil)
+    resetForItems()
+}
+
+/// Saved chats, and work that keeps running while the window shows another chat (Nico, 2026-10-26). The real
+/// selectChat() and selectProject() run against a stub engine.
+@MainActor
+func chatsFixtures() {
+    let model = AppModel.shared
+    resetForItems()
+    let home = NSHomeDirectory() + "/projects/"
+    let now = Date().timeIntervalSince1970
+    let recent: [[String: Any]] = [("prototypes", 60), ("app-scout", 3_000), ("task-board", 90_000)].map {
+        ["path": home + $0.0, "name": $0.0, "active": now - Double($0.1)]
+    }
+    let chats: [[String: Any]] = [
+        ["id": "chat-demo-1", "title": "What does this Chinese email say?", "updated": now - 720],
+        ["id": "chat-demo-2", "title": "Plan a weekend in Lisbon", "updated": now - 90_000],
+    ]
+    let email: [[String: Any]] = [
+        ["id": "t1", "role": "user", "text": "What does this Chinese email say?"],
+        ["id": "t2", "role": "assistant", "text": "It is a cold sales email from an ad agency offering to monetize **namiluna** with in-app ads. Nothing to act on."],
+    ]
+    let earlier: [[String: Any]] = [
+        ["id": "p1", "role": "user", "text": "Make the report page print on one sheet"],
+        ["id": "p2", "role": "assistant", "text": "The report now fits one A4 sheet when printed."],
+    ]
+    model.engine.stub = { method, params in
+        switch method {
+        case "prefs": return ["recent_projects": recent]
+        case "list_chats": return ["chats": chats]
+        case "load_chat": return ["turns": params["chat_id"] as? String == "chat-demo-1" ? email : earlier]
+        case "inspect_project":
+            let path = params["path"] as? String ?? ""
+            return ["path": path, "name": URL(fileURLWithPath: path).lastPathComponent, "exists": true]
+        case "history": return ["episodes": []]
+        default: return [:]
+        }
+    }
+    model.recent = recent.map {
+        RecentProject(path: $0["path"] as! String, name: $0["name"] as! String,
+                      active: Date(timeIntervalSince1970: $0["active"] as! Double))
+    }
+    model.chats = chats.map {
+        SavedChat(id: $0["id"] as! String, title: $0["title"] as! String,
+                  updated: Date(timeIntervalSince1970: $0["updated"] as! Double))
+    }
+    let start = Date().addingTimeInterval(-95)
+    model.showDemoRun(prompt: prompt, started: start, steps: Array(steps(start: start).prefix(5)),
+                      in: .project(home + "prototypes"))
+    model.showDemoQueue(done: [.project(home + "app-scout")], waiting: [])
+    model.selectChat("chat-demo-1")
+    let window = show(WindowRoot(), size: CGSize(width: 1180, height: 720))
+    capture(window, "17-chat-while-a-change-runs")
+
+    model.showDemoQueue(done: [.project(home + "app-scout")],
+                        waiting: [(.chat("chat-demo-1"), "Add a reply template for emails like this to task-board")])
+    capture(window, "17b-message-waiting-for-its-turn")
+
+    model.showDemoQueue(done: [.project(home + "app-scout")], waiting: [])
+    model.selectProject(home + "prototypes")
+    capture(window, "17c-back-in-the-running-project")
+    print("MEASURE chats place=\(model.place) busyHere=\(model.busyHere) entries=\(model.entries.count) live=\(model.entries.last?.live ?? false)")
+
+    model.newChat()
+    capture(window, "17d-new-chat-while-a-change-runs")
+    window.orderOut(nil)
+    model.engine.stub = nil
     resetForItems()
 }

@@ -173,8 +173,13 @@ def remember_project(repo: str | Path, *, active: bool = True) -> dict[str, Any]
     return prefs
 
 
-def start_chat(text: str, *, parent: str | Path | None = None) -> dict[str, Any]:
-    """Create a project from the first welcome message and remember it."""
+def start_chat(text: str, *, parent: str | Path | None = None, chat_id: str | None = None) -> dict[str, Any]:
+    """Create a project from a message and remember it.
+
+    When the message came from a chat without a project (`chat_id`), that chat moves into the new project, so
+    "do it" after a discussion builds what was discussed (and names the project after it).
+    """
+    from local_coder.general.chat_log import load_free_chat, move_free_chat
     from local_coder.general.inspect import inspect_project as general_inspect
     from local_coder.general.starter import (
         allocate_project_name,
@@ -186,17 +191,29 @@ def start_chat(text: str, *, parent: str | Path | None = None) -> dict[str, Any]
     request = text.strip()
     if not request:
         raise AppError("Write what you would like to build or change.", code="empty")
+    earlier: list[dict[str, Any]] = []
+    if chat_id:
+        try:
+            earlier = load_free_chat(chat_id)["turns"]
+        except ValueError as exc:
+            raise AppError("That chat does not exist.") from exc
+    naming = request
+    if earlier and len(request.split()) < 4:
+        naming = next((turn["text"] for turn in earlier if turn["role"] == "user"), request)
     home = Path(parent).expanduser() if parent else projects_home()
     home.mkdir(parents=True, exist_ok=True)
-    name = allocate_project_name(home, project_name_from_request(request))
+    name = allocate_project_name(home, project_name_from_request(naming))
     dest = create_project(home, name)
     remember_project(dest)
+    if earlier:
+        move_free_chat(str(chat_id), dest)
     report = general_inspect(dest)
     return {
         "path": str(dest),
         "name": dest.name,
         "inspection": report,
         "detail": f"Created {dest.name} in {home}.",
+        "moved_chat": bool(earlier),
     }
 
 
@@ -416,13 +433,14 @@ def chat_request(
     listener: EventListener | None = None,
     cancel: threading.Event | None = None,
     history: Any = None,
+    chat_id: str | None = None,
 ) -> dict[str, Any]:
     """Answer an ordinary question. No canned replies.
 
     With an agent-capable model the agent searches and reads the Mac itself and
     may open the project it found (`open_project` in the result). `path` is
-    None when no project is open yet; then `history` is the conversation the app shows (the engine keeps
-    none for a chat without a project), so a follow-up knows what came before.
+    None when no project is open yet; then the chat `chat_id` is saved on its own (chats/free/) and its
+    turns are the history. Without a `chat_id`, `history` is the conversation the app shows.
     """
     from local_coder.agent.runner import agent_capable
     from local_coder.general.inspect import asked_to_see_ui
@@ -438,12 +456,26 @@ def chat_request(
     extra = ""
     preview = None
     if repo is not None and asked_to_see_ui(question):
-        preview, extra = _start_preview_note(repo)
+        from local_coder.general.coordinator import change_running_elsewhere
+
+        if change_running_elsewhere(repo):
+            # One preview server: starting this one would stop the preview a running change is checking.
+            extra = ("The preview was not started: a change is being made and checked in another project right "
+                     "now, and it uses the preview. Say it again when that change has finished.")
+        else:
+            preview, extra = _start_preview_note(repo)
     with_tools = agent_capable(load_machine_config())
     waiting = _waiting_note(repo, can_read=with_tools)
     if waiting:
         extra = f"{extra}\n{waiting}".strip()
-    shown = _shown_history(history) if repo is None else None
+    shown = None
+    if repo is None:
+        shown = _free_history(chat_id) if chat_id else _shown_history(history)
+    if repo is None and chat_id:
+        from local_coder.general.chat_log import append_free_turn
+
+        # Saved before the answer: a question that fails or is stopped stays in its chat.
+        append_free_turn(chat_id, "user", question)
     if with_tools:
         result = _agent_chat(repo, question, extra=extra, listener=listener, cancel=cancel, history=shown)
     else:
@@ -458,7 +490,41 @@ def chat_request(
             result = {"kind": "chat", "summary": reply, "hits": [], "model_commentary": reply, "status": "answered"}
     if preview is not None:
         result["preview"] = preview
+    if repo is None and chat_id:
+        from local_coder.general.chat_log import append_free_turn
+
+        opened = result.get("open_project")
+        reply = (f"I answered this in {Path(str(opened)).name}." if opened
+                 else str(result.get("model_commentary") or result.get("summary") or ""))
+        result["turns"] = append_free_turn(chat_id, "assistant", reply)["turns"]
+        result["chat_id"] = chat_id
     return result
+
+
+def _free_history(chat_id: str) -> list[dict[str, str]] | None:
+    from local_coder.general.chat_log import recent_free_messages
+
+    try:
+        return recent_free_messages(chat_id) or None
+    except ValueError as exc:
+        raise AppError("That chat does not exist.") from exc
+
+
+def load_free_chat_payload(chat_id: str) -> dict[str, Any]:
+    """A saved chat without a project, for the app."""
+    from local_coder.general.chat_log import load_free_chat
+
+    try:
+        return load_free_chat(chat_id)
+    except ValueError as exc:
+        raise AppError("That chat does not exist.") from exc
+
+
+def list_free_chat_rows() -> dict[str, Any]:
+    """Saved chats without a project, newest activity first."""
+    from local_coder.general.chat_log import list_free_chats
+
+    return {"chats": list_free_chats()}
 
 
 def _shown_history(rows: Any, *, limit: int = 10, max_chars: int = 1500) -> list[dict[str, str]] | None:
@@ -1284,6 +1350,10 @@ def discard_changes(episode_id: str, store: EpisodeStore | None = None,
     return accept_mod.discard_episode(store, episode_id)
 
 
+# What ends a run for the app: it shows the result (or the error) and starts the next waiting message.
+_END_EVENTS = frozenset({"done", "stopped", "app_error", "handoff_written", "cancelled"})
+
+
 class AppRuntime:
     """One helper process: at most one active editing episode."""
 
@@ -1328,6 +1398,11 @@ class AppRuntime:
         problem = folder_problem(repo)
         if problem:
             raise AppError(problem["summary"], code=problem["verdict"])
+        previous = self._thread
+        if previous is not None and previous.is_alive() and previous is not threading.current_thread():
+            # A run that just sent its end event is still closing for a moment (the app starts the next waiting
+            # message right away).
+            previous.join(timeout=3)
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise AppError("A request is already running.", code="busy")
@@ -1360,6 +1435,27 @@ class AppRuntime:
                 "engine": chosen}
 
     def _worker(self, **kwargs: Any) -> None:
+        ended = False
+
+        def emit(event: dict[str, Any]) -> None:
+            nonlocal ended
+            ended = ended or event.get("type") in _END_EVENTS
+            self._emit(event)
+
+        result: Any = None
+        try:
+            result = self._run(kwargs, emit)
+        finally:
+            if not ended:
+                # Every run ends with an end event, or the app would show it working forever. A request the project
+                # reads as a question is answered in its chat (`run_general_request` returns that answer).
+                answered = isinstance(result, dict) and result.get("kind") in {"chat", "explain"}
+                self._emit({"type": "done", "data": {"request_id": kwargs.get("episode_id"), "answered": answered},
+                            "seq": None})
+            with self._lock:
+                self._thread = None
+
+    def _run(self, kwargs: dict[str, Any], emit: EventListener) -> Any:
         from local_coder.general.coordinator import GeneralError
 
         started = False
@@ -1372,24 +1468,23 @@ class AppRuntime:
                     started = bool(result.get("started"))
                     if started:
                         self.started_server = True
-                run_request(
+                return run_request(
                     kwargs["repo"], kwargs["request"],
                     profile_name=profile.removeprefix("legacy:"),
                     execution=kwargs.get("execution"),
                     state_dir=self.state_dir,
                     episode_id=kwargs["episode_id"],
-                    listener=self._emit,
+                    listener=emit,
                     cancel_event=self.cancel_event,
                     ensure_local_server=False,
                 )
-                return
             from local_coder.general.coordinator import run_general_request
 
-            run_general_request(
+            return run_general_request(
                 kwargs["repo"], kwargs["request"],
                 request_id=kwargs["episode_id"],
                 kind=str(kwargs.get("kind") or "create"),
-                listener=self._emit,
+                listener=emit,
                 cancel_event=self.cancel_event,
                 generation_limit=kwargs.get("generation_limit"),
                 continue_from=kwargs.get("continue_from"),
@@ -1397,17 +1492,13 @@ class AppRuntime:
             )
         except (AppError, GeneralError) as exc:
             self.last_error = exc.detail
-            self._emit({"type": "app_error", "data": {"detail": exc.detail, "code": exc.code},
-                        "seq": None})
+            emit({"type": "app_error", "data": {"detail": exc.detail, "code": exc.code}, "seq": None})
         except Exception as exc:  # noqa: BLE001 — surface unexpected helper failures
             # The app shows one plain sentence; the raw text and traceback go to stderr and logs/.
             record_error("request worker: unexpected error", exc)
             self.last_error = UNEXPECTED
-            self._emit({"type": "app_error", "data": {"detail": UNEXPECTED, "code": "runtime"},
-                        "seq": None})
-        finally:
-            with self._lock:
-                self._thread = None
+            emit({"type": "app_error", "data": {"detail": UNEXPECTED, "code": "runtime"}, "seq": None})
+        return None
 
     def cancel(self) -> dict[str, Any]:
         """Request stop of the active episode and its OpenCode session."""

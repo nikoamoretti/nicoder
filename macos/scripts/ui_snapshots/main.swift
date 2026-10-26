@@ -164,10 +164,11 @@ MainActor.assumeIsolated {
         user,
         ChatTurn(id: "a1", role: "assistant", text: answer),
     ]
-    model.traces["Where does Shadow Paris get its incident data?"] = TraceRecord(
-        steps: Array(steps(start: start).prefix(4)), started: start, ended: start.addingTimeInterval(14), cost: 0.0065)
-    model.traces[prompt] = TraceRecord(steps: steps(start: start), started: start, ended: start.addingTimeInterval(66),
-                                       cost: 0.041)
+    model.showDemoTrace(TraceRecord(
+        steps: Array(steps(start: start).prefix(4)), started: start, ended: start.addingTimeInterval(14), cost: 0.0065),
+        for: "Where does Shadow Paris get its incident data?")
+    model.showDemoTrace(TraceRecord(steps: steps(start: start), started: start, ended: start.addingTimeInterval(66),
+                                    cost: 0.041), for: prompt)
     let finished: [String: Any] = [
         "episode_id": "demo", "diff": diff, "can_keep": true, "can_discard": true, "cost_usd": 0.041,
         "facts": ["files": ["app/globals.css", "app/prototypes/shadow-paris/shadow-app.tsx",
@@ -234,10 +235,8 @@ MainActor.assumeIsolated {
     model.inspectorShown = false
     model.snapshot = nil
     model.chatTurns = [user]
-    model.running = true
-    model.currentPrompt = prompt
-    model.traceStart = Date().addingTimeInterval(-47)
-    model.trace = Array(steps(start: Date().addingTimeInterval(-47)).prefix(6))
+    model.showDemoRun(prompt: prompt, started: Date().addingTimeInterval(-47),
+                      steps: Array(steps(start: Date().addingTimeInterval(-47)).prefix(6)))
     capture(main, "11-live-run")
     capture(main, "11-live-run-later")
 
@@ -265,8 +264,7 @@ MainActor.assumeIsolated {
 
     // 3. Start screen inside a project, reasoning off.
     model.reasoningOn = false
-    model.running = false
-    model.trace = []
+    model.endDemoRun()
     model.chatTurns = []
     capture(main, "12-start-in-project")
     main.orderOut(nil)
@@ -289,5 +287,7 @@ MainActor.assumeIsolated {
 
     // 7. The states the ui-fixes items touch (items.swift).
     itemFixtures()
+    // 8. Saved chats, and work that keeps running while the window shows another chat (items.swift).
+    chatsFixtures()
 }
 exit(0)

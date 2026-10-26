@@ -37,7 +37,9 @@ from .app_service import (
     explain_request,
     inspect_project,
     keep_changes,
+    list_free_chat_rows,
     list_history,
+    load_free_chat_payload,
     load_prefs,
     load_project_chat,
     open_docker_desktop,
@@ -159,12 +161,18 @@ class RpcServer:
             return chat_request(
                 params.get("path") or None,
                 str(params.get("text") or ""),
-                listener=self._on_event,
+                # Tagged so the app keeps a question's steps apart from a change running at the same time.
+                listener=lambda event: self._on_event({**event, "source": "chat"}),
                 cancel=self.chat_cancel,
                 history=params.get("history"),
+                chat_id=str(params.get("chat_id") or "") or None,
             )
         if method == "load_chat":
+            if params.get("chat_id"):
+                return load_free_chat_payload(str(params["chat_id"]))
             return load_project_chat(params["path"])
+        if method == "list_chats":
+            return list_free_chat_rows()
         if method == "clear_chat":
             return clear_project_chat(params["path"])
         if method == "readiness":
@@ -212,7 +220,12 @@ class RpcServer:
         if method == "orca_models":
             return orca_models(refresh=bool(params.get("refresh")))
         if method == "cancel":
-            self.chat_cancel.set()
+            # "chat" stops the question being answered, "run" the change; nothing named stops both.
+            what = params.get("what")
+            if what != "run":
+                self.chat_cancel.set()
+            if what == "chat":
+                return {"ok": True, "detail": "Stop requested."}
             return self.runtime.cancel()
         if method == "keep":
             return keep_changes(params["episode_id"], params["path"])
@@ -231,7 +244,8 @@ class RpcServer:
             return {"path": str(dest), "inspection": general_inspect(dest)}
         if method == "start_chat":
             parent = params.get("parent")
-            return start_chat(str(params.get("text") or ""), parent=parent)
+            return start_chat(str(params.get("text") or ""), parent=parent,
+                              chat_id=str(params.get("chat_id") or "") or None)
         if method == "preview_start":
             from local_coder.general.preview_copy import preview_project
 

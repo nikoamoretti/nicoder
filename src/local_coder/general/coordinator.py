@@ -197,6 +197,16 @@ def _request_in_flight(project_id: str) -> bool:
         return project_id in _RUNNING
 
 
+def change_running_elsewhere(folder: str | Path) -> bool:
+    """Whether a change is being made in another project right now (its checks may be using the one preview).
+
+    A request this project reads as a question runs inside its own marker: that one does not count.
+    """
+    here = project_id_for(Path(folder).expanduser())
+    with _RUNNING_LOCK:
+        return any(project != here for project in _RUNNING)
+
+
 def _requests_in_flight(project_id: str) -> set[str]:
     """The ids of the requests running in a project right now."""
     with _RUNNING_LOCK:
@@ -851,7 +861,8 @@ def run_general_request(
     if classified["kind"] == "chat":
         from local_coder.app_service import chat_request
 
-        return chat_request(folder, text)
+        # The project reads it as a question: answered here, its steps shown and Stop honoured like a run's.
+        return chat_request(folder, text, listener=listener, cancel=cancel_event)
     request_id = request_id or new_episode_id()
     ledger = _GenerationLedger(budget_for(kind), generation_limit=generation_limit, wall_seconds=wall_seconds)
     try:

@@ -47,8 +47,7 @@ struct RootView: View {
             } label: {
                 Label("New Chat", systemImage: "square.and.pencil")
             }
-            .disabled(model.running)
-            .help(model.running ? "Stop the current request first" : "Start a new conversation (⌘N)")
+            .help("Start a new chat (⌘N). Work that runs keeps running.")
             .accessibilityIdentifier("newChatButton")
         }
         ToolbarItem(placement: .primaryAction) {
@@ -77,9 +76,11 @@ struct SidebarView: View {
     static let chatTag = "chat:"
 
     var body: some View {
+        let chats = model.chatRows
         List {
-            Button { model.closeProject() } label: {
-                ConsoleRow(text: "new chat", selected: model.projectPath == nil)
+            Button { model.newChat() } label: {
+                ConsoleRow(text: "new chat",
+                           selected: model.projectPath == nil && !chats.contains { $0.id == model.chatID })
             }
             .buttonStyle(.plain)
             .help("Ask about anything on your Mac, without a project")
@@ -92,7 +93,8 @@ struct SidebarView: View {
                 }
                 ForEach(model.recent) { project in
                     Button { model.selectProject(project.path) } label: {
-                        ConsoleRow(text: project.name, selected: project.path == model.projectPath, date: project.active)
+                        ConsoleRow(text: project.name, selected: project.path == model.projectPath, date: project.active,
+                                   state: model.rowState(.project(project.path)))
                     }
                     .buttonStyle(.plain)
                     .help(RootView.tildePath(project.path) ?? project.path)
@@ -119,12 +121,24 @@ struct SidebarView: View {
                     SidebarHeading(text: "requests")
                 }
             }
+            if !chats.isEmpty {
+                Section {
+                    ForEach(chats) { chat in
+                        Button { model.selectChat(chat.id) } label: {
+                            ConsoleRow(text: chat.title, selected: model.projectPath == nil && chat.id == model.chatID,
+                                       date: chat.updated, state: model.rowState(.chat(chat.id)), truncation: .tail)
+                        }
+                        .buttonStyle(.plain)
+                        .help(chat.title)
+                    }
+                } header: {
+                    SidebarHeading(text: "chats")
+                }
+            }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(Console.sidebar)
-        .disabled(model.running)
-        .help(model.running ? "The sidebar unlocks when the current request ends (or press Stop)." : "")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 2) {
                 Button {
@@ -134,7 +148,6 @@ struct SidebarView: View {
                         .lineLimit(1)
                         .fixedSize()
                 }
-                .disabled(model.running)
                 .help("Open a project folder (⌘O)")
                 .accessibilityIdentifier("openProjectButton")
                 Spacer()
@@ -145,7 +158,6 @@ struct SidebarView: View {
                         .lineLimit(1)
                         .fixedSize()
                 }
-                .disabled(model.running)
                 .help("Create a new project (⇧⌘N)")
                 .accessibilityIdentifier("newProjectButton")
             }
@@ -220,7 +232,7 @@ struct SessionView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )
-            } else if model.entries.isEmpty && !model.running {
+            } else if model.entries.isEmpty {
                 StartView()
             } else {
                 ConversationLog()
@@ -284,10 +296,6 @@ struct ConversationLog: View {
                             .padding(.vertical, 22)
                     }
                 }
-                if entries.isEmpty && model.running {
-                    EntryView(entry: ConversationEntry(id: "running", prompt: model.currentPrompt, answers: []),
-                              isLast: true)
-                }
             }
             .padding(.horizontal, 36)
             .padding(.top, 28)
@@ -304,26 +312,48 @@ struct EntryView: View {
     let entry: ConversationEntry
     let isLast: Bool
 
-    private var live: Bool { isLast && model.running }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let prompt = entry.prompt {
                 PromptHeadline(text: prompt)
             }
-            if live {
+            if entry.live {
                 LiveTrace()
+            } else if let id = entry.waiting {
+                WaitingLine(id: id)
             } else if let prompt = entry.prompt, let record = model.traces[prompt] {
                 TraceSummary(record: record)
             }
             ForEach(entry.answers) { answer in
                 ProseView(text: answer.text)  // its own menu has Copy and Copy Answer
             }
-            if isLast && !model.running && model.hasChanges && model.snapshot?["can_keep"] as? Bool == true {
+            if isLast && !model.busyHere && model.hasChanges && model.snapshot?["can_keep"] as? Bool == true {
                 ChangesPill()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A message sent while the same kind of work runs elsewhere: it starts by itself when that ends.
+private struct WaitingLine: View {
+    @EnvironmentObject private var model: AppModel
+    let id: UUID
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("◌")
+                .foregroundStyle(Console.mute)
+            Text("waits for \(model.waitsFor(id)) to finish, then starts")
+                .foregroundStyle(Console.mute)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Button("cancel") { model.dropWaiting(id) }
+                .controlSize(.small)
+        }
+        .font(Console.mono(12))
+        .padding(.vertical, 4)
     }
 }
 
@@ -495,7 +525,7 @@ struct ComposerBar: View {
                 ZStack(alignment: .topLeading) {
                     ComposerField(
                         text: $model.requestText,
-                        isEnabled: !model.running,
+                        isEnabled: !model.busyHere,
                         onSubmit: { model.submitRequest() }
                     )
                     .frame(minHeight: 34, maxHeight: 180)
@@ -518,10 +548,10 @@ struct ComposerBar: View {
                     ReasoningMenu()
                 }
                 Spacer()
-                Text(model.running ? "working…" : "⏎ send · ⇧⏎ new line")
+                Text(model.busyHere ? "working…" : "⏎ send · ⇧⏎ new line")
                     .font(Console.mono(11))
                     .foregroundStyle(Console.faint)
-                if model.running {
+                if model.busyHere {
                     Button {
                         model.stop()
                     } label: {

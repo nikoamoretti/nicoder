@@ -82,8 +82,11 @@ def project_name_from_request(text: str) -> str:
     """Turn the first request into a short folder name."""
     cleaned = re.sub(r"[^a-zA-Z0-9\s-]+", " ", text.strip().lower())
     words = [part for part in cleaned.replace("_", " ").split() if part]
-    if words and words[0] in _SKIP_VERBS and len(words) > 1:
-        words = words[1:]
+    lead = 0  # "could you build a task board": the verb after the polite words goes too
+    while lead < len(words) - 1 and words[lead] in _SKIP_WORDS:
+        lead += 1
+    if lead < len(words) - 1 and words[lead] in _SKIP_VERBS:
+        words = words[:lead] + words[lead + 1:]
     slug = ""
     for word in [word for word in words if word not in _SKIP_WORDS][:6]:
         if len(slug) + len(word) + 1 > 40:

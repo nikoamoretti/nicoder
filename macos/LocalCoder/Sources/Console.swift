@@ -27,12 +27,21 @@ enum Console {
 }
 
 /// A sidebar entry in the console style: the selected one is green with a "›".
+/// What a sidebar row says on its right instead of its date.
+enum RowState {
+    case idle, working, waiting, done
+}
+
 struct ConsoleRow: View {
     let text: String
     var selected = false
     var size: CGFloat = 12.5
     /// Shown on the right, faint: when the row last had activity.
     var date: Date?
+    /// Work running there, a message waiting for its turn, or a result not seen yet.
+    var state: RowState = .idle
+    /// Folder names keep both ends ("france-do-…-2"); chat titles keep their start.
+    var truncation: Text.TruncationMode = .middle
 
     var body: some View {
         HStack(spacing: 6) {
@@ -41,13 +50,31 @@ struct ConsoleRow: View {
             Text(text)
                 .foregroundStyle(selected ? Console.green : Console.mute)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(truncation)
             Spacer(minLength: 4)
-            if let date {
-                Text(Self.when(date))
-                    .font(Console.mono(10.5))
-                    .foregroundStyle(Console.faint)
+            switch state {
+            case .working:
+                Text("working")
+                    .font(Console.mono(10.5, .semibold))
+                    .foregroundStyle(Console.green)
                     .fixedSize()
+            case .waiting:
+                Text("waiting")
+                    .font(Console.mono(10.5))
+                    .foregroundStyle(Console.mute)
+                    .fixedSize()
+            case .done:
+                Text("done")
+                    .font(Console.mono(10.5, .semibold))
+                    .foregroundStyle(Console.green)
+                    .fixedSize()
+            case .idle:
+                if let date {
+                    Text(Self.when(date))
+                        .font(Console.mono(10.5))
+                        .foregroundStyle(Console.faint)
+                        .fixedSize()
+                }
             }
         }
         .font(Console.mono(size, selected ? .semibold : .regular))

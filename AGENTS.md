@@ -303,8 +303,18 @@
   reasoning switch, the OrcaRouter model browser and connect sheet, and a
   Settings window. A kept request, or one held back by a newer request, has no
   Keep/Discard bar: a strip with the engine's sentence and the cost takes its
-  place. New Chat archives the old transcript (`chats/archive/`); closing a
-  project never stops a run or clears its chat.
+  place. Chats: a project's chat is `chats/<sha1(path)[:16]>.json`; a chat
+  started without a project is `chats/free/<chat-id>.json`, listed in the
+  sidebar with its date. New Chat opens a new chat and archives nothing; a
+  chat that leads to a new project moves into it (its file goes to
+  `chats/archive/`, never deleted). Runs are jobs tied to their conversation:
+  the sidebar, New Chat and Open stay usable while work runs, rows say
+  working / done / waiting, and results land where they were asked. One change
+  and one question run at a time; a message sent while its kind of work runs
+  waits and starts by itself. Every run ends with an end event (`done`,
+  `stopped` or `app_error`; `budget` is not one). `cancel {what: "chat"|"run"}`
+  stops one of them. Keep/Discard and a question's preview wait while a change
+  runs: there is one preview server.
   `LOCAL_CODER_UI_PROBE=1` at launch lets a script open views (never change
   state); `macos/scripts/ui_snapshots/snapshots.sh <dir>` renders every screen
   offscreen with sample data.

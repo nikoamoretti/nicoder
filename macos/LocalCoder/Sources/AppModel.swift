@@ -117,6 +117,54 @@ struct ConversationEntry: Identifiable {
     let id: String
     let prompt: String?
     var answers: [ChatTurn]
+    /// The work for this prompt is running now.
+    var live = false
+    /// Sent while the same kind of work ran elsewhere: it starts by itself when that ends.
+    var waiting: UUID?
+}
+
+/// Where a conversation lives: a project folder, or a chat started without one.
+enum Place: Hashable {
+    case project(String)
+    case chat(String)
+
+    var path: String? {
+        if case .project(let path) = self { return path }
+        return nil
+    }
+}
+
+/// A chat started without a project, as the sidebar lists it.
+struct SavedChat: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let updated: Date?
+}
+
+/// Work in flight, tied to the conversation it was asked in, so the window can show another one meanwhile
+/// (Nico, 2026-10-26: "creating a new chat while another one is running is super buggy").
+struct Job {
+    let place: Place
+    let prompt: String
+    var started = Date()
+    var steps: [TraceStep] = []
+    var episode: String?
+}
+
+extension Job {
+    mutating func add(_ step: TraceStep) {
+        if let last = steps.last, last.detail == step.detail, last.tool == step.tool { return }
+        steps.append(step)
+        if steps.count > 400 { steps.removeFirst(steps.count - 400) }
+    }
+}
+
+/// A message sent while the same kind of work runs elsewhere (one change and one question at a time).
+struct Waiting: Identifiable {
+    let id = UUID()
+    let place: Place
+    let text: String
+    let change: Bool
 }
 
 @MainActor
@@ -130,7 +178,8 @@ final class AppModel: ObservableObject {
     @Published var history: [HistoryRow] = []
     @Published var requestText = ""
     @Published var progress = "Ready."
-    @Published var running = false {
+    /// Something runs, in this conversation or another one.
+    @Published private(set) var running = false {
         didSet {
             // The Dock's hominin walks while a request runs and sits down to meditate when it ends.
             if running && !oldValue {
@@ -140,20 +189,26 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    /// The change being made (one at a time) and the question being answered (one at a time).
+    @Published private(set) var changeJob: Job?
+    @Published private(set) var questionJob: Job?
+    @Published private(set) var waiting: [Waiting] = []
+    /// Conversations whose work ended while the window showed another one.
+    @Published private(set) var unseen: Set<Place> = []
+    /// The chat shown when no project is open; saved by the engine once it has a turn.
+    @Published private(set) var chatID = AppModel.newChatID()
+    @Published var chats: [SavedChat] = []
     @Published var snapshot: [String: Any]?
     @Published var readiness: [String: Any]?
     @Published var profile = "d2"
     @Published var banner: String?
     @Published var chatTurns: [ChatTurn] = []
     @Published var previewURL: String?
-    @Published var followUpReady = false
     @Published var engineName = "general"
     @Published var models: [CatalogModel] = []
     @Published var selectedModelId = ""
-    @Published var trace: [TraceStep] = []
-    @Published var traceStart: Date?
-    @Published var traces: [String: TraceRecord] = [:]
-    @Published var currentPrompt: String?
+    /// The finished work behind each answer, per conversation.
+    @Published private var traceRecords: [Place: [String: TraceRecord]] = [:]
     @Published var inspectorShown = false
 
     // OrcaRouter
@@ -173,9 +228,14 @@ final class AppModel: ObservableObject {
     @Published var reasoningOn = true
 
     let engine = EngineClient()
-    private var activeEpisode: String?
-    /// The project the active request runs in (the window may not switch away until it ends).
-    private var activeEpisodePath: String?
+    /// Projects where the last change was kept: the next request builds on it.
+    private var followUps: Set<String> = []
+    /// What went wrong in a conversation while the window showed another one, shown when it is opened.
+    private var notes: [Place: String] = [:]
+    /// The change's result is being fetched; a second "done" for it is ignored.
+    private var finishingChange = false
+    /// Runs that ended before their start was answered (request id → answered as a question).
+    private var endedEarly: [String: Bool] = [:]
     private var quitting = false
     private var started = false
     private var pendingModelId: String?
@@ -249,7 +309,55 @@ final class AppModel: ObservableObject {
         return known + others
     }
 
-    /// The conversation as entries: a prompt and the answers that followed it.
+    /// The conversation the window shows.
+    var place: Place {
+        if let path = projectPath {
+            return .project(path)
+        }
+        return .chat(chatID)
+    }
+
+    /// The work running in the conversation the window shows, if any.
+    var jobHere: Job? {
+        [changeJob, questionJob].compactMap { $0 }.first { $0.place == place }
+    }
+
+    var busyHere: Bool {
+        jobHere != nil
+    }
+
+    var trace: [TraceStep] {
+        jobHere?.steps ?? []
+    }
+
+    var traceStart: Date? {
+        jobHere?.started
+    }
+
+    var traces: [String: TraceRecord] {
+        traceRecords[place] ?? [:]
+    }
+
+    /// Keep and Discard wait while a change runs (an older result can be opened from the requests list meanwhile):
+    /// Discard stops the one preview server, which the running change may be using for its checks.
+    var decisionWaitsFor: String? {
+        changeJob.map { name(of: $0.place) }
+    }
+
+    func isWorking(_ place: Place) -> Bool {
+        changeJob?.place == place || questionJob?.place == place
+    }
+
+    func isWaiting(_ place: Place) -> Bool {
+        waiting.contains { $0.place == place }
+    }
+
+    func isUnseen(_ place: Place) -> Bool {
+        unseen.contains(place)
+    }
+
+    /// The conversation as entries: a prompt and the answers that followed it, then the prompt running now
+    /// and the ones waiting for their turn.
     var entries: [ConversationEntry] {
         var result: [ConversationEntry] = []
         for turn in chatTurns {
@@ -261,7 +369,35 @@ final class AppModel: ObservableObject {
                 result[result.count - 1].answers.append(turn)
             }
         }
+        if let job = jobHere {
+            if let last = result.last, last.prompt == job.prompt, last.answers.isEmpty {
+                result[result.count - 1].live = true
+            } else {
+                // Back in a conversation whose work started before the window left it: the saved chat has
+                // no turn for it yet.
+                result.append(ConversationEntry(id: "running", prompt: job.prompt, answers: [], live: true))
+            }
+        }
+        for item in waiting where item.place == place {
+            result.append(ConversationEntry(id: item.id.uuidString, prompt: item.text, answers: [], waiting: item.id))
+        }
         return result
+    }
+
+    /// The name of the conversation a waiting message waits for, for its line.
+    func waitsFor(_ id: UUID) -> String {
+        guard let item = waiting.first(where: { $0.id == id }),
+              let job = item.change ? changeJob : questionJob else { return "the work before it" }
+        return name(of: job.place)
+    }
+
+    func name(of place: Place) -> String {
+        switch place {
+        case .project(let path):
+            return recent.first(where: { $0.path == path })?.name ?? URL(fileURLWithPath: path).lastPathComponent
+        case .chat(let id):
+            return chats.first(where: { $0.id == id })?.title ?? "a new chat"
+        }
     }
 
     var blockingIssues: [String] {
@@ -292,6 +428,9 @@ final class AppModel: ObservableObject {
                     engineName = enginePref
                 }
                 recent = Self.parseRecent(prefs["recent_projects"])
+                if let listed = try? await engine.call("list_chats") {
+                    chats = Self.parseChats(listed)
+                }
                 readiness = try await engine.call("readiness")
                 applyCatalog(from: readiness)
                 ready = true
@@ -330,48 +469,83 @@ final class AppModel: ObservableObject {
 
     // MARK: Projects and conversation
 
-    /// Start a fresh conversation (the old one is archived by the engine). Not while a request runs:
-    /// clearing the screen mid-run used to leave a blank "running" window and drop the result.
-    func newChat() {
-        guard !running else { return }
-        let path = projectPath
+    static func newChatID() -> String {
+        "chat-" + UUID().uuidString.lowercased()
+    }
+
+    /// Clear what the window shows before it shows another conversation. Work keeps running in its own.
+    private func leaveConversation() {
         snapshot = nil
         requestText = ""
         banner = nil
         chatTurns = []
-        followUpReady = false
         previewURL = nil
-        progress = "Ready."
-        activeEpisode = nil
-        trace = []
-        traces = [:]
         inspectorShown = false
-        if let path {
-            Task {
-                _ = try? await engine.call("clear_chat", ["path": path])
+    }
+
+    /// The window now shows `place`: its "done" mark goes, and what went wrong there meanwhile is shown.
+    private func arrive(at place: Place) {
+        unseen.remove(place)
+        if let note = notes.removeValue(forKey: place) {
+            banner = note
+        }
+    }
+
+    /// A new chat with no project (⌘N, the toolbar, the sidebar). Nothing is archived: every chat stays in the
+    /// sidebar, and work keeps running in the conversation it was asked in.
+    func newChat() {
+        if projectPath == nil && chatTurns.isEmpty && !isWorking(place) && !isWaiting(place) {
+            return
+        }
+        leaveConversation()
+        inspection = nil
+        history = []
+        chatID = Self.newChatID()
+    }
+
+    /// Open a chat that has no project.
+    func selectChat(_ id: String) {
+        guard place != .chat(id) else { return }
+        leaveConversation()
+        inspection = nil
+        history = []
+        chatID = id
+        arrive(at: .chat(id))
+        Task {
+            do {
+                let payload = try await engine.call("load_chat", ["chat_id": id])
+                guard place == .chat(id) else { return }
+                applyChatTurns(payload["turns"])
+            } catch {
+                if place == .chat(id) {
+                    banner = error.localizedDescription
+                }
             }
         }
     }
 
-    /// Leave the current project and ask about anything on the Mac. Its chat stays saved; a running
-    /// request keeps the project open.
-    func closeProject() {
-        guard !running else { return }
-        snapshot = nil
-        requestText = ""
-        banner = nil
-        chatTurns = []
-        followUpReady = false
-        previewURL = nil
-        activeEpisode = nil
-        traces = [:]
-        inspectorShown = false
-        inspection = nil
-        history = []
+    /// Saved chats, plus a chat whose first message is still running or waiting (it is saved with its answer).
+    var chatRows: [SavedChat] {
+        var rows = chats
+        let pending = [changeJob, questionJob].compactMap { $0 }.map { ($0.place, $0.prompt) }
+            + waiting.map { ($0.place, $0.text) }
+        for (place, text) in pending {
+            if case .chat(let id) = place, !rows.contains(where: { $0.id == id }) {
+                rows.insert(SavedChat(id: id, title: text, updated: nil), at: 0)
+            }
+        }
+        return rows
+    }
+
+    /// What a sidebar row says on its right.
+    func rowState(_ place: Place) -> RowState {
+        if isWorking(place) { return .working }
+        if isWaiting(place) { return .waiting }
+        if isUnseen(place) { return .done }
+        return .idle
     }
 
     func newProject() {
-        guard !running else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -405,7 +579,6 @@ final class AppModel: ObservableObject {
     }
 
     func openProject() {
-        guard !running else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -416,198 +589,336 @@ final class AppModel: ObservableObject {
         selectProject(url.path)
     }
 
+    /// Show a project. Allowed while work runs anywhere: that work keeps running and its result lands where it
+    /// was asked.
     func selectProject(_ path: String) {
-        guard !running, path != projectPath || inspection == nil else { return }
-        banner = nil
-        chatTurns = []
-        snapshot = nil
-        previewURL = nil
-        requestText = ""
-        traces = [:]
-        inspectorShown = false
+        guard path != projectPath || inspection == nil else { return }
+        leaveConversation()
+        history = []
+        // The window shows the project at once; its details follow.
+        inspection = ["path": path, "name": URL(fileURLWithPath: path).lastPathComponent]
+        arrive(at: .project(path))
         Task {
             do {
-                inspection = try await engine.call("inspect_project", ["path": path])
+                let report = try await engine.call("inspect_project", ["path": path])
+                guard projectPath == path else { return }
+                inspection = report
+                let shown = projectPath ?? path
                 try await refreshSidebars()
-                try await loadChat(for: path)
+                try await loadChat(for: shown)
+                try await showWaitingResult(in: shown)
             } catch {
-                banner = error.localizedDescription
+                if projectPath == path {
+                    banner = error.localizedDescription
+                }
             }
         }
+    }
+
+    /// Back in a project whose last change waits for Keep or Discard: show it as when it had just finished.
+    private func showWaitingResult(in path: String) async throws {
+        guard !isWorking(.project(path)), snapshot == nil,
+              let newest = history.first, newest.outcome == "review" else { return }
+        let result = try await engine.call("snapshot", ["episode_id": newest.episodeID, "path": path],
+                                           timeoutSeconds: 60)
+        guard projectPath == path, snapshot == nil, result["can_keep"] as? Bool == true else { return }
+        snapshot = result
     }
 
     func submitRequest() {
         let text = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !running else { return }
+        guard !text.isEmpty, !busyHere else { return }
         banner = nil
-        appendLocalTurn(role: "user", text: text)
         requestText = ""
-        currentPrompt = text
-        trace = []
-        traceStart = Date()
-        running = true
-        Task {
-            do {
-                var path = projectPath
-                if path == nil {
-                    // A question needs no new folder: the model looks around the Mac and may open the project it means.
-                    let first = try await engine.call("classify_request", ["text": text])
-                    let firstKind = first["kind"] as? String
-                    if firstKind == "chat" || firstKind == "explain" {
-                        try await answerQuestion(path: nil, text: text)
-                        return
+        let here = place
+        Task { await send(text, in: here) }
+    }
+
+    /// Start a message in its conversation, or let it wait while the same kind of work runs in another one.
+    private func send(_ text: String, in place: Place) async {
+        let verdict: [String: Any]
+        do {
+            if let path = place.path {
+                verdict = try await engine.call("classify_request", ["path": path, "text": text])
+            } else {
+                // No project: a question stays a chat; work runs in the project it names, or in a new one.
+                verdict = try await engine.call("classify_request", ["text": text])
+            }
+        } catch {
+            tell(error.localizedDescription, in: place, after: text)
+            return
+        }
+        let kind = verdict["kind"] as? String ?? ""
+        if kind == "unsupported" {
+            tell(verdict["summary"] as? String ?? "That request is not supported.", in: place, after: text)
+            return
+        }
+        let question = kind == "chat" || kind == "explain"
+        if question ? questionJob != nil : changeJob != nil {
+            waiting.append(Waiting(place: place, text: text, change: !question))
+            return
+        }
+        let job = Job(place: place, prompt: text)
+        if question {
+            questionJob = job
+        } else {
+            changeJob = job
+        }
+        syncRunning()
+        if self.place == place {
+            appendLocalTurn(role: "user", text: text)
+        }
+        if question {
+            await ask(text, in: place, explain: kind == "explain")
+        } else {
+            await change(text, in: place, project: verdict["project"] as? String)
+        }
+    }
+
+    /// A reply that needs no model: shown when the window shows `place`, kept for when it is opened otherwise.
+    private func tell(_ text: String, in place: Place, after prompt: String? = nil) {
+        if self.place == place {
+            if let prompt {
+                appendLocalTurn(role: "user", text: prompt)
+            }
+            appendLocalTurn(role: "assistant", text: text)
+        } else {
+            notes[place] = text
+            unseen.insert(place)
+        }
+    }
+
+    /// Answer a question in its conversation. The model may open the project it means: the window follows when
+    /// it still shows the question's conversation.
+    private func ask(_ text: String, in place: Place, explain: Bool) async {
+        do {
+            let result: [String: Any]
+            if explain, let path = place.path {
+                result = try await engine.call("explain_request", ["path": path, "text": text], timeoutSeconds: 1200)
+            } else {
+                var params: [String: Any] = ["text": text]
+                switch place {
+                case .project(let path): params["path"] = path
+                case .chat(let id): params["chat_id"] = id
+                }
+                result = try await engine.call("chat_request", params, timeoutSeconds: 1200)
+            }
+            let job = finishQuestion(cost: result["cost_usd"] as? Double)
+            if let opened = result["open_project"] as? String, !opened.isEmpty {
+                if let job, let record = traceRecords[job.place]?[job.prompt] {
+                    traceRecords[.project(opened), default: [:]][job.prompt] = record
+                }
+                if self.place == place {
+                    selectProject(opened)
+                } else {
+                    unseen.insert(.project(opened))
+                }
+            } else if self.place == place {
+                if let turns = result["turns"] as? [[String: Any]], !turns.isEmpty {
+                    applyChatTurns(turns)
+                } else {
+                    let reply = (result["model_commentary"] as? String) ?? (result["summary"] as? String)
+                    if let reply, !reply.isEmpty {
+                        appendLocalTurn(role: "assistant", text: reply)
                     }
-                    if let named = first["project"] as? String, !named.isEmpty {
-                        // The request names one of his projects ("add X to vc-jobs-board"): do it there.
-                        noteStatus("Working in \(URL(fileURLWithPath: named).lastPathComponent).")
-                        inspection = try await engine.call("inspect_project", ["path": named])
-                        path = named
-                    } else {
-                        noteStatus("Creating a project from what you wrote.")
-                        let created = try await engine.call("start_chat", ["text": text])
-                        path = created["path"] as? String
-                        if let report = created["inspection"] as? [String: Any] {
-                            inspection = report
-                        } else if let createdPath = path {
-                            inspection = try await engine.call("inspect_project", ["path": createdPath])
-                        }
+                }
+                if let preview = result["preview"] as? [String: Any],
+                   let url = preview["url"] as? String, !url.isEmpty {
+                    previewURL = url
+                }
+            } else {
+                unseen.insert(place)
+            }
+            try? await refreshSidebars()
+        } catch {
+            finishQuestion(cost: nil)
+            tell(error.localizedDescription, in: place)
+            try? await refreshSidebars()  // the question was saved before the answer: its chat is listed
+        }
+        startWaiting()
+    }
+
+    @discardableResult
+    private func finishQuestion(cost: Double?) -> Job? {
+        guard let job = questionJob else { return nil }
+        questionJob = nil
+        record(job, cost: cost)
+        syncRunning()
+        return job
+    }
+
+    /// Make a change in its project. Without a project the message names one ("add X to vc-jobs-board") or a new
+    /// one is made for it, and the chat moves into it; the window follows when it still shows that chat.
+    private func change(_ text: String, in place: Place, project named: String?) async {
+        do {
+            var path = place.path
+            if path == nil {
+                if let named, !named.isEmpty {
+                    path = named
+                } else {
+                    noteStatus("Creating a project from what you wrote.")
+                    var params: [String: Any] = ["text": text]
+                    if case .chat(let id) = place {
+                        params["chat_id"] = id
+                    }
+                    let created = try await engine.call("start_chat", params)
+                    path = created["path"] as? String
+                    if self.place == place {
                         banner = created["detail"] as? String
                     }
-                    try await refreshSidebars()
                 }
-                guard let path else {
-                    running = false
-                    finishTrace(cost: nil)
-                    banner = "Nicoder could not create a project from that message."
-                    return
+            }
+            guard let path else {
+                throw NSError(domain: "Nicoder", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "Nicoder could not create a project from that message.",
+                ])
+            }
+            let target = Place.project(path)
+            if target != place, var job = changeJob {
+                // The work belongs to the project now.
+                job = Job(place: target, prompt: job.prompt, started: job.started, steps: job.steps)
+                changeJob = job
+                if self.place == place {
+                    let note = banner
+                    selectProject(path)
+                    banner = note
                 }
-                let classified = try await engine.call("classify_request", ["path": path, "text": text])
-                let kind = classified["kind"] as? String
-                if kind == "unsupported" {
-                    running = false
-                    finishTrace(cost: nil)
-                    appendLocalTurn(role: "assistant", text: classified["summary"] as? String ?? "That request is not supported.")
-                    return
-                }
-                if kind == "explain" {
-                    let result = try await engine.call("explain_request", ["path": path, "text": text])
-                    running = false
-                    finishTrace(cost: nil)
-                    if let turns = result["turns"] {
-                        applyChatTurns(turns)
-                    } else if let summary = result["summary"] as? String, !summary.isEmpty {
-                        appendLocalTurn(role: "assistant", text: summary)
-                    }
-                    return
-                }
-                if kind == "chat" {
-                    try await answerQuestion(path: path, text: text)
-                    return
-                }
+                try? await refreshSidebars()
+            }
+            if self.place == target {
                 snapshot = nil
                 previewURL = nil
                 inspectorShown = false
-                activeEpisodePath = path
-                let started = try await engine.call("run_request", [
-                    "path": path,
-                    "text": text,
-                    "profile": profile,
-                    "engine": engineName,
-                    "kind": followUpReady ? "follow_up" : "create",
-                ])
-                activeEpisode = started["episode_id"] as? String
-            } catch {
-                running = false
-                finishTrace(cost: nil)
-                appendLocalTurn(role: "assistant", text: error.localizedDescription)
             }
-        }
-    }
-
-    /// Answer a question in chat. With no project open, `path` is nil; when the model opens a
-    /// project, the window switches to it and shows the conversation there.
-    private func answerQuestion(path: String?, text: String) async throws {
-        var params: [String: Any] = ["text": text]
-        if let path {
-            params["path"] = path
-        } else {
-            // A chat without a project has no saved history in the engine: send what this window shows
-            // (the question itself is the last turn).
-            params["history"] = chatTurns.dropLast().suffix(10).map { ["role": $0.role, "text": $0.text] }
-        }
-        let result: [String: Any]
-        do {
-            result = try await engine.call("chat_request", params, timeoutSeconds: 1200)
+            let started = try await engine.call("run_request", [
+                "path": path,
+                "text": text,
+                "profile": profile,
+                "engine": engineName,
+                "kind": followUps.contains(path) ? "follow_up" : "create",
+            ])
+            let episode = started["episode_id"] as? String
+            changeJob?.episode = episode
+            if let episode, let answered = endedEarly.removeValue(forKey: episode) {
+                finishChange(requestID: episode, answered: answered)
+            }
+            endedEarly = [:]
         } catch {
-            running = false
-            progress = "Ready."
-            finishTrace(cost: nil)
-            throw error
-        }
-        running = false
-        progress = "Ready."
-        finishTrace(cost: result["cost_usd"] as? Double)
-        if let opened = result["open_project"] as? String, !opened.isEmpty {
-            let kept = traces
-            selectProject(opened)
-            traces = kept
-            return
-        }
-        if let turns = result["turns"] as? [[String: Any]], !turns.isEmpty {
-            applyChatTurns(turns)
-        } else {
-            let reply = (result["model_commentary"] as? String) ?? (result["summary"] as? String)
-            if let reply, !reply.isEmpty {
-                appendLocalTurn(role: "assistant", text: reply)
-            }
-        }
-        if let preview = result["preview"] as? [String: Any],
-           let url = preview["url"] as? String, !url.isEmpty {
-            previewURL = url
+            failChange(error.localizedDescription)
         }
     }
 
+    /// Stop the work running in the conversation the window shows; work elsewhere goes on.
     func stop() {
+        guard let job = jobHere else { return }
+        let what = changeJob?.place == job.place ? "run" : "chat"
         Task {
-            _ = try? await engine.call("cancel")
+            _ = try? await engine.call("cancel", ["what": what])
             progress = "Stopping…"
         }
     }
 
+    /// Take back a message that waits for its turn.
+    func dropWaiting(_ id: UUID) {
+        waiting.removeAll { $0.id == id }
+    }
+
+    /// Start the first waiting message whose kind of work is free, in a conversation where nothing runs (a change
+    /// that starts a project moves its chat: a question still running there would land in an emptied chat).
+    private func startWaiting() {
+        guard let index = waiting.firstIndex(where: {
+            ($0.change ? changeJob == nil : questionJob == nil) && !isWorking($0.place)
+        }) else {
+            return
+        }
+        let item = waiting.remove(at: index)
+        Task { await send(item.text, in: item.place) }
+    }
+
+    private func syncRunning() {
+        running = changeJob != nil || questionJob != nil
+    }
+
+    private func record(_ job: Job, cost: Double?) {
+        guard !job.steps.isEmpty || cost != nil else { return }
+        traceRecords[job.place, default: [:]][job.prompt] = TraceRecord(
+            steps: job.steps, started: job.started, ended: Date(), cost: cost
+        )
+    }
+
+    /// Snapshots and the UI demo only: a run (in the conversation the window shows unless told), no engine call.
+    func showDemoRun(prompt: String, started: Date, steps: [TraceStep], in where: Place? = nil) {
+        changeJob = Job(place: `where` ?? place, prompt: prompt, started: started, steps: steps)
+        syncRunning()
+    }
+
+    /// Snapshots only: the finished work behind an answer in the conversation the window shows.
+    func showDemoTrace(_ record: TraceRecord, for prompt: String) {
+        traceRecords[place, default: [:]][prompt] = record
+    }
+
+    /// Snapshots only: results not seen yet, and messages waiting for their turn.
+    func showDemoQueue(done: [Place], waiting items: [(Place, String)]) {
+        unseen = Set(done)
+        waiting = items.map { Waiting(place: $0.0, text: $0.1, change: true) }
+    }
+
+    func endDemoRun() {
+        changeJob = nil
+        questionJob = nil
+        waiting = []
+        unseen = []
+        syncRunning()
+    }
+
     func keep() {
-        guard let path = projectPath, let episode = snapshot?["episode_id"] as? String else { return }
+        guard decisionWaitsFor == nil, let path = projectPath, let episode = snapshot?["episode_id"] as? String else {
+            return
+        }
+        let shown = place
         Task {
             do {
                 _ = try await engine.call("keep", ["episode_id": episode, "path": path])
-                snapshot = try await engine.call("snapshot", ["episode_id": episode, "path": path])
-                previewURL = nil
-                banner = "The changes are in your project now. Ask for the next one."
-                followUpReady = true
-                inspectorShown = false
+                followUps.insert(path)
+                let result = try await engine.call("snapshot", ["episode_id": episode, "path": path])
+                if place == shown {
+                    snapshot = result
+                    previewURL = nil
+                    banner = "The changes are in your project now. Ask for the next one."
+                    inspectorShown = false
+                }
                 try await refreshSidebars()
             } catch {
-                banner = error.localizedDescription
+                if place == shown {
+                    banner = error.localizedDescription
+                }
             }
         }
     }
 
     func discard() {
-        guard let episode = snapshot?["episode_id"] as? String else { return }
+        guard decisionWaitsFor == nil, let episode = snapshot?["episode_id"] as? String else { return }
+        let shown = place
         Task {
             do {
                 var params: [String: Any] = ["episode_id": episode]
                 if let path = projectPath {
                     params["path"] = path
+                    followUps.remove(path)
                 }
                 _ = try await engine.call("discard", params)
-                snapshot = try await engine.call("snapshot", params)
-                previewURL = nil
-                banner = "Discarded. Your project was not changed."
-                followUpReady = false
-                inspectorShown = false
+                let result = try await engine.call("snapshot", params)
+                if place == shown {
+                    snapshot = result
+                    previewURL = nil
+                    banner = "Discarded. Your project was not changed."
+                    inspectorShown = false
+                }
                 try await refreshSidebars()
             } catch {
-                banner = error.localizedDescription
+                if place == shown {
+                    banner = error.localizedDescription
+                }
             }
         }
     }
@@ -615,13 +926,16 @@ final class AppModel: ObservableObject {
     func openHistory(_ row: HistoryRow) {
         // The last row's notice does not belong over this one.
         banner = nil
+        let shown = place
         Task {
             do {
                 var params: [String: Any] = ["episode_id": row.episodeID]
                 if let path = projectPath {
                     params["path"] = path
                 }
-                snapshot = try await engine.call("snapshot", params)
+                let result = try await engine.call("snapshot", params)
+                guard place == shown else { return }
+                snapshot = result
                 inspectorShown = hasChanges
                 // A kept request keeps its files and diff, so it has changes to show and never reaches the notice.
                 if !hasChanges {
@@ -878,11 +1192,9 @@ final class AppModel: ObservableObject {
         case "demo-run" where ProcessInfo.processInfo.environment["LOCAL_CODER_UI_DEMO"] != nil:
             // A test copy only (its own config): shows the live run with no engine call.
             chatTurns = [ChatTurn(id: "demo", role: "user", text: "Show the working indicator")]
-            currentPrompt = "Show the working indicator"
-            traceStart = Date()
-            trace = [TraceStep(tool: "list", detail: "Looking in ~/projects", target: "~/projects", ok: true,
-                               started: Date())]
-            running = true
+            showDemoRun(prompt: "Show the working indicator", started: Date(), steps: [
+                TraceStep(tool: "list", detail: "Looking in ~/projects", target: "~/projects", ok: true, started: Date()),
+            ])
         default: break
         }
     }
@@ -892,9 +1204,7 @@ final class AppModel: ObservableObject {
     private func noteStatus(_ phrase: String) {
         guard !phrase.isEmpty else { return }
         progress = phrase
-        if running {
-            recordStep(tool: "status", detail: phrase, target: "", ok: true)
-        }
+        recordStep(tool: "status", detail: phrase, target: "", ok: true, fromChat: false)
     }
 
     private func handle(_ event: EngineEvent) {
@@ -911,31 +1221,37 @@ final class AppModel: ObservableObject {
             }
             return
         }
+        // A question's steps come tagged; the rest belong to the change.
+        let fromChat = event.payload["source"] as? String == "chat"
         if let phrase = event.phrase, !phrase.isEmpty {
             progress = phrase
-            if running, !Self.quietEvents.contains(event.type) {
+            if !Self.quietEvents.contains(event.type) {
                 let data = event.payload["data"] as? [String: Any] ?? [:]
                 recordStep(
                     tool: data["tool"] as? String ?? (event.type == "activity" ? "status" : event.type),
                     detail: phrase,
                     target: data["target"] as? String ?? "",
-                    ok: data["ok"] as? Bool ?? true
+                    ok: data["ok"] as? Bool ?? true,
+                    fromChat: fromChat
                 )
             }
         }
+        if fromChat {
+            return  // a question ends when its answer comes back
+        }
         if event.type == "app_error" {
-            running = false
             let nested = event.payload["data"] as? [String: Any]
             let detail = (event.payload["detail"] as? String)
                 ?? (nested?["detail"] as? String)
                 ?? event.phrase
                 ?? "The request failed."
-            banner = detail.isEmpty ? "The request failed." : detail
-            finishTrace(cost: nil)
+            failChange(detail.isEmpty ? "The request failed." : detail)
         }
+        // "budget" is not an end: the run still saves its result and then sends "done".
         if event.type == "handoff_written" || event.type == "cancelled"
-            || event.type == "done" || event.type == "stopped" || event.type == "budget" {
-            finishActiveEpisode()
+            || event.type == "done" || event.type == "stopped" {
+            let data = event.payload["data"] as? [String: Any]
+            finishChange(requestID: data?["request_id"] as? String, answered: data?["answered"] as? Bool == true)
         }
     }
 
@@ -949,68 +1265,101 @@ final class AppModel: ObservableObject {
         "still working",
     ]
 
-    private func recordStep(tool: String, detail: String, target: String, ok: Bool) {
+    private func recordStep(tool: String, detail: String, target: String, ok: Bool, fromChat: Bool) {
         let lowered = detail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if Self.vaguePhrases.contains(where: { lowered == $0 || lowered.hasPrefix($0) }) { return }
-        if let last = trace.last, last.detail == detail, last.tool == tool { return }
-        trace.append(TraceStep(tool: tool, detail: detail, target: target, ok: ok, started: Date()))
-        if trace.count > 400 { trace.removeFirst(trace.count - 400) }
-    }
-
-    private func finishTrace(cost: Double?) {
-        if let prompt = currentPrompt, let start = traceStart, !trace.isEmpty || cost != nil {
-            traces[prompt] = TraceRecord(steps: trace, started: start, ended: Date(), cost: cost)
+        let step = TraceStep(tool: tool, detail: detail, target: target, ok: ok, started: Date())
+        if fromChat {
+            questionJob?.add(step)
+        } else {
+            changeJob?.add(step)
         }
-        trace = []
-        traceStart = nil
-        currentPrompt = nil
     }
 
-    private func finishActiveEpisode() {
-        guard let episode = activeEpisode else {
-            running = false
+    /// The change failed before it could finish: say so where it ran.
+    private func failChange(_ detail: String) {
+        guard let job = changeJob, !finishingChange else { return }
+        changeJob = nil
+        record(job, cost: nil)
+        syncRunning()
+        tell(detail, in: job.place)
+        startWaiting()
+    }
+
+    /// The change ended (done, stopped, out of steps or time): its result shows in its project, now when the
+    /// window shows it, or when the project is opened next (the sidebar says "done"). `answered`: the project read
+    /// the message as a question and answered it in its chat.
+    private func finishChange(requestID: String?, answered: Bool) {
+        guard let job = changeJob, !finishingChange else { return }
+        if let requestID {
+            guard let episode = job.episode else {
+                // It ended before its start was answered, or it is a late event of the run before this one.
+                endedEarly[requestID] = answered
+                return
+            }
+            guard requestID == episode else { return }
+        }
+        guard let episode = job.episode, let path = job.place.path else {
+            changeJob = nil
+            record(job, cost: nil)
+            syncRunning()
+            startWaiting()
             return
         }
-        activeEpisode = nil
-        let episodePath = activeEpisodePath ?? projectPath
-        activeEpisodePath = nil
+        finishingChange = true
         Task {
+            var cost: Double?
             do {
-                var params: [String: Any] = ["episode_id": episode]
-                if let path = episodePath {
-                    params["path"] = path
-                }
-                snapshot = try await engine.call("snapshot", params, timeoutSeconds: 60)
-                finishTrace(cost: requestCost)
-                if let preview = snapshot?["preview"] as? [String: Any],
-                   let url = preview["url"] as? String, !url.isEmpty,
-                   preview["ok"] as? Bool != false {
-                    previewURL = url
+                if answered {
+                    if place == job.place {
+                        try await loadChat(for: path)
+                    } else {
+                        unseen.insert(job.place)
+                    }
                 } else {
-                    previewURL = nil
-                }
-                inspectorShown = hasChanges || previewURL != nil
-                if let path = episodePath {
-                    try await loadChat(for: path)
-                }
-                let reply = (snapshot?["model_commentary"] as? String) ?? (snapshot?["summary"] as? String)
-                if let reply, !reply.isEmpty {
-                    appendLocalTurn(role: "assistant", text: reply)
+                    let result = try await engine.call("snapshot", ["episode_id": episode, "path": path],
+                                                       timeoutSeconds: 60)
+                    cost = result["cost_usd"] as? Double
+                    if place == job.place {
+                        snapshot = result
+                        if let preview = result["preview"] as? [String: Any],
+                           let url = preview["url"] as? String, !url.isEmpty,
+                           preview["ok"] as? Bool != false {
+                            previewURL = url
+                        } else {
+                            previewURL = nil
+                        }
+                        inspectorShown = hasChanges || previewURL != nil
+                        try await loadChat(for: path)
+                        let reply = (result["model_commentary"] as? String) ?? (result["summary"] as? String)
+                        if let reply, !reply.isEmpty, place == job.place {
+                            appendLocalTurn(role: "assistant", text: reply)
+                        }
+                    } else {
+                        unseen.insert(job.place)
+                    }
                 }
                 try await refreshSidebars()
             } catch {
-                banner = error.localizedDescription
-                finishTrace(cost: nil)
+                tell(error.localizedDescription, in: job.place)
             }
-            running = false
+            record(changeJob ?? job, cost: cost)
+            changeJob = nil
+            finishingChange = false
+            syncRunning()
+            startWaiting()
         }
     }
 
     private func refreshSidebars() async throws {
         let prefs = try await engine.call("prefs")
         recent = Self.parseRecent(prefs["recent_projects"])
+        if let listed = try? await engine.call("list_chats") {
+            chats = Self.parseChats(listed)  // a slow answer keeps the list it had
+        }
         if let path = projectPath {
             let payload = try await engine.call("history", ["path": path])
+            guard projectPath == path else { return }
             let rows = payload["episodes"] as? [[String: Any]] ?? []
             history = rows.prefix(30).map { row in
                 HistoryRow(
@@ -1027,6 +1376,7 @@ final class AppModel: ObservableObject {
 
     private func loadChat(for path: String) async throws {
         let payload = try await engine.call("load_chat", ["path": path])
+        guard projectPath == path else { return }
         applyChatTurns(payload["turns"])
     }
 
@@ -1048,6 +1398,15 @@ final class AppModel: ObservableObject {
             return
         }
         chatTurns.append(ChatTurn(id: "local-\(UUID().uuidString)", role: role, text: body))
+    }
+
+    private static func parseChats(_ payload: [String: Any]) -> [SavedChat] {
+        let rows = payload["chats"] as? [[String: Any]] ?? []
+        return rows.compactMap { row in
+            guard let id = row["id"] as? String else { return nil }
+            let updated = (row["updated"] as? Double).map { Date(timeIntervalSince1970: $0) }
+            return SavedChat(id: id, title: row["title"] as? String ?? "chat", updated: updated)
+        }
     }
 
     private static func parseRecent(_ raw: Any?) -> [RecentProject] {
