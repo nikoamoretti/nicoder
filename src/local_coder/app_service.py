@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -146,14 +147,28 @@ def known_projects() -> list[Path]:
     return found
 
 
-def remember_project(repo: str | Path) -> dict[str, Any]:
-    """Record a project on the recent list without exposing model settings."""
+def remember_project(repo: str | Path, *, active: bool = True) -> dict[str, Any]:
+    """Record a project on the recent list, newest activity first.
+
+    `active` is a request or a chat in it: its time moves it up. Opening or clicking a project only adds it when it is
+    missing, so the list does not jump around under the pointer (Nico, 2026-10-26: "when i click on one it becomes the
+    first in the list which is very confusing").
+    """
     prefs = load_prefs()
     folder = Path(repo).expanduser().resolve()
     resolved = str(folder)
-    recent = [row for row in prefs.get("recent_projects", []) if row.get("path") != resolved]
-    recent.insert(0, {"path": resolved, "name": folder.name})
-    prefs["recent_projects"] = recent[:12]
+    now = time.time()
+    recent = list(prefs.get("recent_projects", []))
+    row = next((item for item in recent if item.get("path") == resolved), None)
+    if row is None:
+        row = {"path": resolved, "name": folder.name, "active": now}
+        recent.append(row)
+    elif active:
+        row["active"] = now
+    # Newest activity first; rows from before activity times keep their old order after the timed ones.
+    order = {id(item): index for index, item in enumerate(recent)}
+    recent.sort(key=lambda item: (-float(item.get("active") or 0), order[id(item)]))
+    prefs["recent_projects"] = recent[:20]
     save_prefs(prefs)
     return prefs
 
@@ -418,6 +433,8 @@ def chat_request(
     question = text.strip()
     if not question:
         raise AppError("Write a question first.")
+    if repo is not None:
+        remember_project(repo)
     extra = ""
     preview = None
     if repo is not None and asked_to_see_ui(question):

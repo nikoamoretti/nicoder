@@ -4,6 +4,8 @@ import SwiftUI
 struct RecentProject: Identifiable, Hashable {
     let path: String
     let name: String
+    /// When a request or a chat last ran in it.
+    var active: Date?
     var id: String { path }
 }
 
@@ -1052,7 +1054,9 @@ final class AppModel: ObservableObject {
         guard let rows = raw as? [[String: Any]] else { return [] }
         return rows.compactMap { row in
             guard let path = row["path"] as? String else { return nil }
-            return RecentProject(path: path, name: row["name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent)
+            let active = (row["active"] as? Double).map { Date(timeIntervalSince1970: $0) }
+            return RecentProject(path: path, name: row["name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent,
+                                 active: active)
         }
     }
 }

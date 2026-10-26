@@ -201,11 +201,12 @@ struct ProseText: NSViewRepresentable {
     }
 
     func updateNSView(_ view: AnswerTextView, context: Context) {
+        // Only a new answer replaces the text, so a selection survives the window's other updates. Compared by the
+        // answer's own text: a text view stores attributes its own way, so its contents never equal a fresh build,
+        // and every update used to replace the text and drop the selection (Nico: "still cant copy paste").
+        guard view.whole != whole else { return }
         view.whole = whole
-        // Only a new answer replaces the text, so a selection survives the window's other updates.
-        if view.textStorage?.isEqual(to: attributed) == false {
-            view.textStorage?.setAttributedString(attributed)
-        }
+        view.textStorage?.setAttributedString(attributed)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: AnswerTextView, context: Context) -> CGSize? {

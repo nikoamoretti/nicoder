@@ -92,7 +92,7 @@ struct SidebarView: View {
                 }
                 ForEach(model.recent) { project in
                     Button { model.selectProject(project.path) } label: {
-                        ConsoleRow(text: project.name, selected: project.path == model.projectPath)
+                        ConsoleRow(text: project.name, selected: project.path == model.projectPath, date: project.active)
                     }
                     .buttonStyle(.plain)
                     .help(RootView.tildePath(project.path) ?? project.path)
@@ -340,6 +340,12 @@ private struct PromptHeadline: View {
                 .foregroundStyle(Console.ink)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .contextMenu {
+            Button("Copy") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
     }

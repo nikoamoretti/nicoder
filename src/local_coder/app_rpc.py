@@ -143,7 +143,7 @@ class RpcServer:
             return {"ok": True, "service": "local-coder-app", "version": __version__, "build_id": BUILD_ID}
         if method == "inspect_project":
             report = inspect_project(params["path"])
-            remember_project(report["path"]) if report.get("exists") else None
+            remember_project(report["path"], active=False) if report.get("exists") else None
             return report
         if method == "classify_request":
             if not params.get("path"):

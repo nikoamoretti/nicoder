@@ -31,6 +31,8 @@ struct ConsoleRow: View {
     let text: String
     var selected = false
     var size: CGFloat = 12.5
+    /// Shown on the right, faint: when the row last had activity.
+    var date: Date?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -40,10 +42,27 @@ struct ConsoleRow: View {
                 .foregroundStyle(selected ? Console.green : Console.mute)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
+            if let date {
+                Text(Self.when(date))
+                    .font(Console.mono(10.5))
+                    .foregroundStyle(Console.faint)
+                    .fixedSize()
+            }
         }
         .font(Console.mono(size, selected ? .semibold : .regular))
         .padding(.vertical, 3)
         .contentShape(Rectangle())
+    }
+
+    /// "now", "12m", "3h", "yesterday", then "oct 23".
+    static func when(_ date: Date, now: Date = Date()) -> String {
+        let seconds = now.timeIntervalSince(date)
+        if seconds < 60 { return "now" }
+        if seconds < 3600 { return "\(Int(seconds / 60))m" }
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "\(Int(seconds / 3600))h" }
+        if calendar.isDateInYesterday(date) { return "yesterday" }
+        return date.formatted(.dateTime.month(.abbreviated).day()).lowercased()
     }
 }

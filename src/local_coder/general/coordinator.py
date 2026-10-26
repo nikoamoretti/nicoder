@@ -96,7 +96,7 @@ EventListener = Callable[[dict[str, Any]], None]
 AgentChat = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 MAX_CHECK_REPAIRS = 8
 AGENT_REPAIR_ROUNDS = 2
-AGENT_MAX_STEPS = 80
+AGENT_MAX_STEPS = 150  # was 80: a real spec (Nico's crime-data pipeline) ran out of steps before its page
 _VITE_CONFIGS = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
 # What makes a change a web change: Nicoder's checks (source scan, build, preview, empty page) look at these.
 _WEB_SUFFIXES = (".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".mts", ".cts", ".css", ".scss", ".sass", ".less",
@@ -1129,6 +1129,14 @@ def _run_agent_request(
                 break
             if not _has_file_changes(baseline, candidate):
                 break
+            if run.status in ("step_limit", "time_limit"):
+                # Unfinished work is not judged as finished: no checks, the agent's own account of what it did, and
+                # one plain line on how to go on. The checks' "preview does not run" used to replace all of it.
+                meta["model_commentary"] = unfinished_text(run.answer, run.status)
+                meta["verification"] = {"local_checks": "not_run",
+                                        "detail": "The work stopped before it was finished, so the checks did not run."}
+                _stop(meta, run.status)
+                break
             if not web_app or _skip_web_checks(meta, candidate):
                 meta["verification"] = {
                     "local_checks": "not_run",
@@ -1699,15 +1707,25 @@ def _record_replies(meta: dict[str, Any], outcomes: list[ReplyOutcome], turns: l
 
 
 def _preview_failed_summary(detail: str, files: list[str]) -> str:
-    excerpt = " ".join((detail or "").split())[:400]
+    excerpt = " ".join((detail or "").split())[:400].rstrip()
+    if excerpt:
+        excerpt = excerpt[0].upper() + excerpt[1:]
+        if not excerpt.endswith((".", "!", "?")):
+            excerpt += "."
     count = len(files)
     noun = "file" if count == 1 else "files"
     return (
-        f"I wrote {count} {noun}, but the in-app preview does not run. "
-        f"{excerpt} "
-        "This is not a finished UI. The original project is unchanged. "
-        "Keep only if you want these files anyway, or Discard."
-    )
+        f"I wrote {count} {noun}, but the app does not show it yet. {excerpt} "
+        "Your project is unchanged: keep these files or discard them."
+    ).replace("  ", " ")
+
+
+def unfinished_text(answer: str, status: str) -> str:
+    """The agent's own account of unfinished work, then how to go on, in plain words."""
+    why = "ran out of steps" if status == "step_limit" else "ran out of time"
+    tail = f"I {why} before finishing. Say \"continue\" and I'll pick up where I left off."
+    account = (answer or "").strip()
+    return f"{account}\n\n{tail}" if account else tail
 
 
 def _maybe_attach_preview(

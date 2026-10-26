@@ -26,15 +26,15 @@ class RequestBudget:
 
 CREATE = RequestBudget(
     kind="create",
-    wall_seconds=20 * 60,
-    max_generations=120,
+    wall_seconds=30 * 60,
+    max_generations=200,
     max_commands=200,
     max_output_bytes=2_000_000,
 )
 FOLLOW_UP = RequestBudget(
     kind="follow_up",
-    wall_seconds=20 * 60,
-    max_generations=60,
+    wall_seconds=30 * 60,
+    max_generations=150,
     max_commands=120,
     max_output_bytes=1_000_000,
 )
