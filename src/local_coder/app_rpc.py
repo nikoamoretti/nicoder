@@ -31,6 +31,7 @@ from .app_service import (
     chat_request,
     classify_request,
     clear_project_chat,
+    dated_prefs,
     discard_changes,
     ensure_machine_config,
     ensure_server,
@@ -188,7 +189,7 @@ class RpcServer:
         if method == "ensure_server":
             return ensure_server(wait_s=int(params.get("wait_s") or 300))
         if method == "prefs":
-            return load_prefs()
+            return dated_prefs()
         if method == "save_prefs":
             prefs = load_prefs()
             prefs.update({k: v for k, v in params.items() if k in {"profile", "recent_projects", "engine"}})

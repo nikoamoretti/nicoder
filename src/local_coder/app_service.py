@@ -173,6 +173,46 @@ def remember_project(repo: str | Path, *, active: bool = True) -> dict[str, Any]
     return prefs
 
 
+def dated_prefs() -> dict[str, Any]:
+    """Preferences for the app, every recent project with the time it was last used.
+
+    Rows saved before activity times (2026-10-26) get theirs once from the project's own records: the newest chat
+    turn or request, else the folder's last change. The list is then in that order, newest first.
+    """
+    prefs = load_prefs()
+    recent = list(prefs.get("recent_projects", []))
+    missing = [row for row in recent if not isinstance(row.get("active"), int | float)]
+    if not missing:
+        return prefs
+    for row in missing:
+        row["active"] = _last_used(Path(str(row["path"])).expanduser())
+    order = {id(item): index for index, item in enumerate(recent)}
+    recent.sort(key=lambda item: (-float(item.get("active") or 0), order[id(item)]))
+    prefs["recent_projects"] = recent
+    save_prefs(prefs)
+    return prefs
+
+
+def _last_used(folder: Path) -> float:
+    from local_coder.general.chat_log import load_chat
+    from local_coder.general.coordinator import project_dir, project_id_for
+
+    times = [float(turn["ts"]) for turn in load_chat(folder)["turns"] if isinstance(turn.get("ts"), int | float)]
+    for meta in (project_dir(project_id_for(folder)) / "requests").glob("*/meta.json"):
+        try:
+            created = json.loads(meta.read_text(encoding="utf-8")).get("created_ts")
+        except (OSError, ValueError):
+            continue
+        if isinstance(created, int | float):
+            times.append(float(created))
+    if times:
+        return max(times)
+    try:
+        return folder.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def start_chat(text: str, *, parent: str | Path | None = None, chat_id: str | None = None) -> dict[str, Any]:
     """Create a project from a message and remember it.
 

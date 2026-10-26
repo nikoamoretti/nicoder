@@ -75,8 +75,11 @@ def test_a_run_that_hits_the_step_limit_reports_its_work_not_a_preview_error(tmp
     folder = home / "Local Coder Projects" / "crime-map"
     folder.mkdir(parents=True)
     copy_starter(folder)
-    writes = [_reply(calls=[_call("write", {"path": f"src/ingestion/part{n}.ts", "content": f"export const p{n} = {n};\n"},
-                                  str(n))]) for n in range(8)]
+    writes = [
+        _reply(calls=[_call("write", {"path": f"src/ingestion/part{n}.ts", "content": f"export const p{n} = {n};\n"},
+                            str(n))])
+        for n in range(8)
+    ]
     script = Script(*writes, _reply("I built three ingestion modules; the page is next."))
     review = run_general_request(folder, "Scrape the Interstat datasets", agent_chat=script, start_preview_after=False)
     meta = load_meta(review["project_id"], review["request_id"])
@@ -85,3 +88,29 @@ def test_a_run_that_hits_the_step_limit_reports_its_work_not_a_preview_error(tmp
     assert "preview" not in meta["model_commentary"]
     assert meta["verification"]["local_checks"] == "not_run"
     assert review["can_keep"] is True  # the work done so far can still be kept
+
+
+def test_projects_saved_before_dates_get_theirs_from_their_records(tmp_path, monkeypatch):
+    # Nico (2026-10-26): "chats have no date and order". Rows saved before activity times showed no date.
+    import json as _json
+
+    from local_coder import machine
+    from local_coder.app_service import dated_prefs, save_prefs
+    from local_coder.general.chat_log import save_chat
+
+    monkeypatch.setenv(machine.CONFIG_DIR_ENV, str(tmp_path / "config"))
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    talked, idle = tmp_path / "talked", tmp_path / "idle"
+    talked.mkdir()
+    idle.mkdir()
+    save_chat(talked, [{"id": "t1", "role": "user", "text": "hi", "ts": 2_000_000_000.0}])
+    save_prefs({"recent_projects": [{"path": str(idle), "name": "idle"}, {"path": str(talked), "name": "talked"}],
+                "profile": "d2", "engine": "general"})
+
+    rows = dated_prefs()["recent_projects"]
+
+    assert [row["name"] for row in rows] == ["talked", "idle"]  # newest activity first
+    assert rows[0]["active"] == 2_000_000_000.0
+    assert rows[1]["active"] == idle.stat().st_mtime  # no records: the folder's last change
+    saved = _json.loads((tmp_path / "config" / "app.json").read_text())
+    assert all("active" in row for row in saved["recent_projects"])  # filled once, kept
