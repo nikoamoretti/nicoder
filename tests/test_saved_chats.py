@@ -271,3 +271,47 @@ def test_a_question_that_fails_stays_in_its_chat(config_home, monkeypatch):
 def test_a_chat_id_with_a_line_break_is_refused(config_home):
     with pytest.raises(ValueError):
         load_free_chat("chat-aaaa1111\n")
+
+
+def test_work_holds_a_busy_marker_until_it_ends(config_home, tmp_path, monkeypatch):
+    # An install waits while a marker's process is alive (2026-10-26: an install stopped a run at step 77).
+    import threading
+
+    from local_coder.busy import busy_dir
+
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    seen: list[list[str]] = []
+    release = threading.Event()
+
+    def run(*args, listener=None, request_id=None, **kwargs):
+        seen.append(sorted(path.name.split("-")[1] for path in busy_dir().glob("*.json")))
+        release.wait(5)
+        listener({"type": "done", "data": {"request_id": request_id}})
+        return {"kind": "review"}
+
+    monkeypatch.setattr("local_coder.general.coordinator.run_general_request", run)
+    runtime, _events = _collect_runtime(tmp_path)
+    runtime.start_request(str(tmp_path), "add a footer")
+    release.set()
+    _wait_idle(runtime)
+    assert seen == [["run"]]
+    assert list(busy_dir().glob("*.json")) == []
+
+
+def test_a_question_holds_a_busy_marker_while_it_is_answered(config_home, tmp_path, monkeypatch):
+    from local_coder.busy import busy_dir
+
+    monkeypatch.setenv("LOCAL_CODER_DATA_DIR", str(tmp_path / "data"))
+    seen: list[int] = []
+
+    def fake_chat(path, text, **_kwargs):
+        seen.append(len(list(busy_dir().glob("*-question-*.json"))))
+        return {"kind": "chat", "summary": "ok"}
+
+    monkeypatch.setattr("local_coder.app_rpc.chat_request", fake_chat)
+    server = RpcServer(out=io.StringIO())
+    thread = server.start_chat_thread({"id": "1", "method": "chat_request", "params": {"text": "hi"}})
+    assert thread is not None
+    thread.join(5)
+    assert seen == [1]
+    assert list(busy_dir().glob("*.json")) == []

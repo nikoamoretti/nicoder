@@ -58,6 +58,7 @@ from .app_service import (
     start_chat,
     stop_owned_server,
 )
+from .busy import working
 from .catalog import list_models
 from .errorlog import NOT_FOUND, UNEXPECTED, record_error
 from .general.coordinator import GeneralError
@@ -98,9 +99,13 @@ class RpcServer:
             self._write(_err(message.get("id"), "busy", "A question is already being answered."))
             return None
         self.chat_cancel.clear()
-        thread = threading.Thread(
-            target=lambda: self._write(self.dispatch(message)), name="local-coder-chat", daemon=True,
-        )
+
+        def answer() -> None:
+            with working("question"):
+                reply = self.dispatch(message)
+            self._write(reply)
+
+        thread = threading.Thread(target=answer, name="local-coder-chat", daemon=True)
         self._chat_thread = thread
         thread.start()
         return thread

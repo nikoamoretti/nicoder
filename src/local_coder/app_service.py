@@ -1482,9 +1482,12 @@ class AppRuntime:
             ended = ended or event.get("type") in _END_EVENTS
             self._emit(event)
 
+        from local_coder.busy import working
+
         result: Any = None
         try:
-            result = self._run(kwargs, emit)
+            with working("run"):
+                result = self._run(kwargs, emit)
         finally:
             if not ended:
                 # Every run ends with an end event, or the app would show it working forever. A request the project
