@@ -23,8 +23,9 @@ struct ComposerField: NSViewRepresentable {
         textView.isRichText = false
         textView.drawsBackground = false
         textView.allowsUndo = true
-        textView.font = NSFont.systemFont(ofSize: 14)
-        textView.textContainerInset = NSSize(width: 6, height: 8)
+        textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.insertionPointColor = NSColor(Console.green)
+        textView.textContainerInset = NSSize(width: 2, height: 6)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.string = text
         textView.setAccessibilityIdentifier("requestEditor")

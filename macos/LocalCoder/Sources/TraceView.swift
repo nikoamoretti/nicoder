@@ -110,41 +110,30 @@ private struct TraceRow: View {
 
     var body: some View {
         let style = StepStyle(step)
-        HStack(alignment: .top, spacing: 10) {
-            Rail(first: first, last: last, icon: AnyView(
-                Image(systemName: step.ok ? style.symbol : "exclamationmark.triangle.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(step.ok ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(.quaternary.opacity(0.6)))
-            ))
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if style.isNote {
-                    Text(style.subject)
-                        .italic()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                } else {
-                    if !style.verb.isEmpty {
-                        Text(style.verb)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(style.subject)
-                        .font(style.verb.isEmpty ? .callout : .system(.callout, design: .monospaced))
-                        .foregroundStyle(step.ok ? .primary : .secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(step.ok ? "✓" : "!")
+                .foregroundStyle(step.ok ? Console.green : .orange)
+            if style.isNote {
+                Text(style.subject)
+                    .foregroundStyle(Console.mute)
+                    .lineLimit(2)
+            } else {
+                if !style.verb.isEmpty {
+                    Text(style.verb.lowercased())
+                        .foregroundStyle(Console.faint)
                 }
-                Spacer(minLength: 12)
-                Text(Durations.label(duration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                Text(style.subject)
+                    .foregroundStyle(step.ok ? Console.mute : Console.faint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .font(.callout)
-            .padding(.top, 8)
-            .padding(.bottom, 6)
-            .help(step.detail)
+            Spacer(minLength: 12)
+            Text(Durations.label(duration))
+                .foregroundStyle(Console.faint)
         }
+        .font(Console.mono(12))
+        .padding(.vertical, 2.5)
+        .help(step.detail)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -204,28 +193,28 @@ struct LiveTrace: View {
         VStack(alignment: .leading, spacing: 6) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 HStack(spacing: 8) {
-                    Text("Working")
-                        .font(.callout.weight(.semibold))
+                    Text("●")
+                        .foregroundStyle(Console.green)
+                    Text("working")
+                        .foregroundStyle(Console.ink)
                     Text(Durations.clock(context.date.timeIntervalSince(start)))
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Console.mute)
                         .contentTransition(.numericText())
                     if let name = model.selectedModel?.name {
-                        Text(reasoningNote.isEmpty ? "· \(name)" : "· \(name) · \(reasoningNote)")
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
+                        Text(reasoningNote.isEmpty ? "· \(name.lowercased())" : "· \(name.lowercased()) · \(reasoningNote)")
+                            .foregroundStyle(Console.faint)
                             .lineLimit(1)
                     }
                     Spacer()
-                    Button("Stop") { model.stop() }
+                    Button("stop") { model.stop() }
                         .controlSize(.small)
                 }
+                .font(Console.mono(12))
             }
             StepWheel(steps: model.trace, start: start, waiting: waiting)
+                .padding(.leading, 2)
         }
-        .padding(14)
-        .background(.background.secondary, in: .rect(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator.opacity(0.5)))
+        .padding(.vertical, 4)
         .accessibilityIdentifier("livingProgress")
     }
 }
@@ -250,8 +239,8 @@ struct StepWheel: View {
                         .id(current.id)
                         .transition(.wheelTurn)
                 } else {
-                    Text(waiting)
-                        .foregroundStyle(.secondary)
+                    Text(waiting.lowercased())
+                        .foregroundStyle(Console.mute)
                         .id("waiting")
                         .transition(.wheelTurn)
                 }
@@ -260,19 +249,19 @@ struct StepWheel: View {
             .clipped()
             if !steps.isEmpty {
                 Text("\(steps.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    .font(Console.mono(11))
+                    .foregroundStyle(Console.faint)
                     .contentTransition(.numericText())
                     .help("\(steps.count) step\(steps.count == 1 ? "" : "s") so far")
             }
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text(Durations.label(context.date.timeIntervalSince(current?.started ?? start)))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    .font(Console.mono(11))
+                    .foregroundStyle(Console.faint)
                     .contentTransition(.numericText())
             }
         }
-        .font(.callout)
+        .font(Console.mono(12.5))
         .frame(height: 40)
         .animation(.snappy(duration: 0.4), value: current?.id)
     }
@@ -284,19 +273,16 @@ private struct WheelLabel: View {
 
     var body: some View {
         let style = StepStyle(step)
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: step.ok ? style.symbol : "exclamationmark.triangle.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(step.ok ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
             if style.isNote || style.verb.isEmpty {
                 Text(style.subject)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Console.mute)
                     .lineLimit(1)
             } else {
-                Text(style.verb)
-                    .foregroundStyle(.secondary)
+                Text(style.verb.lowercased())
+                    .foregroundStyle(step.ok ? Console.green.opacity(0.75) : .orange)
                 Text(style.subject)
-                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(step.ok ? Console.green : .orange)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -344,10 +330,12 @@ struct TraceSummary: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .bold))
                         .rotationEffect(.degrees(expanded ? 90 : 0))
-                    Text(Self.summary(record))
-                        .font(.callout.monospacedDigit())
+                    Text("✓")
+                        .foregroundStyle(Console.green)
+                    Text(Self.summary(record).lowercased())
                 }
-                .foregroundStyle(.secondary)
+                .font(Console.mono(12))
+                .foregroundStyle(Console.mute)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

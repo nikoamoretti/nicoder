@@ -38,7 +38,7 @@ struct ModelMenu: View {
                         .controlSize(.mini)
                 }
             }
-            .font(.callout)
+            .font(Console.mono(12))
         }
         .menuStyle(.button)
         .buttonStyle(.borderless)

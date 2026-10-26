@@ -83,14 +83,15 @@ private struct ChangesList: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("\(files.count) file\(files.count == 1 ? "" : "s") changed")
-                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Console.ink)
                     Text("+\(totals.added)")
                         .foregroundStyle(.passText)
                     Text("−\(totals.removed)")
                         .foregroundStyle(.failText)
                     Spacer()
                 }
-                .font(.callout.monospacedDigit())
+                .font(Console.mono(13))
                 ChecksRow()
             }
             .padding(.horizontal, 16)
@@ -123,21 +124,19 @@ private struct ChecksRow: View {
             ("Preview", checks["preview"] as? String ?? "not_run"),
         ]
         let ran = rows.filter { $0.1 != "not_run" }
-        HStack(spacing: 6) {
+        HStack(spacing: 14) {
             if ran.isEmpty {
-                Label("Nicoder did not run checks for this project", systemImage: "minus.circle")
-                    .foregroundStyle(.secondary)
+                Text("– no checks ran for this change")
+                    .foregroundStyle(Console.faint)
             } else {
                 ForEach(ran, id: \.0) { name, word in
                     let passed = CheckWord.passed(word)
-                    Label(name, systemImage: passed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    Text("\(passed ? "✓" : "✗") \(name.lowercased())")
                         .foregroundStyle(passed ? Color.passText : Color.failText)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(.quaternary.opacity(0.5), in: .capsule)
                 }
             }
         }
+        .font(Console.mono(12))
         .font(.caption.weight(.medium))
     }
 }
@@ -160,11 +159,13 @@ private struct FileRow: View {
                 .foregroundStyle(file.status.tint)
                 .frame(width: 16)
             Text(file.name)
-                .fontWeight(.medium)
+                .font(Console.mono(12, .semibold))
+                .foregroundStyle(Console.ink)
                 .lineLimit(1)
                 .layoutPriority(1)
             Text(file.folder)
-                .foregroundStyle(.secondary)
+                .font(Console.mono(11.5))
+                .foregroundStyle(Console.faint)
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer(minLength: 6)
@@ -180,7 +181,7 @@ private struct FileRow: View {
             }
             DiffBar(added: file.added, removed: file.removed)
         }
-        .font(.callout.monospacedDigit())
+        .font(Console.mono(11.5))
         .help(file.path)
     }
 }
@@ -334,7 +335,7 @@ private struct PreviewTab: View {
                 Image(systemName: "globe")
                     .foregroundStyle(.secondary)
                 Text(url.absoluteString)
-                    .font(.callout.monospaced())
+                    .font(Console.mono(11.5))
                     .lineLimit(1)
                     .textSelection(.enabled)
                 Spacer()

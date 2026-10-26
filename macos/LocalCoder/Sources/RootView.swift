@@ -10,6 +10,7 @@ struct WindowRoot: View {
     var body: some View {
         RootView()
             .frame(minWidth: model.inspectorShown ? nil : 920, minHeight: 600)
+            .tint(Console.green)
     }
 }
 
@@ -75,45 +76,37 @@ struct SidebarView: View {
     /// The sidebar row for a chat with no project open (the agent answers about anything on the Mac).
     static let chatTag = "chat:"
 
-    private var selection: Binding<String?> {
-        Binding(
-            get: { model.projectPath ?? SidebarView.chatTag },
-            set: { path in
-                guard let path else { return }
-                if path == SidebarView.chatTag {
-                    model.closeProject()
-                } else {
-                    model.selectProject(path)
-                }
-            }
-        )
-    }
-
     var body: some View {
-        List(selection: selection) {
-            Label("New Chat", systemImage: "square.and.pencil")
-                .help("Ask about anything on your Mac, without a project")
-                .tag(Optional(SidebarView.chatTag))
-                .accessibilityIdentifier("sidebarNewChat")
-            Section("Projects") {
+        List {
+            Button { model.closeProject() } label: {
+                ConsoleRow(text: "new chat", selected: model.projectPath == nil)
+            }
+            .buttonStyle(.plain)
+            .help("Ask about anything on your Mac, without a project")
+            .accessibilityIdentifier("sidebarNewChat")
+            Section {
                 if model.recent.isEmpty {
-                    Text("Projects you open appear here.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    Text("projects you open appear here")
+                        .font(Console.mono(11.5))
+                        .foregroundStyle(Console.faint)
                 }
                 ForEach(model.recent) { project in
-                    Label(project.name, systemImage: "folder")
-                        .help(RootView.tildePath(project.path) ?? project.path)
-                        .tag(Optional(project.path))
-                        .contextMenu {
-                            Button("Show in Finder") {
-                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
-                            }
+                    Button { model.selectProject(project.path) } label: {
+                        ConsoleRow(text: project.name, selected: project.path == model.projectPath)
+                    }
+                    .buttonStyle(.plain)
+                    .help(RootView.tildePath(project.path) ?? project.path)
+                    .contextMenu {
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
                         }
+                    }
                 }
+            } header: {
+                SidebarHeading(text: "projects")
             }
             if model.projectPath != nil && !model.history.isEmpty {
-                Section("Requests") {
+                Section {
                     ForEach(model.history) { row in
                         Button {
                             model.openHistory(row)
@@ -122,10 +115,14 @@ struct SidebarView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                } header: {
+                    SidebarHeading(text: "requests")
                 }
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(Console.sidebar)
         .disabled(model.running)
         .help(model.running ? "The sidebar unlocks when the current request ends (or press Stop)." : "")
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -133,7 +130,9 @@ struct SidebarView: View {
                 Button {
                     model.openProject()
                 } label: {
-                    Label("Open Folder…", systemImage: "folder.badge.plus")
+                    Text("open folder…")
+                        .lineLimit(1)
+                        .fixedSize()
                 }
                 .disabled(model.running)
                 .help("Open a project folder (⌘O)")
@@ -142,17 +141,32 @@ struct SidebarView: View {
                 Button {
                     model.newProject()
                 } label: {
-                    Image(systemName: "plus")
+                    Text("+ new")
+                        .lineLimit(1)
+                        .fixedSize()
                 }
                 .disabled(model.running)
                 .help("Create a new project (⇧⌘N)")
                 .accessibilityIdentifier("newProjectButton")
             }
             .buttonStyle(.borderless)
-            .labelStyle(.titleAndIcon)
+            .font(Console.mono(11.5))
+            .foregroundStyle(Console.mute)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            .background(Console.sidebar)
         }
+    }
+}
+
+private struct SidebarHeading: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Console.mono(11))
+            .foregroundStyle(Console.faint)
+            .textCase(nil)
     }
 }
 
@@ -162,11 +176,13 @@ private struct HistoryRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(row.request.isEmpty ? "Request" : row.request)
+                .font(Console.mono(11.5))
+                .foregroundStyle(Console.mute)
                 .lineLimit(2)
                 .truncationMode(.tail)
-            Text(outcome)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(outcome.lowercased())
+                .font(Console.mono(10.5))
+                .foregroundStyle(Console.faint)
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
@@ -211,6 +227,7 @@ struct SessionView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Console.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ComposerBar()
         }
@@ -246,7 +263,8 @@ private struct NoticeBar: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .glassEffect(.regular, in: .rect(cornerRadius: 12))
+        .background(Console.panel, in: .rect(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Console.line))
         .frame(maxWidth: 620)
         .padding(.horizontal, 20)
     }
@@ -313,12 +331,13 @@ private struct PromptHeadline: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            RoundedRectangle(cornerRadius: 1.5)
-                .fill(.tint)
-                .frame(width: 3)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("›")
+                .font(Console.mono(15, .bold))
+                .foregroundStyle(Console.green)
             Text(text)
-                .font(.system(size: 17, weight: .semibold))
+                .font(Console.mono(14, .semibold))
+                .foregroundStyle(Console.ink)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -334,22 +353,22 @@ private struct ChangesPill: View {
         Button {
             withAnimation { model.inspectorShown = true }
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "doc.on.doc")
+            HStack(spacing: 10) {
                 Text("\(model.changedFiles.count) file\(model.changedFiles.count == 1 ? "" : "s") changed")
+                    .foregroundStyle(Console.ink)
                 Text("+\(stats.added)").foregroundStyle(.passText)
                 Text("−\(stats.removed)").foregroundStyle(.failText)
-                Text("Review")
+                Text("review →")
                     .fontWeight(.semibold)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Console.green)
             }
-            .font(.callout.monospacedDigit())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .font(Console.mono(12.5))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Console.panel, in: .rect(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Console.line))
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .capsule)
     }
 }
 
@@ -360,101 +379,94 @@ struct StartView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 22) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 76, height: 76)
-                    .accessibilityHidden(true)
-                VStack(spacing: 6) {
-                    Text(model.projectPath == nil ? "What should we look at?" : model.projectName)
-                        .font(.system(size: 26, weight: .semibold))
-                    Text(model.projectPath == nil
-                         ? "Ask about any project on your Mac, or describe an app to build."
-                         : (model.projectSummary.isEmpty ? "Ask about this project, or describe a change." : model.projectSummary))
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 520)
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 12) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 44, height: 44)
+                        .accessibilityHidden(true)
+                    Text(model.projectPath == nil ? "nicoder" : model.projectName)
+                        .font(Console.mono(22, .semibold))
+                        .foregroundStyle(Console.ink)
                 }
-                ModelCard()
-                    .frame(maxWidth: 540)
+                Text(model.projectPath == nil
+                     ? "Ask about any project on your Mac, or describe something to build."
+                     : (model.projectSummary.isEmpty ? "Ask about this project, or describe a change." : model.projectSummary))
+                    .font(.system(size: 15))
+                    .foregroundStyle(Console.mute)
+                    .fixedSize(horizontal: false, vertical: true)
+                ModelLine()
                 if !model.blockingIssues.isEmpty {
-                    BlockingCard(issues: model.blockingIssues)
-                        .frame(maxWidth: 540)
+                    BlockingNote(issues: model.blockingIssues)
                 }
             }
+            .frame(maxWidth: 560, alignment: .leading)
             .padding(40)
+            .padding(.top, 60)
             .frame(maxWidth: .infinity)
-            .padding(.top, 40)
         }
     }
 }
 
-/// The selected model at a glance, with a way to change it.
-private struct ModelCard: View {
+/// The selected model in one line, with a way to change it.
+private struct ModelLine: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
         let selected = model.selectedModel
         let needsKey = selected?.provider == "orcarouter" && !model.orcaConnected
-        HStack(alignment: .center, spacing: 14) {
-            Image(systemName: selected?.placeSymbol ?? "cpu")
-                .font(.system(size: 18))
-                .foregroundStyle(.tint)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(.tint.opacity(0.12)))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(selected?.name ?? "No model selected")
-                    .font(.headline)
-                Text(needsKey ? "Connect OrcaRouter to use this model" : cardDetail(selected))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("model")
+                .foregroundStyle(Console.faint)
+            Text(selected?.name ?? "none selected")
+                .foregroundStyle(Console.ink)
+            Text(needsKey ? "connect OrcaRouter first" : detail(selected))
+                .foregroundStyle(Console.mute)
+                .lineLimit(1)
             Spacer(minLength: 8)
             if needsKey {
-                Button("Connect…") { model.showConnect = true }
+                Button("connect…") { model.showConnect = true }
                     .buttonStyle(.borderedProminent)
             } else {
-                Button("Change…") { model.showBrowser = true }
+                Button("change…") { model.showBrowser = true }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Console.green)
             }
         }
-        .padding(16)
-        .background(.background.secondary, in: .rect(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator.opacity(0.6)))
+        .font(Console.mono(12.5))
+        .padding(.top, 6)
     }
 
-    private func cardDetail(_ selected: CatalogModel?) -> String {
-        guard let selected else { return "Pick one to start." }
+    private func detail(_ selected: CatalogModel?) -> String {
+        guard let selected else { return "pick one to start" }
         switch selected.provider {
         case "orcarouter":
-            return selected.free ? "Free through OrcaRouter" : "Through OrcaRouter · \(selected.subtitle) per million tokens"
-        case "nvidia": return "Free · runs on NVIDIA's servers"
-        default: return selected.subtitle.isEmpty ? "Runs on this Mac" : "Runs on this Mac · \(selected.subtitle)"
+            return selected.free ? "free · orcarouter" : "orcarouter · \(selected.subtitle) per M tokens"
+        case "nvidia": return "free · nvidia"
+        default: return selected.subtitle.isEmpty ? "on this mac" : "on this mac · \(selected.subtitle)"
         }
     }
 }
 
-private struct BlockingCard: View {
+private struct BlockingNote: View {
     @EnvironmentObject private var model: AppModel
     let issues: [String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("This Mac needs attention", systemImage: "exclamationmark.triangle.fill")
-                .font(.headline)
+            Text("! this mac needs attention")
+                .font(Console.mono(12.5, .semibold))
                 .foregroundStyle(.orange)
             ForEach(Array(issues.enumerated()), id: \.offset) { _, item in
                 Text(item)
-                    .font(.callout)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Console.ink)
                     .textSelection(.enabled)
             }
-            Button("Check Again") { model.refreshReadiness() }
+            Button("check again") { model.refreshReadiness() }
+                .font(Console.mono(12))
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.orange.opacity(0.08), in: .rect(cornerRadius: 16))
+        .padding(.top, 6)
     }
 }
 
@@ -468,39 +480,48 @@ struct ComposerBar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ZStack(alignment: .topLeading) {
-                ComposerField(
-                    text: $model.requestText,
-                    isEnabled: !model.running,
-                    onSubmit: { model.submitRequest() }
-                )
-                .frame(minHeight: 40, maxHeight: 180)
-                .fixedSize(horizontal: false, vertical: true)
-                if model.requestText.isEmpty {
-                    Text(model.projectPath == nil
-                         ? "Ask about any project, or describe an app to build"
-                         : "Ask about \(model.projectName), or describe a change")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 11)
-                        .padding(.top, 8)
-                        .allowsHitTesting(false)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Text("›")
+                    .font(Console.mono(15, .bold))
+                    .foregroundStyle(Console.green)
+                    .padding(.top, 6)
+                ZStack(alignment: .topLeading) {
+                    ComposerField(
+                        text: $model.requestText,
+                        isEnabled: !model.running,
+                        onSubmit: { model.submitRequest() }
+                    )
+                    .frame(minHeight: 34, maxHeight: 180)
+                    .fixedSize(horizontal: false, vertical: true)
+                    if model.requestText.isEmpty {
+                        Text(model.projectPath == nil
+                             ? "describe something to build, or ask anything"
+                             : "describe a change to \(model.projectName), or ask anything")
+                            .font(Console.mono(13))
+                            .foregroundStyle(Console.faint)
+                            .padding(.leading, 6)
+                            .padding(.top, 7)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 ModelMenu()
                 if model.selectedModel?.reasoningSwitch == true {
                     ReasoningMenu()
                 }
                 Spacer()
+                Text(model.running ? "working…" : "⏎ send · ⇧⏎ new line")
+                    .font(Console.mono(11))
+                    .foregroundStyle(Console.faint)
                 if model.running {
                     Button {
                         model.stop()
                     } label: {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .frame(width: 18, height: 18)
+                            .font(.system(size: 10, weight: .bold))
+                            .frame(width: 16, height: 16)
                     }
                     .buttonStyle(.bordered)
                     .buttonBorderShape(.circle)
@@ -511,8 +532,8 @@ struct ComposerBar: View {
                         model.submitRequest()
                     } label: {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: 13, weight: .bold))
-                            .frame(width: 18, height: 18)
+                            .font(.system(size: 12, weight: .bold))
+                            .frame(width: 16, height: 16)
                     }
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.circle)
@@ -524,16 +545,14 @@ struct ComposerBar: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
-        // On a light window the glass alone has no edge: a hairline and a soft lift keep it readable as a surface.
-        .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(.separator) }
-        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-        .frame(maxWidth: 760)
+        .padding(.vertical, 10)
+        .background(Console.panel, in: .rect(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Console.line))
+        .frame(maxWidth: 820)
         .padding(.horizontal, 24)
-        .padding(.bottom, 18)
+        .padding(.bottom, 16)
         .padding(.top, 6)
         .frame(maxWidth: .infinity)
+        .background(Console.background)
     }
 }
