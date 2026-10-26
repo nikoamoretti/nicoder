@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// What the app's window shows: the split view and the least size the window may be given. With Changes open the
 /// columns need more than 920 pt (the sidebar counts twice): at 920 the layout ran wider than the window and cut off
@@ -223,6 +224,7 @@ private struct HistoryRowView: View {
 
 struct SessionView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var dropping = false
 
     var body: some View {
         Group {
@@ -242,6 +244,18 @@ struct SessionView: View {
         .background(Console.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ComposerBar()
+        }
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in
+            AttachmentDrop.take(providers, into: model)
+        }
+        .overlay {
+            if dropping {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Console.green, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .overlay(Text("drop to attach").font(Console.mono(13)).foregroundStyle(Console.green))
+                    .padding(12)
+                    .allowsHitTesting(false)
+            }
         }
         .overlay(alignment: .top) {
             if let banner = model.banner {
@@ -360,16 +374,35 @@ private struct WaitingLine: View {
 private struct PromptHeadline: View {
     let text: String
 
+    /// The message and, apart, the names the chat keeps after "attached: " (`turnText`).
+    private var parts: (message: String, attached: String?) {
+        if text.hasPrefix("attached: ") {
+            return ("", String(text.dropFirst("attached: ".count)))
+        }
+        guard let range = text.range(of: "\n\nattached: ", options: .backwards) else { return (text, nil) }
+        return (String(text[..<range.lowerBound]), String(text[range.upperBound...]))
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("›")
                 .font(Console.mono(15, .bold))
                 .foregroundStyle(Console.green)
-            Text(text)
-                .font(Console.mono(14, .semibold))
-                .foregroundStyle(Console.ink)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                if !parts.message.isEmpty {
+                    Text(parts.message)
+                        .font(Console.mono(14, .semibold))
+                        .foregroundStyle(Console.ink)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let attached = parts.attached {
+                    Label(attached, systemImage: "paperclip")
+                        .font(Console.mono(12))
+                        .foregroundStyle(Console.mute)
+                        .lineLimit(2)
+                }
+            }
         }
         .contextMenu {
             Button("Copy") {
@@ -512,11 +545,14 @@ struct ComposerBar: View {
     @EnvironmentObject private var model: AppModel
 
     private var empty: Bool {
-        model.requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        model.requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.attachments.isEmpty
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !model.attachments.isEmpty || model.attaching > 0 {
+                AttachmentChips()
+            }
             HStack(alignment: .top, spacing: 8) {
                 Text("›")
                     .font(Console.mono(15, .bold))
@@ -526,7 +562,9 @@ struct ComposerBar: View {
                     ComposerField(
                         text: $model.requestText,
                         isEnabled: !model.busyHere,
-                        onSubmit: { model.submitRequest() }
+                        onSubmit: { model.submitRequest() },
+                        onAttachFiles: { model.attach(urls: $0) },
+                        onAttachImage: { model.attach(image: $0) }
                     )
                     .frame(minHeight: 34, maxHeight: 180)
                     .fixedSize(horizontal: false, vertical: true)
@@ -543,6 +581,16 @@ struct ComposerBar: View {
                 }
             }
             HStack(spacing: 12) {
+                Button {
+                    model.pickAttachments()
+                } label: {
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Console.mute)
+                }
+                .buttonStyle(.borderless)
+                .help("Attach files or images (or drop or paste them here)")
+                .accessibilityIdentifier("attachButton")
                 ModelMenu()
                 if model.selectedModel?.reasoningSwitch == true {
                     ReasoningMenu()
@@ -573,7 +621,7 @@ struct ComposerBar: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.circle)
-                    .disabled(empty)
+                    .disabled(empty || model.attaching > 0)
                     .keyboardShortcut(.return, modifiers: [.command])
                     .help("Send (Return)")
                     .accessibilityIdentifier("startButton")
@@ -590,5 +638,83 @@ struct ComposerBar: View {
         .padding(.top, 6)
         .frame(maxWidth: .infinity)
         .background(Console.background)
+    }
+}
+
+// MARK: - Attachments
+
+/// The files and images attached to the next message, above the composer.
+private struct AttachmentChips: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(model.attachments) { item in
+                    HStack(spacing: 6) {
+                        if let thumbnail = item.thumbnail {
+                            Image(nsImage: thumbnail)
+                                .resizable()
+                                .aspectRatio(contentMode: item.kind == "image" ? .fill : .fit)
+                                .frame(width: 22, height: 22)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        Text(item.name)
+                            .font(Console.mono(11.5))
+                            .foregroundStyle(Console.ink)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 180, alignment: .leading)
+                        Button {
+                            model.detach(item.id)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Console.mute)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove \(item.name)")
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Console.sidebar, in: .rect(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Console.line))
+                }
+                if model.attaching > 0 {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("reading…").font(Console.mono(11.5)).foregroundStyle(Console.mute)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                }
+            }
+        }
+        .accessibilityIdentifier("attachments")
+    }
+}
+
+/// Files or images dropped on the conversation: file URLs as they are, an image with no file (from a browser) as
+/// an image.
+enum AttachmentDrop {
+    @MainActor
+    static func take(_ providers: [NSItemProvider], into model: AppModel) -> Bool {
+        var taken = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                taken = true
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in model.attach(urls: [url]) }
+                }
+            } else if provider.canLoadObject(ofClass: NSImage.self) {
+                taken = true
+                _ = provider.loadObject(ofClass: NSImage.self) { image, _ in
+                    guard let image = image as? NSImage else { return }
+                    Task { @MainActor in model.attach(image: image) }
+                }
+            }
+        }
+        return taken
     }
 }

@@ -130,11 +130,29 @@ def _first_line(text: str, limit: int = 160) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
+_IMAGE_SIZE = 6_000  # what one shown image counts for in the conversation's size (its data is not text)
+
+
 def _size(message: dict[str, Any]) -> int:
-    size = len(str(message.get("content") or ""))
+    content = message.get("content")
+    if isinstance(content, list):
+        size = sum(len(str(part.get("text") or "")) if part.get("type") == "text" else _IMAGE_SIZE
+                   for part in content if isinstance(part, dict))
+    else:
+        size = len(str(content or ""))
     if message.get("tool_calls"):
         size += len(json.dumps(message["tool_calls"]))
     return size
+
+
+def _without_images(message: dict[str, Any]) -> dict[str, Any]:
+    """The message as a transcript keeps it: an image's data is left out."""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    parts = [part if part.get("type") == "text" else {"type": "image_url", "image_url": {"url": "(image left out)"}}
+             for part in content if isinstance(part, dict)]
+    return {**message, "content": parts}
 
 
 class AgentSession:
@@ -185,14 +203,20 @@ class AgentSession:
         deadline: float | None = None,
         hurry_after: float | None = None,
         look_first: bool = False,
+        images: list[str] | None = None,
     ) -> AgentRun:
         """Send one user message and run tools until the model answers or a limit is hit.
 
         With `hurry_after` (a fraction such as 0.5), the model is asked once to wrap up
         when that share of the steps or of the time is used. With `look_first`, an answer given without any
-        tool call is sent back once with a request to check first.
+        tool call is sent back once with a request to check first. `images` (data URLs) are shown with the message.
         """
-        self.messages.append({"role": "user", "content": text})
+        if images:
+            parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+            parts += [{"type": "image_url", "image_url": {"url": url}} for url in images]
+            self.messages.append({"role": "user", "content": parts})
+        else:
+            self.messages.append({"role": "user", "content": text})
         started = time.monotonic()
         limit = deadline if deadline is not None else started + 900
         steps = calls = 0
@@ -326,7 +350,7 @@ class AgentSession:
             "changed": self.toolbox.changed_paths,
             "commands": self.toolbox.commands,
             "calls": self.calls_log,
-            "messages": self.messages,
+            "messages": [_without_images(message) for message in self.messages],
         }
         path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
         return path

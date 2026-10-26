@@ -165,6 +165,7 @@ struct Waiting: Identifiable {
     let place: Place
     let text: String
     let change: Bool
+    var files: [Attachment] = []
 }
 
 @MainActor
@@ -198,6 +199,10 @@ final class AppModel: ObservableObject {
     /// The chat shown when no project is open; saved by the engine once it has a turn.
     @Published private(set) var chatID = AppModel.newChatID()
     @Published var chats: [SavedChat] = []
+    /// Files and images attached to the next message (chips above the composer).
+    @Published var attachments: [Attachment] = []
+    /// Attachments still being copied and read.
+    @Published private(set) var attaching = 0
     /// Counts "show me" answers that started the preview, so the panel turns to it even when its address is the same.
     @Published private(set) var previewAsked = 0
     @Published var snapshot: [String: Any]?
@@ -479,6 +484,7 @@ final class AppModel: ObservableObject {
     private func leaveConversation() {
         snapshot = nil
         requestText = ""
+        attachments = []
         banner = nil
         chatTurns = []
         previewURL = nil
@@ -629,19 +635,66 @@ final class AppModel: ObservableObject {
 
     func submitRequest() {
         let text = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !busyHere else { return }
+        let files = attachments
+        guard !text.isEmpty || !files.isEmpty, attaching == 0, !busyHere else { return }
         banner = nil
         requestText = ""
+        attachments = []
         let here = place
-        Task { await send(text, in: here) }
+        Task { await send(text, in: here, files: files) }
+    }
+
+    // MARK: Attachments
+
+    /// Files chosen, dropped or pasted: copied and read in the background, then shown as chips.
+    func attach(urls: [URL]) {
+        for url in urls {
+            stage { try Stager.stage(file: url) }
+        }
+    }
+
+    /// An image with no file (pasted, or dragged out of a browser).
+    func attach(image: NSImage) {
+        stage { try Stager.stage(image: image) }
+    }
+
+    func detach(_ id: UUID) {
+        attachments.removeAll { $0.id == id }
+    }
+
+    func pickAttachments() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose files or images for Nicoder to look at."
+        panel.prompt = "Attach"
+        guard panel.runModal() == .OK else { return }
+        attach(urls: panel.urls)
+    }
+
+    private func stage(_ work: @escaping () throws -> Attachment) {
+        attaching += 1
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try work() }
+            Task { @MainActor in
+                self.attaching -= 1
+                switch result {
+                case .success(let item): self.attachments.append(item)
+                case .failure(let error): self.banner = error.localizedDescription
+                }
+            }
+        }
     }
 
     /// Start a message in its conversation, or let it wait while the same kind of work runs in another one.
-    private func send(_ text: String, in place: Place) async {
+    private func send(_ text: String, in place: Place, files: [Attachment] = []) async {
+        // A message that is only files is a question about them.
+        let words = text.isEmpty && !files.isEmpty ? "Look at the attached files." : text
         let verdict: [String: Any]
         do {
             if let path = place.path {
-                var params: [String: Any] = ["path": path, "text": text]
+                var params: [String: Any] = ["path": path, "text": words]
                 // "just do it" right after a reply that said to keep the result keeps it.
                 if self.place == place, let last = chatTurns.last, last.role == "assistant" {
                     params["last_reply"] = last.text
@@ -649,13 +702,16 @@ final class AppModel: ObservableObject {
                 verdict = try await engine.call("classify_request", params)
             } else {
                 // No project: a question stays a chat; work runs in the project it names, or in a new one.
-                verdict = try await engine.call("classify_request", ["text": text])
+                verdict = try await engine.call("classify_request", ["text": words])
             }
         } catch {
             tell(error.localizedDescription, in: place, after: text)
             return
         }
-        let kind = verdict["kind"] as? String ?? ""
+        var kind = verdict["kind"] as? String ?? ""
+        if !files.isEmpty && (kind == "keep" || kind == "show") {
+            kind = "chat"  // with files the message is about them, not a command
+        }
         if kind == "unsupported" {
             tell(verdict["summary"] as? String ?? "That request is not supported.", in: place, after: text)
             return
@@ -667,10 +723,11 @@ final class AppModel: ObservableObject {
         // "show" runs Nicoder's own preview with no model; it waits its turn like a question.
         let question = kind == "chat" || kind == "explain" || kind == "show"
         if question ? questionJob != nil : changeJob != nil {
-            waiting.append(Waiting(place: place, text: text, change: !question))
+            waiting.append(Waiting(place: place, text: text, change: !question, files: files))
             return
         }
-        let job = Job(place: place, prompt: text)
+        let shown = turnText(text, files)  // as the chat keeps it, so the live entry matches after a reload
+        let job = Job(place: place, prompt: shown)
         if question {
             questionJob = job
         } else {
@@ -678,14 +735,14 @@ final class AppModel: ObservableObject {
         }
         syncRunning()
         if self.place == place {
-            appendLocalTurn(role: "user", text: text)
+            appendLocalTurn(role: "user", text: shown)
         }
         if kind == "show" {
             await show(text, in: place, inBrowser: verdict["browser"] as? Bool == true)
         } else if question {
-            await ask(text, in: place, explain: kind == "explain")
+            await ask(text, in: place, explain: kind == "explain" && files.isEmpty, files: files)
         } else {
-            await change(text, in: place, project: verdict["project"] as? String)
+            await change(text, in: place, project: verdict["project"] as? String, files: files)
         }
     }
 
@@ -779,7 +836,7 @@ final class AppModel: ObservableObject {
 
     /// Answer a question in its conversation. The model may open the project it means: the window follows when
     /// it still shows the question's conversation.
-    private func ask(_ text: String, in place: Place, explain: Bool) async {
+    private func ask(_ text: String, in place: Place, explain: Bool, files: [Attachment] = []) async {
         do {
             let result: [String: Any]
             if explain, let path = place.path {
@@ -789,6 +846,9 @@ final class AppModel: ObservableObject {
                 switch place {
                 case .project(let path): params["path"] = path
                 case .chat(let id): params["chat_id"] = id
+                }
+                if !files.isEmpty {
+                    params["attachments"] = files.map(\.payload)
                 }
                 result = try await engine.call("chat_request", params, timeoutSeconds: 1200)
             }
@@ -839,7 +899,7 @@ final class AppModel: ObservableObject {
 
     /// Make a change in its project. Without a project the message names one ("add X to vc-jobs-board") or a new
     /// one is made for it, and the chat moves into it; the window follows when it still shows that chat.
-    private func change(_ text: String, in place: Place, project named: String?) async {
+    private func change(_ text: String, in place: Place, project named: String?, files: [Attachment] = []) async {
         do {
             var path = place.path
             if path == nil {
@@ -847,7 +907,7 @@ final class AppModel: ObservableObject {
                     path = named
                 } else {
                     noteStatus("Creating a project from what you wrote.")
-                    var params: [String: Any] = ["text": text]
+                    var params: [String: Any] = ["text": text.isEmpty ? turnText(text, files) : text]
                     if case .chat(let id) = place {
                         params["chat_id"] = id
                     }
@@ -880,13 +940,17 @@ final class AppModel: ObservableObject {
                 previewURL = nil
                 inspectorShown = false
             }
-            let started = try await engine.call("run_request", [
+            var request: [String: Any] = [
                 "path": path,
                 "text": text,
                 "profile": profile,
                 "engine": engineName,
                 "kind": followUps.contains(path) ? "follow_up" : "create",
-            ])
+            ]
+            if !files.isEmpty {
+                request["attachments"] = files.map(\.payload)
+            }
+            let started = try await engine.call("run_request", request)
             let episode = started["episode_id"] as? String
             changeJob?.episode = episode
             if let episode, let answered = endedEarly.removeValue(forKey: episode) {
@@ -922,7 +986,7 @@ final class AppModel: ObservableObject {
             return
         }
         let item = waiting.remove(at: index)
-        Task { await send(item.text, in: item.place) }
+        Task { await send(item.text, in: item.place, files: item.files) }
     }
 
     private func syncRunning() {

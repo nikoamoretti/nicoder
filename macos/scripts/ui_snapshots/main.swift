@@ -289,5 +289,7 @@ MainActor.assumeIsolated {
     itemFixtures()
     // 8. Saved chats, and work that keeps running while the window shows another chat (items.swift).
     chatsFixtures()
+    // 9. Files and images attached to a message (items.swift).
+    attachmentsFixtures()
 }
 exit(0)

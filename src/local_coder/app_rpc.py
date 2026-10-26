@@ -179,6 +179,7 @@ class RpcServer:
                 cancel=self.chat_cancel,
                 history=params.get("history"),
                 chat_id=str(params.get("chat_id") or "") or None,
+                attachments=params.get("attachments"),
             )
         if method == "load_chat":
             if params.get("chat_id"):
@@ -218,6 +219,7 @@ class RpcServer:
                 execution=params.get("execution"),
                 engine=params.get("engine") or load_prefs().get("engine") or "general",
                 kind=params.get("kind") or "create",
+                attachments=params.get("attachments"),
             )
         if method == "orca_status":
             return orca_status()

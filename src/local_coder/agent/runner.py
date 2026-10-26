@@ -104,8 +104,9 @@ def run_ask(
     max_steps: int = ASK_STEPS,
     seconds: int = ASK_SECONDS,
     on_step: Callable[[dict[str, Any]], None] | None = None,
+    images: list[str] | None = None,
 ) -> AskResult:
-    """Answer a question with read-only tools across the home folder."""
+    """Answer a question with read-only tools across the home folder; `images` are shown with it."""
     home = home or Path.home()
     run_root = runs_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
     toolbox = ToolBox(
@@ -126,7 +127,7 @@ def run_ask(
         on_step=on_step,
     )
     run = session.ask(question, max_steps=max_steps, deadline=time.monotonic() + seconds, hurry_after=0.5,
-                      look_first=project is not None)
+                      look_first=project is not None, images=images)
     opened = toolbox.opened  # only an explicit open_project: reading a repo to answer never switches to it
     transcript = session.save(
         run_root / "transcript.json", mode="ask", status=run.status, steps=run.steps,

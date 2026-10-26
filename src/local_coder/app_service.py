@@ -485,23 +485,33 @@ def chat_request(
     cancel: threading.Event | None = None,
     history: Any = None,
     chat_id: str | None = None,
+    attachments: Any = None,
 ) -> dict[str, Any]:
     """Answer an ordinary question. No canned replies.
 
     With an agent-capable model the agent searches and reads the Mac itself and
     may open the project it found (`open_project` in the result). `path` is
     None when no project is open yet; then the chat `chat_id` is saved on its own (chats/free/) and its
-    turns are the history. Without a `chat_id`, `history` is the conversation the app shows.
+    turns are the history. Without a `chat_id`, `history` is the conversation the app shows. `attachments` are
+    the files the app staged for this message (`local_coder.attachments`): the model reads about them, and sees
+    the images when it can.
     """
+    from local_coder import attachments as attached
     from local_coder.agent.runner import agent_capable
     from local_coder.general.inspect import asked_to_see_ui
 
     repo = Path(path).expanduser().resolve() if path else None
     if repo is not None and not repo.is_dir():
         raise AppError("That folder does not exist.")
-    question = text.strip()
+    files = attached.parse(attachments)
+    question = text.strip() or ("Look at the attached files." if files else "")
     if not question:
         raise AppError("Write a question first.")
+    saved = attached.turn_text(text, files)  # what the chat keeps: the message and the attached names
+    cfg_now = load_machine_config()
+    shows = bool(files) and attached.sees_images(cfg_now.model_alias, cfg_now.provider)
+    asked = f"{question}\n\n{attached.note(files, shown=shows)}" if files else question
+    images = attached.image_urls(files) if shows else None
     if repo is not None:
         remember_project(repo)
     extra = ""
@@ -526,17 +536,18 @@ def chat_request(
         from local_coder.general.chat_log import append_free_turn
 
         # Saved before the answer: a question that fails or is stopped stays in its chat.
-        append_free_turn(chat_id, "user", question)
+        append_free_turn(chat_id, "user", saved)
     if with_tools:
-        result = _agent_chat(repo, question, extra=extra, listener=listener, cancel=cancel, history=shown)
+        result = _agent_chat(repo, asked, extra=extra, listener=listener, cancel=cancel, history=shown,
+                             images=images, saved_question=saved)
     else:
         from local_coder.general.chat_log import recent_messages
 
         reply = _local_chat_completion(
-            question, repo, extra=extra, history=recent_messages(repo) if repo is not None else shown,
+            asked, repo, extra=extra, history=recent_messages(repo) if repo is not None else shown,
         )
         if repo is not None:
-            result = _chat_result(repo, question, reply)
+            result = _chat_result(repo, saved, reply)
         else:
             result = {"kind": "chat", "summary": reply, "hits": [], "model_commentary": reply, "status": "answered"}
     if preview is not None:
@@ -678,8 +689,14 @@ def _agent_chat(
     listener: EventListener | None,
     cancel: threading.Event | None,
     history: list[dict[str, str]] | None = None,
+    images: list[str] | None = None,
+    saved_question: str | None = None,
 ) -> dict[str, Any]:
-    """A question answered by the agent with read-only tools across the home folder."""
+    """A question answered by the agent with read-only tools across the home folder.
+
+    `images` are shown to the model with the question; `saved_question` is what the chat keeps (the message and
+    the attached names, without the note the model reads about them).
+    """
     from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
     from local_coder.agent.tools import inside_data_root
     from local_coder.general.chat_log import append_turn, recent_messages
@@ -698,6 +715,7 @@ def _agent_chat(
         history=recent_messages(repo, limit=10, max_chars=1500) if repo is not None else history,
         cancel=cancel,
         on_step=step,
+        images=images,
     )
     opened = asked.opened if asked.opened is not None and asked.opened != repo else None
     if opened is not None and inside_data_root(opened):
@@ -714,7 +732,7 @@ def _agent_chat(
     }
     target = opened or repo
     if target is not None:
-        append_turn(target, "user", question)
+        append_turn(target, "user", saved_question or question)
         result["turns"] = append_turn(target, "assistant", asked.answer)["turns"]
     if opened is not None:
         remember_project(opened)
@@ -1508,7 +1526,7 @@ class AppRuntime:
                       execution: str | None = None, engine: str | None = None,
                       kind: str = "create", generation_limit: int | None = None,
                       continue_from: str | None = None,
-                      wall_seconds: int | None = None) -> dict[str, Any]:
+                      wall_seconds: int | None = None, attachments: Any = None) -> dict[str, Any]:
         """Start a request on a worker thread and return immediately."""
         from local_coder.general.inspect import folder_problem
 
@@ -1542,6 +1560,7 @@ class AppRuntime:
                     "generation_limit": generation_limit,
                     "continue_from": continue_from,
                     "wall_seconds": wall_seconds,
+                    "attachments": attachments,
                 },
                 name="local-coder-episode",
                 daemon=True,
@@ -1609,6 +1628,7 @@ class AppRuntime:
                 generation_limit=kwargs.get("generation_limit"),
                 continue_from=kwargs.get("continue_from"),
                 wall_seconds=kwargs.get("wall_seconds"),
+                attachments=kwargs.get("attachments"),
             )
         except (AppError, GeneralError) as exc:
             self.last_error = exc.detail

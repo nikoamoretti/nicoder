@@ -3,6 +3,7 @@
 // read off the real views, so a before/after pair carries its own figures.
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Helpers
 
@@ -365,5 +366,36 @@ func chatsFixtures() {
     capture(window, "17d-new-chat-while-a-change-runs")
     window.orderOut(nil)
     model.engine.stub = nil
+    resetForItems()
+}
+
+
+/// Files and images attached to a message: chips above the composer, then the sent message's attached line.
+@MainActor
+func attachmentsFixtures() {
+    let model = AppModel.shared
+    resetForItems()
+    let shot = URL(fileURLWithPath: "\(repoRoot)/macos/AppIcon.icns")
+    let picture = NSImage(contentsOf: shot)
+    model.attachments = [
+        Attachment(name: "interstat-dashboard.png", kind: "image", staged: shot, thumbnail: picture),
+        Attachment(name: "rapport-annuel-2025.pdf", kind: "pdf", staged: shot,
+                   thumbnail: NSWorkspace.shared.icon(for: .pdf)),
+        Attachment(name: "crimes-by-commune.csv", kind: "file", staged: shot,
+                   thumbnail: NSWorkspace.shared.icon(for: .commaSeparatedText)),
+    ]
+    model.requestText = "Make the dashboard look like this screenshot"
+    let window = show(WindowRoot(), size: CGSize(width: 1100, height: 700))
+    capture(window, "18-attachments-in-the-composer")
+    model.attachments = []
+    model.requestText = ""
+    model.chatTurns = [
+        ChatTurn(id: "u1", role: "user",
+                 text: "What do these show?\n\nattached: rapport-annuel-2025.pdf, crimes-by-commune.csv, interstat-dashboard.png"),
+        ChatTurn(id: "a1", role: "assistant",
+                 text: "The report says Bandol recorded **12 burglaries** in 2025. The CSV's count column totals **361**. The screenshot shows the Interstat dashboard with its coverage chart."),
+    ]
+    capture(window, "18b-a-message-with-attachments")
+    window.orderOut(nil)
     resetForItems()
 }

@@ -1,24 +1,36 @@
 import AppKit
 import SwiftUI
 
-/// Multiline composer: Enter sends, Shift+Enter inserts a newline.
+/// Multiline composer: Enter sends, Shift+Enter inserts a newline. A pasted or dropped image or file becomes an
+/// attachment instead of text.
 struct ComposerField: NSViewRepresentable {
     @Binding var text: String
     var isEnabled: Bool = true
     var onSubmit: () -> Void
+    var onAttachFiles: ([URL]) -> Void = { _ in }
+    var onAttachImage: (NSImage) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
+        let scroll = NSScrollView()
         scroll.borderType = .noBorder
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        guard let textView = scroll.documentView as? NSTextView else {
-            return scroll
-        }
+        let textView = AttachingTextView(frame: NSRect(origin: .zero, size: scroll.contentSize))
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.containerSize = NSSize(width: scroll.contentSize.width,
+                                                       height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.onAttachFiles = { context.coordinator.parent.onAttachFiles($0) }
+        textView.onAttachImage = { context.coordinator.parent.onAttachImage($0) }
+        scroll.documentView = textView
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.drawsBackground = false
@@ -74,5 +86,38 @@ struct ComposerField: NSViewRepresentable {
             }
             return false
         }
+    }
+}
+
+/// The composer's text view: files and images on the pasteboard (⌘V) or dropped on it are attached, not typed.
+final class AttachingTextView: NSTextView {
+    var onAttachFiles: ([URL]) -> Void = { _ in }
+    var onAttachImage: (NSImage) -> Void = { _ in }
+
+    override func paste(_ sender: Any?) {
+        if attach(from: NSPasteboard.general) { return }
+        super.paste(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if attach(from: sender.draggingPasteboard) { return true }
+        return super.performDragOperation(sender)
+    }
+
+    /// Files first (a copied Finder file also carries its icon as an image), then a bare image; plain text is left
+    /// to the text view.
+    private func attach(from pasteboard: NSPasteboard) -> Bool {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            onAttachFiles(urls)
+            return true
+        }
+        let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]
+        if pasteboard.availableType(from: imageTypes) != nil, pasteboard.string(forType: .string) == nil,
+           let image = NSImage(pasteboard: pasteboard) {
+            onAttachImage(image)
+            return true
+        }
+        return false
     }
 }

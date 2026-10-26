@@ -837,6 +837,7 @@ def run_general_request(
     continue_from: str | None = None,
     wall_seconds: int | None = None,
     agent_chat: AgentChat | None = None,
+    attachments: Any = None,
 ) -> dict[str, Any]:
     """Snapshot, ask the model for files, apply them, then review.
 
@@ -846,12 +847,15 @@ def run_general_request(
     A request that ends normally with the working copy exactly as the stack it was built on started has undone that
     stack: the waiting requests it was built on are closed before the review is made (`_close_what_was_undone`).
     """
+    from local_coder import attachments as attached
+
     folder = Path(user_path).expanduser().resolve()
     problem = folder_problem(folder)
     if problem:
         raise GeneralError(problem["summary"], code=problem["verdict"])
+    files = attached.parse(attachments)
     inspection = inspect_project(folder)
-    classified = classify_request(text, inspection)
+    classified = classify_request(text, inspection) if text.strip() or not files else {"kind": "code"}
     if classified["kind"] == "empty":
         raise GeneralError(classified["summary"], code="empty")
     if classified["kind"] == "explain":
@@ -907,7 +911,7 @@ def run_general_request(
         meta["provider"] = cfg.provider
         _save_meta(meta)
         _run_agent_request(
-            meta, folder, candidate, engine_cwd, text, inspection, listener, cancel, ledger,
+            meta, folder, candidate, engine_cwd, text, inspection, listener, cancel, ledger, files=files,
             chat=agent_chat or hosted_tool_chat(
                 cfg, cancel=cancel, on_wait=lambda line: _emit(listener, "activity", {"detail": line}),
             ),
@@ -1000,7 +1004,7 @@ def run_general_request(
     review = review_payload(meta["project_id"], request_id)
     from local_coder.general.chat_log import append_turn, load_chat
 
-    append_turn(folder, "user", text.strip())
+    append_turn(folder, "user", attached.turn_text(text, files))
     note = str(review.get("model_commentary") or review.get("summary") or "").strip()
     if note:
         append_turn(folder, "assistant", note)
@@ -1102,8 +1106,9 @@ def _run_agent_request(
     context_chars: int,
     fresh: bool,
     start_preview_after: bool,
+    files: list[Any] | None = None,
 ) -> None:
-    """Nicoder's own agent edits the working copy; Nicoder checks what it wrote."""
+    """Nicoder's own agent edits the working copy; Nicoder checks what it wrote. `files` are the attachments."""
     from local_coder.agent.runner import build_session
     from local_coder.general.chat_log import recent_messages
 
@@ -1129,8 +1134,15 @@ def _run_agent_request(
         cancel=cancel,
         on_step=lambda step: _emit(listener, "activity", step),
     )
-    run = session.ask(text, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s(),
-                      look_first=True)
+    from local_coder import attachments as attached
+
+    cfg = load_machine_config()
+    shows = bool(files) and attached.sees_images(cfg.model_alias, cfg.provider)
+    asked = text.strip() or "Use the attached files."
+    if files:
+        asked = f"{asked}\n\n{attached.note(files, shown=shows)}"
+    run = session.ask(asked, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s(),
+                      look_first=True, images=attached.image_urls(files) if shows and files else None)
     web_app = _is_vite_app(engine_cwd)
     rounds = 0
     try:
