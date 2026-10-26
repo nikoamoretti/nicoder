@@ -269,7 +269,7 @@ def test_the_engine_is_decided_once_for_the_workspace_and_the_run(project, monke
     )
     at_first_call: dict = {}
     script.hook = lambda: at_first_call.update(_record(project, "req-2"))
-    monkeypatch.setattr(runner, "hosted_tool_chat", lambda _cfg, cancel=None: script)
+    monkeypatch.setattr(runner, "hosted_tool_chat", lambda _cfg, cancel=None, on_wait=None: script)
     review = run_general_request(project, "request req-2", request_id="req-2", start_preview_after=False)
     assert asked == [True], "one decision, not one for the workspace and another for the run"
     assert review["engine"] == "agent"

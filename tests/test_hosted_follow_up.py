@@ -820,7 +820,7 @@ def test_the_engine_is_chosen_once_and_a_hosted_follow_up_builds_on_a_local_resu
     script = Script(reply(calls=[call("read", {"path": "src/calc.py"}, "b")]), document, reply("Documented add()."))
     at_first_call: dict = {}
     script.hook = lambda: at_first_call.update(record(project, "req-2"))
-    monkeypatch.setattr(runner, "hosted_tool_chat", lambda _cfg, cancel=None: script)
+    monkeypatch.setattr(runner, "hosted_tool_chat", lambda _cfg, cancel=None, on_wait=None: script)
 
     def local_fix(cwd: Path, _text: str, _cancel) -> None:
         calc = cwd / "src" / "calc.py"

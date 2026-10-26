@@ -36,11 +36,16 @@ def agent_capable(cfg: MachineConfig) -> bool:
     return is_hosted(cfg)
 
 
-def hosted_tool_chat(cfg: MachineConfig, cancel: threading.Event | None = None) -> ChatFn:
+def hosted_tool_chat(
+    cfg: MachineConfig,
+    cancel: threading.Event | None = None,
+    on_wait: Callable[[str], None] | None = None,
+) -> ChatFn:
     """Chat function for the loop: the hosted model, tools offered, reasoning as selected (on by default).
 
     OrcaRouter models keep their provider's own sampling defaults (several reasoning
-    models refuse a temperature), and each run is one OrcaRouter session.
+    models refuse a temperature), and each run is one OrcaRouter session. `on_wait` hears when a call waits for
+    the connection.
     """
     max_tokens = min(_OUTPUT_TOKENS, int(cfg.max_tokens or _OUTPUT_TOKENS))
     session = f"local-coder-{secrets.token_hex(6)}"
@@ -54,7 +59,8 @@ def hosted_tool_chat(cfg: MachineConfig, cancel: threading.Event | None = None) 
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
-        return hosted_chat(cfg, body, thinking=cfg.reasoning != "off", session=session, cancel=cancel)
+        return hosted_chat(cfg, body, thinking=cfg.reasoning != "off", session=session, cancel=cancel,
+                           on_wait=on_wait)
 
     return chat
 

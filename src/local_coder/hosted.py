@@ -20,6 +20,7 @@ import os
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -35,6 +36,9 @@ _READ_TIMEOUT_S = 120.0
 _ATTEMPTS = 3
 _BUSY_ATTEMPTS = 4
 _BUSY_WAIT_CAP_S = 30.0
+# A connection that cannot be opened sent nothing, so waiting costs nothing: a Mac waking from sleep, Wi-Fi
+# reconnecting or a short outage (Nico, 2026-10-26: "OrcaRouter did not answer after 3 attempts: ConnectTimeout").
+_OFFLINE_PATIENCE_S = 180.0
 # OrcaRouter refusals that no retry fixes, with what to tell the user.
 _ORCA_REFUSALS = {
     "insufficient_user_quota": "Your OrcaRouter balance is empty. Add credits at orcarouter.ai/console, "
@@ -53,6 +57,10 @@ class HostedError(RuntimeError):
 
 class _Retryable(HostedError):
     """A dropped stream or server error worth exactly one more attempt."""
+
+
+class _Unreachable(_Retryable):
+    """The connection could not be opened (offline, DNS, connect timeout): nothing reached the provider."""
 
 
 class _Stopped(HostedError):
@@ -120,11 +128,13 @@ def hosted_chat(
     thinking: bool,
     session: str = "",
     cancel: threading.Event | None = None,
+    on_wait: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """One chat completion from the hosted provider, shaped like a non-streaming llama.cpp reply.
 
     `session` groups an agent run's calls on OrcaRouter (its Sessions view); other providers ignore it.
-    `cancel` (the run's Stop) ends a streaming reply at the next chunk instead of after it finishes.
+    `cancel` (the run's Stop) ends a streaming reply at the next chunk instead of after it finishes, and ends a wait.
+    `on_wait` hears one line when the provider cannot be reached and the call waits for the connection.
     """
     key, where = credential(cfg)
     if not key:
@@ -144,6 +154,8 @@ def hosted_chat(
         payload["chat_template_kwargs"] = {"enable_thinking": thinking}
     problem = ""
     attempt = 0
+    failed = 0  # attempts that reached the provider and failed
+    offline_since: float | None = None
     while True:
         attempt += 1
         if cancel is not None and cancel.is_set():
@@ -154,17 +166,39 @@ def hosted_chat(
             problem = str(exc)
             if attempt >= _BUSY_ATTEMPTS:
                 break
-            time.sleep(min(_BUSY_WAIT_CAP_S, exc.retry_after or 5.0 * attempt))
+            _pause(min(_BUSY_WAIT_CAP_S, exc.retry_after or 5.0 * attempt), cancel)
+            continue
+        except _Unreachable as exc:
+            now = time.monotonic()
+            if offline_since is None:
+                offline_since = now
+                if on_wait is not None:
+                    on_wait(f"Waiting for the connection to {provider_name(cfg)}.")
+            elif now - offline_since >= _OFFLINE_PATIENCE_S:
+                minutes = max(1, round((now - offline_since) / 60))
+                raise HostedError(
+                    f"{provider_name(cfg)} could not be reached for {minutes} minutes; the Mac may be offline."
+                ) from exc
+            _pause(min(15.0, 2.0 ** min(attempt, 4)), cancel)
             continue
         except _Retryable as exc:
             problem = str(exc)
-            if attempt >= _ATTEMPTS:
+            failed += 1
+            if failed >= _ATTEMPTS:
                 break
-            time.sleep(3.0 * attempt)
+            _pause(3.0 * failed, cancel)
             continue
         data["timings"]["attempts"] = attempt
         return data
     raise HostedError(f"{provider_name(cfg)} did not answer after {attempt} attempts: {problem}")
+
+
+def _pause(seconds: float, cancel: threading.Event | None) -> None:
+    """Wait between attempts; Stop ends the wait at once."""
+    if cancel is None:
+        time.sleep(seconds)
+    elif cancel.wait(seconds):
+        raise _Stopped("Stopped.")
 
 
 def _stream_once(
@@ -223,6 +257,8 @@ def _stream_once(
                         first_token_s = round(time.perf_counter() - started, 3)
                     if choice.get("finish_reason"):
                         finish = str(choice["finish_reason"])
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise _Unreachable(f"{type(exc).__name__}: {exc}") from exc
     except (httpx.HTTPError, OSError) as exc:
         raise _Retryable(f"{type(exc).__name__}: {exc}") from exc
     if finish is None:

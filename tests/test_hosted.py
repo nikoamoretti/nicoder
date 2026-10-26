@@ -451,3 +451,38 @@ def test_a_rate_limit_gives_up_after_four_attempts(monkeypatch):
     with pytest.raises(hosted.HostedError, match="4 attempts"):
         hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
     assert len(_requests(calls)) == 4
+
+
+def test_a_connection_that_cannot_be_opened_waits_for_the_network(monkeypatch):
+    # Nico (2026-10-26), right after the Mac woke: "OrcaRouter did not answer after 3 attempts: ConnectTimeout".
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    offline = [httpx.ConnectTimeout("timed out"), httpx.ConnectError("[Errno 8] nodename nor servname provided")] * 3
+    calls = _install_client(monkeypatch, *offline, _Response(lines=_reply_lines("Back online.")))
+    heard: list[str] = []
+    data = hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False, on_wait=heard.append)
+    assert data["choices"][0]["message"]["content"] == "Back online."
+    assert len(_requests(calls)) == 7  # six failed connections never count as attempts that reached it
+    assert heard == ["Waiting for the connection to NVIDIA."]
+
+
+def test_a_long_outage_ends_in_plain_words(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    _install_client(monkeypatch, *[httpx.ConnectTimeout("timed out")] * 40)
+    clock = iter(float(second) for second in range(0, 4000, 20))
+    monkeypatch.setattr(hosted.time, "monotonic", lambda: next(clock))
+    with pytest.raises(hosted.HostedError, match="could not be reached for 3 minutes; the Mac may be offline"):
+        hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
+
+
+def test_stop_ends_the_wait_for_the_network_at_once(monkeypatch):
+    import threading
+    import time as real_time
+
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    _install_client(monkeypatch, *[httpx.ConnectError("offline")] * 40)
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    started = real_time.monotonic()
+    with pytest.raises(hosted.HostedError, match="Stopped"):
+        hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False, cancel=cancel)
+    assert real_time.monotonic() - started < 3
