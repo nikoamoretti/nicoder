@@ -102,3 +102,15 @@ def test_a_command_can_stop_its_own_processes_but_not_others(layout):
     finally:
         outside.kill()
         outside.wait()
+
+
+def test_a_command_cannot_act_outside_through_other_programs(layout):
+    # 2026-10-26: a build run opened Nico's browser on a server that died with the command, then tried launchd.
+    for command in ("/usr/bin/open -b com.example.nope", "/usr/bin/osascript -e 'return 1'", "/bin/launchctl list"):
+        result = _run(layout, command)
+        assert result.exit_code != 0 and "Operation not permitted" in result.output, command
+    probe = ("import ctypes, os; check = ctypes.CDLL(None).sandbox_check; "
+             "print([check(os.getpid(), op, 0) for op in (b'lsopen', b'appleevent-send', b'user-preference-write')])")
+    assert _run(layout, f'python3 -c "{probe}"').output.strip().endswith("[1, 1, 1]")
+    assert _run(layout, "defaults write com.nicoder.sandbox-test probe -string x").exit_code != 0
+    assert _run(layout, "node -e 'console.log(1+1)'").output.strip().endswith("2")

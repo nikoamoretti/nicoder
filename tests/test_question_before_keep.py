@@ -137,7 +137,7 @@ def test_the_agent_is_told_what_waits_and_how_to_read_it(calc, monkeypatch):
 
 def test_the_note_is_not_saved_in_the_chat(calc, monkeypatch):
     _fix(calc)
-    _use_hosted(monkeypatch, Recorder(_reply("It is waiting for you to Keep.")))
+    _use_hosted(monkeypatch, Recorder(*[_reply("It is waiting for you to Keep.")] * 2))
     result = chat_request(calc, QUESTION)
     turns = load_chat(calc)["turns"]
     assert [(turn["role"], turn["text"]) for turn in turns[-2:]] == [
@@ -239,7 +239,7 @@ def test_open_project_refuses_a_path_under_the_data_root(home, calc):
 
 
 def _ask(project: Path, monkeypatch) -> Recorder:
-    recorder = Recorder(_reply("Okay."))
+    recorder = Recorder(_reply("Okay."), _reply("Okay."))
     _use_hosted(monkeypatch, recorder)
     chat_request(project, QUESTION)
     return recorder
@@ -331,7 +331,7 @@ def test_a_bad_record_never_fails_a_question(calc, monkeypatch):
 
     review = _fix(calc)
     (request_dir(review["project_id"], "req-fix") / "meta.json").write_text("{not json", encoding="utf-8")
-    recorder = Recorder(_reply("Okay."))
+    recorder = Recorder(_reply("Okay."), _reply("Okay."))
     _use_hosted(monkeypatch, recorder)
     result = chat_request(calc, QUESTION)
     assert result["summary"] == "Okay."
@@ -342,7 +342,7 @@ def test_a_bad_record_never_fails_a_question(calc, monkeypatch):
 
 
 def test_asking_about_a_project_with_no_record_creates_nothing(calc, monkeypatch):
-    _use_hosted(monkeypatch, Recorder(_reply("Okay.")))
+    _use_hosted(monkeypatch, Recorder(_reply("Okay."), _reply("Okay.")))
     chat_request(calc, QUESTION)
     assert not (data_root() / "projects").exists()
 

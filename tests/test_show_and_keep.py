@@ -33,6 +33,14 @@ KEEP_HINT = ("The build passed and the app runs.\n\n"
     ("run it", "show"),
     ("open it", "show"),
     ("can i see it?", "show"),
+    ("can i see", "show"),
+    ("just rebuild it and open it", "show"),
+    ("open it in my browser", "show"),
+    ("rebuild the header", "code"),
+    ("ok build it and run it", "code"),
+    ("build and run", "code"),
+    ("build it and show me", "code"),
+    ("go ahead and build it and run it", "code"),
     ("did it run or not?", "chat"),
     ("do that", "code"),
     ("it doesnt work", "code"),
@@ -89,7 +97,8 @@ def test_show_me_runs_the_preview_and_says_where(project, monkeypatch):
                         lambda folder: {"ok": True, "url": "http://127.0.0.1:4539/", "source": "waiting"})
     result = show_app(project, "just show me")
     assert result["preview"]["url"] == "http://127.0.0.1:4539/"
-    assert result["summary"] == "It's running in the panel on the right. This is the version that waits for Keep."
+    assert result["summary"] == ("It's running in the panel on the right, and at http://127.0.0.1:4539/ in your "
+                                 "browser while Nicoder is open. This is the version that waits for Keep.")
     assert [turn["text"] for turn in load_chat(project)["turns"]] == ["just show me", result["summary"]]
 
 
@@ -148,7 +157,8 @@ def test_a_show_after_keep_adds_only_its_reply(project, monkeypatch):
                         lambda folder: {"ok": True, "url": "http://127.0.0.1:4539/", "source": "copy"})
     show_app(project, "")
     assert [(turn["role"], turn["text"]) for turn in load_chat(project)["turns"]] == [
-        ("assistant", "It's running in the panel on the right."),
+        ("assistant", "It's running in the panel on the right, and at http://127.0.0.1:4539/ in your browser while "
+                      "Nicoder is open."),
     ]
 
 
@@ -196,3 +206,8 @@ def test_a_damaged_record_never_blocks_a_message(project, monkeypatch):
 
     assert kind("keep it") == "code"
     assert kind("add a footer") == "code"
+
+
+def test_open_it_in_my_browser_asks_nicoder_to_open_the_browser():
+    assert classify_request("open it in my browser", {"supported": True})["browser"] is True
+    assert classify_request("just show me", {"supported": True})["browser"] is False

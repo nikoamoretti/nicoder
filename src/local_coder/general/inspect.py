@@ -56,11 +56,13 @@ _SEE_UI = (
 # Short commands Nicoder answers itself, with no model (Nico's chat, 2026-10-26: "just show me", "its not running",
 # "it worked and it stopped" each became a build run that only claimed to start a server or to keep the change).
 _LEAD = r"^(?:(?:just|please|pls|ok|okay|now|so|then|can you|could you)[\s,]+)*"
+_BROWSER = r"(?:\s+in\s+(?:my|the|a)\s+(?:browser|chrome|safari))?"
 _SHOW_ONLY = re.compile(
     _LEAD
-    + r"(?:(?:show|open|run|start|launch|preview|relaunch|restart)"
+    + r"(?:(?:rebuild\s+(?:it\s+)?(?:again\s+)?and\s+)?(?:show|open|run|start|launch|preview|relaunch|restart)"
     r"(?:\s+(?:me|it|this|that|up|the\s+app|the\s+preview|my\s+app|what\s+(?:you|it)\s+(?:built|made)))*"
-    r"|(?:can|could|may)\s+i\s+see\s+it|let\s+me\s+see(?:\s+it)?|i\s+want\s+to\s+see\s+it"
+    + _BROWSER
+    + r"|(?:can|could|may)\s+i\s+see(?:\s+it)?|let\s+me\s+see(?:\s+it)?|i\s+want\s+to\s+see(?:\s+it)?"
     r"|(?:it'?s|it\s+is|its)\s+not\s+(?:running|loading|showing|open|up)"
     r"|(?:the\s+)?(?:app|page|preview)\s+(?:is\s+)?(?:not\s+running|not\s+loading|down|gone)"
     r"|it\s+(?:worked\s+and\s+(?:then\s+)?(?:it\s+)?)?stopped(?:\s+running)?)"
@@ -103,7 +105,8 @@ def _suggested_keep(last_reply: str | None) -> bool:
 
 
 _CHANGE = re.compile(
-    r"^(?:please\s+|can you\s+|could you\s+|would you\s+|"
+    r"^(?:(?:ok|okay|so|now|then|just|go ahead and)[\s,]+)*"
+    r"(?:please\s+|can you\s+|could you\s+|would you\s+|"
     r"i want (?:you )?to\s+|i need (?:you )?to\s+)?"
     r"(make|build|add|fix|wrap|create|implement|change|update|remove|"
     r"delete|rename|refactor|write|replace|install|upgrade|turn|package|"
@@ -350,7 +353,8 @@ def classify_request(
         return {"kind": "keep", "show": True, "summary": "Nicoder keeps the waiting result and shows the app.",
                 "detail": "No model is asked."}
     if _SHOW_ONLY.match(request):
-        return {"kind": "show", "summary": "Nicoder shows the app in its Preview panel.",
+        browser = re.search(r"\b(?:browser|chrome|safari)\b", request, re.I) is not None
+        return {"kind": "show", "browser": browser, "summary": "Nicoder shows the app in its Preview panel.",
                 "detail": "No model is asked."}
     if asked_to_see_ui(request):
         return {"kind": "chat", "summary": "This will answer in chat without editing files.",

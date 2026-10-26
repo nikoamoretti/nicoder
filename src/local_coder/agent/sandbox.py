@@ -91,6 +91,11 @@ def _name_regex(pattern: str, *, directory: bool = False, under: Path | None = N
     return '#"' + prefix + "".join(out) + tail + '"'
 
 
+OUTSIDE_ACTORS = (
+    "/usr/bin/open", "/usr/bin/osascript", "/bin/launchctl", "/usr/bin/shortcuts", "/usr/bin/automator",
+)
+
+
 def build_profile(*, home: Path, writable: list[Path], blocked_programs: list[Path] | None = None) -> str:
     """SBPL text for one command. Later rules win over earlier ones."""
     home = Path(os.path.realpath(home))
@@ -122,6 +127,17 @@ def build_profile(*, home: Path, writable: list[Path], blocked_programs: list[Pa
     ]
     for program in programs:
         rules.append(f"(deny process-exec (literal {_quote(program)}))")
+    # Nothing may act outside the sandbox through another program: open a URL or an app (`open` can also run a
+    # .command file in Terminal), AppleScript (Finder would write anywhere), Shortcuts or a launchd job.
+    # 2026-10-26: a build run opened Nico's browser on a server that died with the command, then tried launchd.
+    for actor in OUTSIDE_ACTORS:
+        rules.append(f"(deny process-exec (literal {_quote(actor)}))")
+    # The same, whatever program asks: launching apps or URLs (NSWorkspace too), Apple Events, writing his app
+    # preferences through cfprefsd (`defaults write`), and reading his clipboard. Headless Chrome still runs.
+    rules.append("(deny lsopen)")
+    rules.append("(deny appleevent-send)")
+    rules.append("(deny user-preference-write)")
+    rules.append('(deny mach-lookup (global-name "com.apple.pasteboard.1"))')
     for service in KEYCHAIN_SERVICES:
         rules.append(f'(deny mach-lookup (global-name "{service}"))')
     # Signals reach only this command's own processes: a build can stop what it started, never the user's apps or

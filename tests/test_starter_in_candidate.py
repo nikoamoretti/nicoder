@@ -291,7 +291,8 @@ def test_a_hosted_agent_that_only_answers_costs_one_model_call_and_the_next_requ
     pid = project_id_for(folder)
     script = Script(reply("There is nothing to change in an empty project."))
     review = hosted(folder, "r1", script, text="Make it nicer")
-    assert len(script.sent) == 1, "one model call: no check and no repair round on a blank starter"
+    # One answer, sent back once to check first (look_first): no check and no repair round on a blank starter.
+    assert len(script.sent) == 2
     assert review["facts"]["files"] == [] and review["can_keep"] is False and review["can_discard"] is False
     assert review["verification"]["preview"] == "not_run"
     assert entries(folder) == []

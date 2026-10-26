@@ -1129,7 +1129,8 @@ def _run_agent_request(
         cancel=cancel,
         on_step=lambda step: _emit(listener, "activity", step),
     )
-    run = session.ask(text, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s())
+    run = session.ask(text, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s(),
+                      look_first=True)
     web_app = _is_vite_app(engine_cwd)
     rounds = 0
     try:

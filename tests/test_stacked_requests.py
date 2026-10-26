@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from local_coder import machine
+from local_coder.agent.loop import _LOOK_FIRST
 from local_coder.app_rpc import RpcServer
 from local_coder.app_service import AppRuntime, chat_request, discard_changes, keep_changes, snapshot
 from local_coder.engines.opencode_config import data_root
@@ -182,12 +183,14 @@ def test_the_model_hears_nothing_about_a_change_that_is_already_in(calc, monkeyp
     _fix(calc)
     _extra(calc)
     chat_request(calc, "What does add(2, 3) return?")
-    assert "not in the folder yet" in sent[-1][-1]["content"], "while the stack waits, the note is there"
+    asked = [messages for messages in sent if messages[-1]["content"] != _LOOK_FIRST]  # not the look-first round
+    assert "not in the folder yet" in asked[-1][-1]["content"], "while the stack waits, the note is there"
     keep_changes("req-2", calc)
     chat_request(calc, "What does add(2, 3) return?")
-    told = "\n".join(str(message.get("content") or "") for message in sent[-1])
+    asked = [messages for messages in sent if messages[-1]["content"] != _LOOK_FIRST]
+    told = "\n".join(str(message.get("content") or "") for message in asked[-1])
     assert "not in the folder yet" not in told and "Nicoder's own record" not in told
-    assert sent[-1][-1]["content"] == "What does add(2, 3) return?", "the question goes as it is"
+    assert asked[-1][-1]["content"] == "What does add(2, 3) return?", "the question goes as it is"
 
 
 def test_a_closed_older_request_cannot_be_kept_or_discarded_again(calc):

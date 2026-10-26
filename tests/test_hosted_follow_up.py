@@ -761,7 +761,7 @@ def test_a_stopped_failed_or_idle_follow_up_has_no_result_of_its_own_and_loses_n
     elif how == "failed":
         script = Script(RuntimeError("the provider dropped the stream"))
     else:
-        script = Script(reply("Nothing needed changing."))
+        script = Script(reply("Nothing needed changing."), reply("Nothing needed changing."))  # look_first asks once
     run(project, "req-2", "Now also add an extra module.", script, cancel_event=cancel)
     review = snapshot("req-2", repo=project)
     assert review["facts"]["files"] == [] and review["can_keep"] is False and review["can_discard"] is False

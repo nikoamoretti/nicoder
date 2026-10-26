@@ -179,3 +179,67 @@ def test_hurry_note_is_sent_once_halfway(home):
     hurry = [row for row in session.messages if row["role"] == "user" and "budget" in row["content"]]
     assert len(hurry) == 1
     assert len(session.calls_log) == 4 and all("seconds" in row for row in session.calls_log)
+
+
+def test_an_answer_with_nothing_checked_is_sent_back_once_to_look_first():
+    # Nico's France chat (2026-10-26): "Let me check what's on disk" and "nothing is there yet" with nothing read.
+    from local_coder.agent.loop import _LOOK_FIRST, AgentSession
+    from local_coder.agent.tools import AccessPolicy, ToolBox
+
+    seen: list[list[dict]] = []
+    answers = iter(["Let me check what's actually on disk right now.", "Your folder has src/ and package.json."])
+
+    def chat(messages, tools):
+        seen.append(list(messages))
+        return {"choices": [{"message": {"role": "assistant", "content": next(answers)}}]}
+
+    import tempfile
+    from pathlib import Path
+
+    home = Path(tempfile.mkdtemp())
+    box = ToolBox(AccessPolicy(home=home, project=home), cwd=home, run_tmp=home / "tmp")
+    session = AgentSession(chat=chat, toolbox=box, system="s")
+    run = session.ask("did you check", look_first=True)
+    assert run.answer == "Your folder has src/ and package.json."
+    assert seen[1][-1] == {"role": "user", "content": _LOOK_FIRST}
+    plain = AgentSession(chat=lambda m, t: {"choices": [{"message": {"role": "assistant", "content": "Paris."}}]},
+                         toolbox=ToolBox(AccessPolicy(home=home, project=None), cwd=home, run_tmp=home / "tmp"),
+                         system="s")
+    assert plain.ask("capital of France?").answer == "Paris."  # no project: answered at once
+
+
+def test_a_plain_answer_stands_when_asked_to_check_it_still_checks_nothing():
+    import tempfile
+    from pathlib import Path
+
+    from local_coder.agent.loop import AgentSession
+    from local_coder.agent.tools import AccessPolicy, ToolBox
+
+    home = Path(tempfile.mkdtemp())
+    answers = iter(["It is a Vite app with one page.", "Understood, I'll check."])
+    calls: list[int] = []
+
+    def chat(messages, tools):
+        calls.append(1)
+        return {"choices": [{"message": {"role": "assistant", "content": next(answers)}}]}
+
+    box = ToolBox(AccessPolicy(home=home, project=home), cwd=home, run_tmp=home / "tmp")
+    assert AgentSession(chat=chat, toolbox=box, system="s").ask("what is this?", look_first=True).answer == (
+        "It is a Vite app with one page."
+    )
+    calls.clear()
+    def welcome(messages, tools):
+        calls.append(1)
+        return {"choices": [{"message": {"content": "You're welcome."}}]}
+
+    thanks = AgentSession(chat=welcome, toolbox=box, system="s")
+    assert thanks.ask("thanks", look_first=True).answer == "You're welcome." and len(calls) == 1
+
+
+@pytest.mark.parametrize("promise", [
+    "Sure, let me look.", "Let's check the folder.", "I’ll check now.", "Now let me see.",
+])
+def test_a_promise_never_stands_as_the_answer(promise):
+    from local_coder.agent.loop import _PROMISE
+
+    assert _PROMISE.match(promise)

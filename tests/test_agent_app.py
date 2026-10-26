@@ -217,7 +217,9 @@ def test_change_request_outside_web_apps_skips_local_checks(monkeypatch, home):
 
 def test_question_in_a_change_request_answers_without_changes(monkeypatch, home):
     folder = home / "projects" / "prototypes"
-    script = Script(_reply("It is a Next.js host for prototypes; nothing needed changing."))
+    # The answer comes twice: an answer with no tool used is sent back once to check first (look_first).
+    script = Script(_reply("It is a Next.js host for prototypes; nothing needed changing."),
+                    _reply("It is a Next.js host for prototypes; nothing needed changing."))
     review = run_general_request(folder, "Fix whatever is wrong if anything", agent_chat=script,
                                  start_preview_after=False)
     assert review["facts"]["files"] == []

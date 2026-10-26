@@ -27,7 +27,9 @@
    only inside the macOS sandbox (`agent/sandbox.py`: writes limited to the
    working copy and temp folders, secrets unreadable, Keychain and the `key`
    tool blocked, scrubbed environment, signals only to the command's own
-   processes, never to the user's apps). Questions are read-only and may
+   processes, never to the user's apps; no launching apps or URLs (`open`,
+   `lsopen`), AppleScript or Apple Events, Shortcuts, Automator, `launchctl`,
+   preference writes or clipboard reads). Questions are read-only and may
    `open_project` the repo they found. Do not loosen these rules, add an
    unsandboxed shell, or route the agent through a foreign agent CLI.
 2. **Software owns truth.** Only the controller mutates `EpisodeState`. The model

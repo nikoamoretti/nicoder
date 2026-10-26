@@ -574,7 +574,8 @@ def show_app(path: str | Path, text: str) -> dict[str, Any]:
         url = str(preview.get("url") or "").strip()
         if preview.get("ok") and url:
             waiting = " This is the version that waits for Keep." if preview.get("source") == SOURCE_WAITING else ""
-            reply = f"It's running in the panel on the right.{waiting}"
+            reply = (f"It's running in the panel on the right, and at {url} in your browser while Nicoder is "
+                     f"open.{waiting}")
         else:
             reply = f"The app did not start: {str(preview.get('detail') or 'the preview failed').rstrip('.')}."
     remember_project(repo)

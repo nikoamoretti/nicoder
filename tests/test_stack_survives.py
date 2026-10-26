@@ -473,7 +473,9 @@ def test_a_discard_goes_through_when_the_result_the_request_was_built_on_is_gone
 
 def test_discarding_a_request_with_no_files_of_its_own_leaves_the_result_in_the_copy(project):
     """SS8: an earlier request only answered. Its Discard must not wipe the waiting fix from the working copy."""
-    run(project, "req-0", "Make it nicer.", Script(reply("Which part do you mean: the code or the tests?")))
+    run(project, "req-0", "Make it nicer.", Script(
+            *[reply("Which part do you mean: the code or the tests?")] * 2,
+        ))
     answered = snapshot("req-0", repo=project)
     assert answered["facts"]["files"] == [] and answered["can_keep"] is False
     fix(project)
@@ -735,7 +737,9 @@ def test_a_follow_up_that_only_answers_or_rewrites_the_same_text_lists_nothing(p
     """ID3: a question back, or `write` of a file with the very text it already has."""
     fix(project)
     if how == "answered":
-        script = Script(reply("Which part do you mean: the code or the tests?"))
+        script = Script(
+            *[reply("Which part do you mean: the code or the tests?")] * 2,
+        )
     else:
         current = (working_copy(project) / "src" / "calc.py").read_text(encoding="utf-8")
         script = Script(reply(calls=[call("write", {"path": "src/calc.py", "content": current}, "w")]),

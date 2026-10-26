@@ -125,7 +125,8 @@ def run_ask(
         cancel=cancel,
         on_step=on_step,
     )
-    run = session.ask(question, max_steps=max_steps, deadline=time.monotonic() + seconds, hurry_after=0.5)
+    run = session.ask(question, max_steps=max_steps, deadline=time.monotonic() + seconds, hurry_after=0.5,
+                      look_first=project is not None)
     opened = toolbox.opened  # only an explicit open_project: reading a repo to answer never switches to it
     transcript = session.save(
         run_root / "transcript.json", mode="ask", status=run.status, steps=run.steps,

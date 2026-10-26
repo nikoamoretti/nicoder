@@ -28,6 +28,21 @@ _WRAP_UP = (
     "in a few plain sentences."
 )
 _NUDGE = "Please answer the user now, in plain words."
+# An answer with no tool used at all, when the answer depends on the files: "Let me check what's on disk" or "nothing
+# is there yet" with nothing read (Nico's France chat, 2026-10-26). Sent once; a second plain answer stands.
+_LOOK_FIRST = (
+    "You have not used any tool yet. If the answer depends on the project's files or on what you did, check "
+    "with your tools first (list, read, run), then answer. Don't guess, don't promise to check, and never "
+    "claim something you did not do."
+)
+_THANKS = re.compile(r"^(?:thanks|thank you|thx|ok|okay|cool|great|nice|perfect|got it|good)[\s!.]*$", re.I)
+# A first answer that only promises to look ("Let me check what's on disk") never stands.
+_PROMISE = re.compile(
+    r"^(?:(?:sure|ok|okay|alright|now|great|right)[\s,!.]+)*"
+    r"(?:let me|let's|let us|i['’]?ll|i will|i['’]m going to|i am going to|one moment|checking|"
+    r"give me a (?:sec|second|moment))\b",
+    re.I,
+)
 _HURRY = (
     "You have used much of this request's budget. Answer the user now with what you know; look further only "
     "if something essential is missing."
@@ -169,17 +184,21 @@ class AgentSession:
         max_steps: int = 40,
         deadline: float | None = None,
         hurry_after: float | None = None,
+        look_first: bool = False,
     ) -> AgentRun:
         """Send one user message and run tools until the model answers or a limit is hit.
 
         With `hurry_after` (a fraction such as 0.5), the model is asked once to wrap up
-        when that share of the steps or of the time is used.
+        when that share of the steps or of the time is used. With `look_first`, an answer given without any
+        tool call is sent back once with a request to check first.
         """
         self.messages.append({"role": "user", "content": text})
         started = time.monotonic()
         limit = deadline if deadline is not None else started + 900
         steps = calls = 0
-        nudged = hurried = False
+        nudged = hurried = looked = False
+        look_first = look_first and not _THANKS.match(text.strip())
+        first_answer = ""
         while True:
             if self._cancelled():
                 return AgentRun("Stopped.", "stopped", steps, calls)
@@ -212,6 +231,16 @@ class AgentSession:
                 entry["tool_calls"] = tool_calls
             self.messages.append(entry)
             if not tool_calls:
+                if not content and looked and calls == 0 and first_answer and not _PROMISE.match(first_answer):
+                    return AgentRun(plain_answer(first_answer), "answered", steps, calls)  # nothing new: it stands
+                if content and look_first and calls == 0 and not looked:
+                    looked = True
+                    first_answer = content
+                    self.messages.append({"role": "user", "content": _LOOK_FIRST})
+                    continue
+                if content and looked and calls == 0 and not _PROMISE.match(first_answer):
+                    # Asked to check, it still used no tool: nothing needed checking, so its first answer stands.
+                    return AgentRun(plain_answer(first_answer), "answered", steps, calls)
                 if content:
                     return AgentRun(plain_answer(content), "answered", steps, calls)
                 if nudged:

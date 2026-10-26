@@ -681,7 +681,7 @@ final class AppModel: ObservableObject {
             appendLocalTurn(role: "user", text: text)
         }
         if kind == "show" {
-            await show(text, in: place)
+            await show(text, in: place, inBrowser: verdict["browser"] as? Bool == true)
         } else if question {
             await ask(text, in: place, explain: kind == "explain")
         } else {
@@ -691,7 +691,7 @@ final class AppModel: ObservableObject {
 
     /// "just show me", "its not running": run the project in Nicoder's own preview and open it beside the chat.
     /// No model is asked: a model could only claim it had started the app.
-    private func show(_ text: String, in place: Place) async {
+    private func show(_ text: String, in place: Place, inBrowser: Bool = false) async {
         guard let path = place.path else {
             finishQuestion(cost: nil)
             tell("Open a project first: a chat without one has no app to show.", in: place)
@@ -702,6 +702,11 @@ final class AppModel: ObservableObject {
             let result = try await engine.call("show_app", ["path": path, "text": text], timeoutSeconds: 180)
             finishQuestion(cost: nil)
             present(result, in: place)
+            // "open it in my browser": Nicoder opens it there itself (the agent's sandbox cannot, by design).
+            if inBrowser, let preview = result["preview"] as? [String: Any], preview["ok"] as? Bool != false,
+               let address = preview["url"] as? String, let url = URL(string: address) {
+                NSWorkspace.shared.open(url)
+            }
         } catch {
             finishQuestion(cost: nil)
             tell(error.localizedDescription, in: place)
