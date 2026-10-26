@@ -76,5 +76,5 @@ def test_do_this_is_work_and_do_you_is_a_question():
 def test_do_it_is_work_and_show_me_what_it_built_starts_the_preview():
     assert classify_request("do it")["kind"] == "code"
     assert classify_request("ok do it now")["kind"] == "code" or classify_request("do it now")["kind"] == "code"
-    assert classify_request("show me what it built")["kind"] == "chat"
-    assert classify_request("can you run it")["kind"] == "chat"
+    assert classify_request("show me what it built")["kind"] == "show"  # Nicoder runs its preview, no model
+    assert classify_request("can you run it")["kind"] == "show"

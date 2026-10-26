@@ -38,6 +38,7 @@ from .app_service import (
     explain_request,
     inspect_project,
     keep_changes,
+    keep_waiting,
     list_free_chat_rows,
     list_history,
     load_free_chat_payload,
@@ -54,6 +55,7 @@ from .app_service import (
     save_prefs,
     select_model,
     set_reasoning,
+    show_app,
     snapshot,
     start_chat,
     stop_owned_server,
@@ -160,7 +162,12 @@ class RpcServer:
                 from local_coder.general.inspect import classify_without_project
 
                 return classify_without_project(str(params.get("text", "")), known_projects())
-            return classify_request(params.get("text", ""), inspect_project(params["path"]))
+            return classify_request(params.get("text", ""), inspect_project(params["path"]),
+                                    last_reply=str(params.get("last_reply") or "") or None)
+        if method == "show_app":
+            return show_app(params["path"], str(params.get("text") or ""))
+        if method == "keep_waiting":
+            return keep_waiting(params["path"], str(params.get("text") or ""))
         if method == "explain_request":
             return explain_request(params["path"], params["text"])
         if method == "chat_request":
@@ -296,7 +303,8 @@ class RpcServer:
             if not isinstance(message, dict):
                 self._write(_err(None, "bad_request", "request must be an object"))
                 continue
-            if message.get("method") == "chat_request":
+            if message.get("method") in ("chat_request", "show_app"):
+                # Off the read loop: a question takes minutes, and starting a preview can take tens of seconds.
                 self.start_chat_thread(message)
                 continue
             if message.get("method") == "orca_sign_in":

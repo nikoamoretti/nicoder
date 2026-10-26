@@ -198,6 +198,8 @@ final class AppModel: ObservableObject {
     /// The chat shown when no project is open; saved by the engine once it has a turn.
     @Published private(set) var chatID = AppModel.newChatID()
     @Published var chats: [SavedChat] = []
+    /// Counts "show me" answers that started the preview, so the panel turns to it even when its address is the same.
+    @Published private(set) var previewAsked = 0
     @Published var snapshot: [String: Any]?
     @Published var readiness: [String: Any]?
     @Published var profile = "d2"
@@ -639,7 +641,12 @@ final class AppModel: ObservableObject {
         let verdict: [String: Any]
         do {
             if let path = place.path {
-                verdict = try await engine.call("classify_request", ["path": path, "text": text])
+                var params: [String: Any] = ["path": path, "text": text]
+                // "just do it" right after a reply that said to keep the result keeps it.
+                if self.place == place, let last = chatTurns.last, last.role == "assistant" {
+                    params["last_reply"] = last.text
+                }
+                verdict = try await engine.call("classify_request", params)
             } else {
                 // No project: a question stays a chat; work runs in the project it names, or in a new one.
                 verdict = try await engine.call("classify_request", ["text": text])
@@ -653,7 +660,12 @@ final class AppModel: ObservableObject {
             tell(verdict["summary"] as? String ?? "That request is not supported.", in: place, after: text)
             return
         }
-        let question = kind == "chat" || kind == "explain"
+        if kind == "keep" {
+            await keepFromChat(text, in: place, thenShow: verdict["show"] as? Bool == true)
+            return
+        }
+        // "show" runs Nicoder's own preview with no model; it waits its turn like a question.
+        let question = kind == "chat" || kind == "explain" || kind == "show"
         if question ? questionJob != nil : changeJob != nil {
             waiting.append(Waiting(place: place, text: text, change: !question))
             return
@@ -668,11 +680,83 @@ final class AppModel: ObservableObject {
         if self.place == place {
             appendLocalTurn(role: "user", text: text)
         }
-        if question {
+        if kind == "show" {
+            await show(text, in: place)
+        } else if question {
             await ask(text, in: place, explain: kind == "explain")
         } else {
             await change(text, in: place, project: verdict["project"] as? String)
         }
+    }
+
+    /// "just show me", "its not running": run the project in Nicoder's own preview and open it beside the chat.
+    /// No model is asked: a model could only claim it had started the app.
+    private func show(_ text: String, in place: Place) async {
+        guard let path = place.path else {
+            finishQuestion(cost: nil)
+            tell("Open a project first: a chat without one has no app to show.", in: place)
+            startWaiting()
+            return
+        }
+        do {
+            let result = try await engine.call("show_app", ["path": path, "text": text], timeoutSeconds: 180)
+            finishQuestion(cost: nil)
+            present(result, in: place)
+        } catch {
+            finishQuestion(cost: nil)
+            tell(error.localizedDescription, in: place)
+        }
+        startWaiting()
+    }
+
+    /// A reply from Nicoder itself (show, keep): its turns, and the app in the panel when it started.
+    private func present(_ result: [String: Any], in place: Place) {
+        guard self.place == place else {
+            unseen.insert(place)
+            return
+        }
+        applyChatTurns(result["turns"])
+        if let preview = result["preview"] as? [String: Any],
+           let url = preview["url"] as? String, !url.isEmpty, preview["ok"] as? Bool != false {
+            previewURL = url
+            previewAsked += 1  // the same address again still brings the Preview tab forward
+            inspectorShown = true
+        }
+    }
+
+    /// "keep it": keep the result that waits, exactly as the Keep button does. "just do it" after a reply that said
+    /// to keep it also shows the app.
+    private func keepFromChat(_ text: String, in place: Place, thenShow: Bool) async {
+        guard let path = place.path else {
+            tell("Nothing is waiting to be kept in a chat without a project.", in: place, after: text)
+            return
+        }
+        if decisionWaitsFor != nil {
+            // Keep waits while a change runs (one preview server); it happens by itself when that change ends.
+            waiting.append(Waiting(place: place, text: text, change: true))
+            return
+        }
+        do {
+            let result = try await engine.call("keep_waiting", ["path": path, "text": text])
+            let kept = result["episode_id"] as? String
+            if let kept {
+                followUps.insert(path)
+                if self.place == place {
+                    snapshot = try? await engine.call("snapshot", ["episode_id": kept, "path": path])
+                    previewURL = nil
+                }
+            }
+            present(result, in: place)
+            try? await refreshSidebars()
+            if kept != nil, thenShow, questionJob == nil {
+                // The app from the folder it now lives in; only Nicoder's reply is added to the chat.
+                let shown = try await engine.call("show_app", ["path": path, "text": ""], timeoutSeconds: 180)
+                present(shown, in: place)
+            }
+        } catch {
+            tell(error.localizedDescription, in: place)
+        }
+        startWaiting()  // a Keep that waited behind a change may hold others back
     }
 
     /// A reply that needs no model: shown when the window shows `place`, kept for when it is opened otherwise.
@@ -725,6 +809,7 @@ final class AppModel: ObservableObject {
                 if let preview = result["preview"] as? [String: Any],
                    let url = preview["url"] as? String, !url.isEmpty {
                     previewURL = url
+                    inspectorShown = true
                 }
             } else {
                 unseen.insert(place)

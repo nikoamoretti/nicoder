@@ -54,8 +54,16 @@ struct ChangesInspector: View {
                 }
             }
         }
+        // The running app first: a new preview opens on its tab (Nico, 2026-10-26: "did it run or not?" while the
+        // panel showed the file list and the app waited one click away).
         .onChange(of: model.previewURL) { _, url in
-            if url == nil { tab = .changes }
+            tab = url == nil ? .changes : .preview
+        }
+        .onChange(of: model.previewAsked) { _, _ in
+            if model.previewURL != nil { tab = .preview }
+        }
+        .onAppear {
+            if model.previewURL != nil { tab = .preview }
         }
         .onChange(of: model.diffText) { _, _ in
             selectedFile = nil

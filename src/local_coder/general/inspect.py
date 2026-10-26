@@ -53,6 +53,55 @@ _SEE_UI = (
     "launch it",
     "preview it",
 )
+# Short commands Nicoder answers itself, with no model (Nico's chat, 2026-10-26: "just show me", "its not running",
+# "it worked and it stopped" each became a build run that only claimed to start a server or to keep the change).
+_LEAD = r"^(?:(?:just|please|pls|ok|okay|now|so|then|can you|could you)[\s,]+)*"
+_SHOW_ONLY = re.compile(
+    _LEAD
+    + r"(?:(?:show|open|run|start|launch|preview|relaunch|restart)"
+    r"(?:\s+(?:me|it|this|that|up|the\s+app|the\s+preview|my\s+app|what\s+(?:you|it)\s+(?:built|made)))*"
+    r"|(?:can|could|may)\s+i\s+see\s+it|let\s+me\s+see(?:\s+it)?|i\s+want\s+to\s+see\s+it"
+    r"|(?:it'?s|it\s+is|its)\s+not\s+(?:running|loading|showing|open|up)"
+    r"|(?:the\s+)?(?:app|page|preview)\s+(?:is\s+)?(?:not\s+running|not\s+loading|down|gone)"
+    r"|it\s+(?:worked\s+and\s+(?:then\s+)?(?:it\s+)?)?stopped(?:\s+running)?)"
+    r"[\s.!?]*$",
+    re.I,
+)
+_KEEP_ONLY = re.compile(
+    r"^(?:(?:just|please|pls|ok|okay|yes|yeah|yep|sure|now|so|then)[\s,]+)*"
+    r"keep(?:\s+(?:it|them|this|that|these|everything|all|the\s+changes?|the\s+files|the\s+result))*"
+    r"(?:\s+(?:in|to|into)\s+(?:my|the)\s+(?:folder|project))?"
+    r"[\s.!?]*$",
+    re.I,
+)
+# "just do it for me" right after a reply that said to keep the result means: keep it (and show it).
+_YES_DO_IT = re.compile(
+    r"^(?:(?:ok|okay|yes|yeah|yep|sure|please|pls|then|alright)[\s,!.]*)*"
+    r"(?:(?:just\s+)?do\s+it(?:\s+for\s+me)?|go\s+ahead|yes(?:\s+please)?|please\s+do)"
+    r"[\s.!?]*$",
+    re.I,
+)
+
+
+# Only an instruction to keep counts ("press Keep", "say \"keep it\""), never "keep" in passing
+# ("I'd keep the colours").
+_KEEP_CUE = re.compile(
+    r"\b(?:press|click|hit|tap)\W{0,3}keep\b|\bsay\W{0,3}keep\s+it\b|\bkeep\s+puts\b", re.I,
+)
+
+
+def may_keep(text: str) -> bool:
+    """Whether the words could ask for Keep; only then is the waiting result looked up (it reads every record)."""
+    request = text.strip()
+    return bool(_KEEP_ONLY.match(request) or _YES_DO_IT.match(request))
+
+
+def _suggested_keep(last_reply: str | None) -> bool:
+    """Whether the last paragraph of Nicoder's previous reply told the user to keep the result."""
+    paragraphs = [part for part in (last_reply or "").strip().split("\n\n") if part.strip()]
+    return bool(paragraphs) and _KEEP_CUE.search(paragraphs[-1]) is not None
+
+
 _CHANGE = re.compile(
     r"^(?:please\s+|can you\s+|could you\s+|would you\s+|"
     r"i want (?:you )?to\s+|i need (?:you )?to\s+)?"
@@ -278,11 +327,15 @@ def asked_to_see_ui(text: str) -> bool:
     return any(hint in lowered for hint in _SEE_UI)
 
 
-def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Classify one user message as empty, talk, look, or act.
+def classify_request(
+    text: str, inspection: dict[str, Any] | None = None, *, last_reply: str | None = None, waiting: bool = False,
+) -> dict[str, Any]:
+    """Classify one user message as empty, talk, look, or act, or as a command Nicoder carries out itself.
 
-    Returned kind strings stay chat / explain / code so the Mac app and RPC
-    keep working. talk=chat, look=explain, act=code.
+    Returned kind strings stay chat / explain / code so the Mac app and RPC keep working (talk=chat, look=explain,
+    act=code). "show" starts Nicoder's own preview and "keep" keeps the waiting result, with no model: a model asked
+    for either could only claim it. "keep" needs `waiting` (a result waits for Keep); otherwise the words go on as
+    any other message. `last_reply` is Nicoder's previous answer, for "just do it" after "press Keep".
     """
     request = text.strip()
     if not request:
@@ -291,6 +344,14 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
     if inspection and inspection.get("supported") is False:
         return {"kind": "unsupported", "summary": inspection.get("summary") or "That folder is not available.",
                 "detail": inspection.get("verdict")}
+    if waiting and _KEEP_ONLY.match(request):
+        return {"kind": "keep", "summary": "Nicoder keeps the waiting result.", "detail": "No model is asked."}
+    if waiting and _YES_DO_IT.match(request) and _suggested_keep(last_reply):
+        return {"kind": "keep", "show": True, "summary": "Nicoder keeps the waiting result and shows the app.",
+                "detail": "No model is asked."}
+    if _SHOW_ONLY.match(request):
+        return {"kind": "show", "summary": "Nicoder shows the app in its Preview panel.",
+                "detail": "No model is asked."}
     if asked_to_see_ui(request):
         return {"kind": "chat", "summary": "This will answer in chat without editing files.",
                 "detail": "No files will be edited."}

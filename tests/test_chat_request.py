@@ -49,9 +49,9 @@ def _install_fake_llm(monkeypatch, reply: str = "Okay."):
 
 
 def test_classify_talk_look_act_rules():
-    assert classify_request("open the app")["kind"] == "chat"
+    assert classify_request("open the app")["kind"] == "show"  # Nicoder runs its preview, no model
     assert classify_request("are you able to open the app for me?")["kind"] == "chat"
-    assert classify_request("start the preview")["kind"] == "chat"
+    assert classify_request("start the preview")["kind"] == "show"
     assert classify_request("can you tell me how to run the app?")["kind"] == "chat"
     assert classify_request("Can you make this a standalone mac app?")["kind"] == "code"
     assert classify_request("can you make the app the mac app that is easily openable")["kind"] == "code"

@@ -412,7 +412,9 @@ def classify_legacy_request(text: str, inspection: dict[str, Any] | None = None)
             "detail": "You will review any proposed change before it is kept."}
 
 
-def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dict[str, Any]:
+def classify_request(
+    text: str, inspection: dict[str, Any] | None = None, *, last_reply: str | None = None,
+) -> dict[str, Any]:
     """Default product classifier: new apps and web work are allowed.
 
     With an agent-capable model, "look" requests become questions: the agent
@@ -420,8 +422,17 @@ def classify_request(text: str, inspection: dict[str, Any] | None = None) -> dic
     """
     from local_coder.agent.runner import agent_capable
     from local_coder.general.inspect import classify_request as general_classify
+    from local_coder.general.inspect import may_keep
+    from local_coder.general.waiting import find_waiting_result
 
-    result = general_classify(text, inspection)
+    folder = (inspection or {}).get("path")
+    waiting = False
+    if folder and may_keep(text):
+        try:
+            waiting = find_waiting_result(str(folder)) is not None
+        except Exception:  # noqa: BLE001 — a damaged record must never block a message; it is just not a Keep
+            waiting = False
+    result = general_classify(text, inspection, last_reply=last_reply, waiting=waiting)
     if result.get("kind") == "explain" and agent_capable(load_machine_config()):
         summary = "This will look through the code and answer without editing files."
         return {**result, "kind": "chat", "summary": summary}
@@ -539,6 +550,71 @@ def chat_request(
         result["turns"] = append_free_turn(chat_id, "assistant", reply)["turns"]
         result["chat_id"] = chat_id
     return result
+
+
+def show_app(path: str | Path, text: str) -> dict[str, Any]:
+    """Run the project in Nicoder's own preview ("just show me"), with no model, and say so in its chat.
+
+    The preview is the result that waits for Keep, else a copy of the folder (`preview_project`). It is not
+    started while a change is being made in another project: that change may be checking its own preview.
+    """
+    from local_coder.general.chat_log import append_turn
+    from local_coder.general.coordinator import change_running_elsewhere
+    from local_coder.general.preview_copy import SOURCE_WAITING, preview_project
+
+    repo = Path(path).expanduser().resolve()
+    if not repo.is_dir():
+        raise AppError("That folder does not exist.")
+    preview: dict[str, Any] | None = None
+    if change_running_elsewhere(repo):
+        reply = ("The app is not shown yet: a change is being made in another project and it uses the preview. "
+                 "Ask again when that change has finished.")
+    else:
+        preview = preview_project(repo)
+        url = str(preview.get("url") or "").strip()
+        if preview.get("ok") and url:
+            waiting = " This is the version that waits for Keep." if preview.get("source") == SOURCE_WAITING else ""
+            reply = f"It's running in the panel on the right.{waiting}"
+        else:
+            reply = f"The app did not start: {str(preview.get('detail') or 'the preview failed').rstrip('.')}."
+    remember_project(repo)
+    append_turn(repo, "user", text)  # nothing when empty: a show that follows "keep it" adds only its reply
+    turns = append_turn(repo, "assistant", reply)["turns"]
+    return {"kind": "show", "summary": reply, "preview": preview, "turns": turns}
+
+
+def keep_waiting(path: str | Path, text: str) -> dict[str, Any]:
+    """Keep the result that waits for Keep ("keep it"), exactly as the Keep button does, and say so in its chat."""
+    from local_coder.general.chat_log import append_turn
+    from local_coder.general.coordinator import GeneralError, _request_in_flight, project_id_for
+    from local_coder.general.waiting import find_waiting_result
+
+    repo = Path(path).expanduser().resolve()
+    if not repo.is_dir():
+        raise AppError("That folder does not exist.")
+    kept: str | None = None
+    busy = _request_in_flight(project_id_for(repo))
+    waiting = None if busy else find_waiting_result(repo)
+    if busy:
+        reply = "Keep waits until the change being made here has finished."
+    elif waiting is None:
+        reply = "Nothing is waiting to be kept: your project already has every change."
+    else:
+        try:
+            keep_changes(waiting.request_id, repo)
+        except (AppError, GeneralError) as exc:
+            reply = exc.detail
+        else:
+            kept = waiting.request_id
+            count = len(waiting.files)
+            title = " ".join(waiting.title.split())
+            title = title if len(title) <= 70 else title[:69].rstrip() + "…"
+            reply = (f"Kept “{title}” ({count} {'file' if count == 1 else 'files'}): "
+                     "the changes are in your project now.")
+    remember_project(repo)
+    append_turn(repo, "user", text)
+    turns = append_turn(repo, "assistant", reply)["turns"]
+    return {"kind": "keep", "summary": reply, "episode_id": kept, "turns": turns}
 
 
 def _free_history(chat_id: str) -> list[dict[str, str]] | None:
