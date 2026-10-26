@@ -318,7 +318,7 @@ def test_broken_preview_is_honest_not_finished_ui(tmp_path, monkeypatch):
     assert result["preview"].get("ok") is False
     assert "url" not in result["preview"]
     text = f"{result['summary']} {result.get('model_commentary') or ''}".lower()
-    assert "does not run" in text or "preview" in text and "fail" in text
+    assert "does not show it" in text
     assert "polished" not in text
     assert "three-column" not in text
     assert "kanban" not in text
