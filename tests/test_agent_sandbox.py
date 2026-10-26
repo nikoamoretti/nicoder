@@ -88,3 +88,17 @@ def test_long_output_is_cut_in_the_middle(layout):
     assert result.truncated
     assert result.output.rstrip().endswith("TAIL")
     assert "characters cut" in result.output
+
+
+def test_a_command_can_stop_its_own_processes_but_not_others(layout):
+    import subprocess
+
+    outside = subprocess.Popen(["sleep", "30"])
+    try:
+        result = _run(layout, f"sleep 30 & kid=$!; kill $kid; echo own=$?; kill {outside.pid}; echo outside=$?")
+        assert "own=0" in result.output
+        assert "outside=1" in result.output
+        assert outside.poll() is None  # still running
+    finally:
+        outside.kill()
+        outside.wait()

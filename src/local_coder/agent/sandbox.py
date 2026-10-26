@@ -124,6 +124,10 @@ def build_profile(*, home: Path, writable: list[Path], blocked_programs: list[Pa
         rules.append(f"(deny process-exec (literal {_quote(program)}))")
     for service in KEYCHAIN_SERVICES:
         rules.append(f'(deny mach-lookup (global-name "{service}"))')
+    # Signals reach only this command's own processes: a build can stop what it started, never the user's apps or
+    # Nicoder's preview (2026-10-26: a change run's `kill` reached a process outside its sandbox).
+    rules.append("(deny signal)")
+    rules.append("(allow signal (target same-sandbox))")
     return "\n".join(rules) + "\n"
 
 
