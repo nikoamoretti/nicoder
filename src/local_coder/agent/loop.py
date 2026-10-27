@@ -47,6 +47,20 @@ _HURRY = (
     "You have used much of this request's budget. Answer the user now with what you know; look further only "
     "if something essential is missing."
 )
+# A change run that goes this many steps without changing a file, after it changed one, is asked once per stretch to
+# step back (2026-10-27 benchmark: two runs edited early, then spent 30 steps on throwaway debug scripts and hit the
+# step limit; mini-SWE-agent, same model, solved both).
+_STUCK_STEPS = 10
+# Replays of the two stuck runs from their stuck point: with this note dominoes passed 3 of 4 times, without it 0 of
+# 2 ("Keep going."); pov failed either way. Naming the bug in one sentence is the reasoning step.
+_STUCK = (
+    "You have taken {steps} steps without changing a file. If the checks still fail, stop writing throwaway debug "
+    "scripts: re-read the failing test and your code, say in one sentence what is wrong, then change the file "
+    "(rewrite it more simply if this approach keeps failing). If the work is done, answer the user."
+)
+# A reply with no tool call that announces a step ("Rewriting more simply:"), or that follows the note above, is sent
+# back once: it is not an answer (2026-10-27: a replay ended on "… Rewriting more simply:", the fix never written).
+_GO_ON = "Go ahead and do that now with your tools."
 _KEEP_RECENT = 6
 _RECENT_TOOL_CHARS = 4000
 _LIMIT_TEXT = {
@@ -220,9 +234,14 @@ class AgentSession:
         started = time.monotonic()
         limit = deadline if deadline is not None else started + 900
         steps = calls = 0
-        nudged = hurried = looked = False
+        nudged = hurried = looked = announced = noted = False
         look_first = look_first and not _THANKS.match(text.strip())
         first_answer = ""
+        # Progress in a change run: the step of the last change to the working copy (write, edit, or a command that
+        # changed a file), the copy's state then, and whether anything changed yet.
+        watch = self.toolbox.policy.can_write
+        state = self.toolbox.working_copy_state() if watch else None
+        edits, changed_at, changed = self.toolbox.edits, 0, False
         while True:
             if self._cancelled():
                 return AgentRun("Stopped.", "stopped", steps, calls)
@@ -236,6 +255,14 @@ class AgentSession:
             ):
                 hurried = True
                 self.messages.append({"role": "user", "content": _HURRY})
+            if watch and steps - changed_at >= _STUCK_STEPS:
+                current = self.toolbox.working_copy_state()
+                if current != state:
+                    changed = True  # a command changed files
+                elif changed:
+                    self.messages.append({"role": "user", "content": _STUCK.format(steps=steps - changed_at)})
+                    noted = True
+                state, changed_at = current, steps
             self._compact()
             call_started = time.monotonic()
             try:
@@ -247,6 +274,7 @@ class AgentSession:
                 return AgentRun(f"The model did not answer: {exc}", "error", steps, calls, error=str(exc))
             self._log_call(call_started, reply)
             steps += 1
+            after_note, noted = noted, False
             message = _message(reply)
             content = strip_think(str(message.get("content") or "")).strip()
             tool_calls = _tool_calls(message, offset=calls)
@@ -265,6 +293,10 @@ class AgentSession:
                 if content and looked and calls == 0 and not _PROMISE.match(first_answer):
                     # Asked to check, it still used no tool: nothing needed checking, so its first answer stands.
                     return AgentRun(plain_answer(first_answer), "answered", steps, calls)
+                if content and (content.endswith(":") or after_note) and not announced:
+                    announced = True
+                    self.messages.append({"role": "user", "content": _GO_ON})
+                    continue
                 if content:
                     return AgentRun(plain_answer(content), "answered", steps, calls)
                 if nudged:
@@ -286,6 +318,9 @@ class AgentSession:
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "name": name, "content": result_text},
                 )
+            if watch and self.toolbox.edits != edits:
+                edits, changed_at, changed = self.toolbox.edits, steps, True
+                state = self.toolbox.working_copy_state()
 
     def _log_call(self, started: float, reply: dict[str, Any] | None, *, error: str = "") -> None:
         """Per-call timing and token use for the transcript (shows a slow provider at a glance)."""

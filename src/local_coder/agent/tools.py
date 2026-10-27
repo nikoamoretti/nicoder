@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from local_coder.paths import EXCLUDE_DIRS
+
 from .access import AccessDenied, AccessPolicy, secret_name
 from .sandbox import available as sandbox_available
 from .sandbox import run_command
@@ -240,6 +242,7 @@ class ToolBox:
         self.read_paths: list[str] = []
         self.read_files: list[Path] = []
         self.changed_paths: list[str] = []
+        self.edits = 0  # write and edit calls that changed a file, repeats included
         self.commands: list[str] = []
         self.opened: Path | None = None
         self._walk_cut = False
@@ -386,9 +389,27 @@ class ToolBox:
             self.read_files.append(path)
 
     def _note_change(self, path: Path) -> None:
+        self.edits += 1
         shown = self._show(path)
         if shown not in self.changed_paths:
             self.changed_paths.append(shown)
+
+    def working_copy_state(self) -> int | None:
+        """A cheap fingerprint of the working copy's files (names, sizes, times): it changes when a command edits
+        one. None without a working copy."""
+        root = self.policy.workdir_real
+        if root is None:
+            return None
+        rows: list[tuple[str, str, int, int]] = []
+        for folder, dirs, files in os.walk(root):
+            dirs[:] = [name for name in dirs if name not in EXCLUDE_DIRS]
+            for name in files:
+                try:
+                    info = os.stat(os.path.join(folder, name))
+                except OSError:
+                    continue
+                rows.append((folder, name, info.st_size, info.st_mtime_ns))
+        return hash(tuple(sorted(rows)))
 
     def _walk(self, root: Path) -> Iterator[tuple[Path, bool]]:
         """Folders and files below root, skipping noise, hidden folders and private places."""

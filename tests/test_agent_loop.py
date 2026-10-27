@@ -243,3 +243,76 @@ def test_a_promise_never_stands_as_the_answer(promise):
     from local_coder.agent.loop import _PROMISE
 
     assert _PROMISE.match(promise)
+
+
+def _change_session(home: Path, script: Script) -> tuple[AgentSession, Path]:
+    work = home / ".local" / "share" / "lc" / "work"
+    work.mkdir(parents=True)
+    (work / "README.md").write_text("# Site\nA tiny site.\n", encoding="utf-8")
+    box = ToolBox(AccessPolicy(home=home, workdir=work, project=home / "projects" / "site"), cwd=work,
+                  run_tmp=home.parent / "tmp")
+    return AgentSession(chat=script, toolbox=box, system="system prompt"), work
+
+
+def _step_backs(sent: list[dict]) -> list[str]:
+    return [str(row["content"]) for row in sent if row["role"] == "user" and "without changing a file" in
+            str(row["content"])]
+
+
+def test_a_change_run_that_stops_changing_files_is_asked_to_step_back(home):
+    # 2026-10-27 benchmark: two runs edited early, then spent 30 steps on throwaway debug scripts.
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(10)]
+    write = _reply(calls=[_call("write", {"path": "app.py", "content": "x = 1\n"}, "w")])
+    fix = _reply("The loop runs from the wrong end.", [_call("write", {"path": "app.py", "content": "x = 2\n"}, "f")])
+    script = Script(write, *looks, fix, _reply("Done."))
+    session, _ = _change_session(home, script)
+    assert session.ask("go", max_steps=30).status == "answered"
+    assert script.sent[11][-1]["content"].startswith("You have taken 10 steps without changing a file.")
+    assert not _step_backs(script.sent[10])  # not before the tenth step
+    assert len(_step_backs(script.sent[-1])) == 1
+
+
+def test_a_reply_with_no_tool_right_after_the_note_is_sent_back_once(home):
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(10)]
+    script = Script(_reply(calls=[_call("write", {"path": "app.py", "content": "x = 1\n"}, "w")]), *looks,
+                    _reply("The loop runs from the wrong end."), _reply("Fixed the loop; the tests pass."))
+    session, _ = _change_session(home, script)
+    assert session.ask("go", max_steps=30).answer == "Fixed the loop; the tests pass."
+    assert script.sent[-1][-1] == {"role": "user", "content": "Go ahead and do that now with your tools."}
+
+
+def test_a_command_that_changes_a_file_counts_as_progress(home):
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(10)]
+    script = Script(_reply(calls=[_call("write", {"path": "app.py", "content": "x = 1\n"}, "w")]), *looks,
+                    _reply("Done."))
+    session, work = _change_session(home, script)
+    replay = script.__call__
+
+    def chat(messages, tools):
+        if len(script.sent) == 5:
+            (work / "app.py").write_text("x = 22\n", encoding="utf-8")  # as a bash command would
+        return replay(messages, tools)
+
+    session.chat = chat
+    session.ask("go", max_steps=30)
+    assert not _step_backs(script.sent[-1])
+
+
+def test_looking_around_before_the_first_change_is_not_stepping_back(home):
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(12)]
+    script = Script(*looks, _reply("The site has one README."))
+    session, _ = _change_session(home, script)
+    session.ask("go", max_steps=30)
+    assert not _step_backs(script.sent[-1])
+
+
+def test_a_step_announced_without_a_tool_is_sent_back_once(home):
+    # 2026-10-27 replay: "The bug: … Rewriting more simply:" and no tool call ended the run with the fix unwritten.
+    script = Script(_reply("The loop runs the wrong way. Rewriting more simply:"),
+                    _reply("Rewrote it; the tests pass."))
+    session = _session(home, script)
+    run = session.ask("go")
+    assert run.status == "answered" and run.answer == "Rewrote it; the tests pass." and run.steps == 2
+    assert script.sent[-1][-1] == {"role": "user", "content": "Go ahead and do that now with your tools."}
+    again = Script(_reply("Next:"), _reply("Still:"))
+    assert _session(home, again).ask("go").answer == "Still:"  # once only
