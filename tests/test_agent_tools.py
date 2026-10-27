@@ -231,6 +231,21 @@ def test_git_in_the_working_copy_does_not_find_a_repository_above_it(home, tmp_p
 
 
 @darwin_only
+def test_a_command_s_step_is_the_model_s_words_and_the_command_reads_as_the_project(home, tmp_path):
+    # Nico, 2026-10-27: the step line read "ran cd /Users/…/live/can…", the private working copy's path.
+    box, _, work = _build_box(home, tmp_path)
+    args = {"command": f"cd '{work}' && ls src", "description": "List the source files"}
+    running = box.starting("bash", args)
+    assert running == {"detail": "List the source files", "tool": "bash", "target": "List the source files",
+                       "command": "cd '~/projects/nicos-prototypes' && ls src"}
+    done = box.call("bash", args)
+    assert done.ok and "App.tsx" in done.text
+    assert (done.activity, done.target, done.command) == ("List the source files",) * 2 + (running["command"],)
+    assert box.call("bash", {"command": "ls src"}).target == "List the files in src"  # no description of its own
+    assert box.starting("read", {"path": "src/App.tsx"}) is None
+
+
+@darwin_only
 def test_bash_in_a_question_cannot_write_project_files(home):
     box = ToolBox(
         AccessPolicy(home=home, project=home / "projects" / "nicos-prototypes"),

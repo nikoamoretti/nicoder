@@ -90,12 +90,18 @@ struct RouterModel: Identifiable, Hashable {
 
 /// One step of the agent's work, as it streams in.
 struct TraceStep: Identifiable, Hashable {
-    let id = UUID()
+    var id = UUID()
     let tool: String
     let detail: String
     let target: String
     let ok: Bool
     let started: Date
+    /// A command step: the command itself, for the tooltip (the line shows the model's words for it).
+    var command = ""
+    /// The command is still running; the step it sends when it ends takes this one's place.
+    var running = false
+    /// Ties a running command to the step it sends when it ends.
+    var call = ""
 }
 
 /// The finished work behind one answer.
@@ -153,7 +159,15 @@ struct Job {
 
 extension Job {
     mutating func add(_ step: TraceStep) {
-        if let last = steps.last, last.detail == step.detail, last.tool == step.tool { return }
+        // A command sends a step when it starts and one when it ends: the end takes the start's place, under the
+        // same id so the live line updates in place instead of turning the wheel.
+        if !step.call.isEmpty, let last = steps.last, last.running, last.call == step.call {
+            var ended = step
+            ended.id = last.id
+            steps[steps.count - 1] = ended
+            return
+        }
+        if step.call.isEmpty, let last = steps.last, last.detail == step.detail, last.tool == step.tool { return }
         steps.append(step)
         if steps.count > 400 { steps.removeFirst(steps.count - 400) }
     }
@@ -1386,7 +1400,10 @@ final class AppModel: ObservableObject {
                     detail: phrase,
                     target: data["target"] as? String ?? "",
                     ok: data["ok"] as? Bool ?? true,
-                    fromChat: fromChat
+                    fromChat: fromChat,
+                    command: data["command"] as? String ?? "",
+                    running: data["running"] as? Bool ?? false,
+                    call: data["call"] as? String ?? ""
                 )
             }
         }
@@ -1419,10 +1436,12 @@ final class AppModel: ObservableObject {
         "still working",
     ]
 
-    private func recordStep(tool: String, detail: String, target: String, ok: Bool, fromChat: Bool) {
+    private func recordStep(tool: String, detail: String, target: String, ok: Bool, fromChat: Bool,
+                            command: String = "", running: Bool = false, call: String = "") {
         let lowered = detail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if Self.vaguePhrases.contains(where: { lowered == $0 || lowered.hasPrefix($0) }) { return }
-        let step = TraceStep(tool: tool, detail: detail, target: target, ok: ok, started: Date())
+        let step = TraceStep(tool: tool, detail: detail, target: target, ok: ok, started: Date(),
+                             command: command, running: running, call: call)
         if fromChat {
             questionJob?.add(step)
         } else {

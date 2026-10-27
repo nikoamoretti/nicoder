@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -316,3 +317,17 @@ def test_a_step_announced_without_a_tool_is_sent_back_once(home):
     assert script.sent[-1][-1] == {"role": "user", "content": "Go ahead and do that now with your tools."}
     again = Script(_reply("Next:"), _reply("Still:"))
     assert _session(home, again).ask("go").answer == "Still:"  # once only
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")
+def test_a_command_shows_while_it_runs_and_its_end_takes_its_place(home):
+    # Nico, 2026-10-27: a command's step appeared once it ended, so a long one left the step before it on screen.
+    steps: list[dict] = []
+    bash = _call("bash", {"command": "ls", "description": "List the project"}, "b")
+    script = Script(_reply(calls=[bash, _call("read", {"path": "projects/site/README.md"}, "r")]), _reply("Done."))
+    session = _session(home, script, on_step=steps.append)
+    assert session.ask("go").status == "answered"
+    start, end, read = steps
+    assert start["running"] and start["target"] == "List the project" and start["call"] == end["call"]
+    assert "running" not in end and end["target"] == "List the project" and end["command"] == "ls" and end["ok"]
+    assert read["tool"] == "read" and "running" not in read and read["call"] != end["call"]

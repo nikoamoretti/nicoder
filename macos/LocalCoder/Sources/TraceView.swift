@@ -6,9 +6,13 @@ struct StepStyle {
     let verb: String
     let subject: String
     let isNote: Bool
+    /// A command shown as the model's words for it ("run the tests"), which carry their own verb (Nico, 2026-10-27:
+    /// "something more descriptive or qualitative about what the model is doing" than "ran cd /Users/…").
+    let isDescribed: Bool
 
     init(_ step: TraceStep) {
         let target = step.target.isEmpty ? Self.subject(from: step.detail) : step.target
+        let described = step.tool == "bash" && !step.command.isEmpty && !step.target.isEmpty
         switch step.tool {
         case "find_project": (symbol, verb) = ("scope", "Looked for")
         case "list": (symbol, verb) = ("folder", "Looked in")
@@ -17,19 +21,28 @@ struct StepStyle {
         case "read": (symbol, verb) = ("doc.text", "Read")
         case "write": (symbol, verb) = ("doc.badge.plus", "Wrote")
         case "edit": (symbol, verb) = ("pencil.line", "Edited")
-        case "bash": (symbol, verb) = ("terminal", "Ran")
+        case "bash": (symbol, verb) = ("terminal", described ? "" : "Ran")
         case "open_project": (symbol, verb) = ("arrow.up.forward.app", "Opened")
         case "note": (symbol, verb) = ("text.bubble", "")
         default: (symbol, verb) = ("circle.dotted", "")
         }
         isNote = step.tool == "note"
-        if verb.isEmpty {
+        isDescribed = described
+        if described {
+            subject = Self.lowered(step.target)
+        } else if verb.isEmpty {
             subject = step.detail
         } else if step.tool == "find_project" && !target.hasPrefix("“") {
             subject = "“\(target)”"
         } else {
             subject = target
         }
+    }
+
+    /// "Run the tests" as "run the tests", to sit with the lowercase verbs of the other steps ("README" stays).
+    private static func lowered(_ text: String) -> String {
+        guard let first = text.first, first.isUppercase, text.dropFirst().first?.isLowercase == true else { return text }
+        return first.lowercased() + text.dropFirst()
     }
 
     /// The object of a phrase like "Reading src/app.js" when no target came with it.
@@ -111,8 +124,8 @@ private struct TraceRow: View {
     var body: some View {
         let style = StepStyle(step)
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(step.ok ? "✓" : "!")
-                .foregroundStyle(step.ok ? Console.green : .orange)
+            Text(step.running ? "…" : step.ok ? "✓" : "!")
+                .foregroundStyle(step.running ? Console.faint : step.ok ? Console.green : .orange)
             if style.isNote {
                 Text(style.subject)
                     .foregroundStyle(Console.mute)
@@ -133,7 +146,7 @@ private struct TraceRow: View {
         }
         .font(Console.mono(12))
         .padding(.vertical, 2.5)
-        .help(step.detail)
+        .help(step.command.isEmpty ? step.detail : step.command)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -274,20 +287,22 @@ private struct WheelLabel: View {
     var body: some View {
         let style = StepStyle(step)
         HStack(alignment: .firstTextBaseline, spacing: 7) {
-            if style.isNote || style.verb.isEmpty {
+            if style.isNote || (style.verb.isEmpty && !style.isDescribed) {
                 Text(style.subject)
                     .foregroundStyle(Console.mute)
                     .lineLimit(1)
             } else {
-                Text(style.verb.lowercased())
-                    .foregroundStyle(step.ok ? Console.green.opacity(0.75) : .orange)
-                Text(style.subject)
+                if !style.verb.isEmpty {
+                    Text(style.verb.lowercased())
+                        .foregroundStyle(step.ok ? Console.green.opacity(0.75) : .orange)
+                }
+                Text(step.running ? style.subject + "…" : style.subject)
                     .foregroundStyle(step.ok ? Console.green : .orange)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
-        .help(step.detail)
+        .help(step.command.isEmpty ? step.detail : step.command)
     }
 }
 

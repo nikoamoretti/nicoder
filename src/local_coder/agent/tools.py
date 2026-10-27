@@ -20,6 +20,7 @@ from typing import Any
 from local_coder.paths import EXCLUDE_DIRS
 
 from .access import AccessDenied, AccessPolicy, secret_name
+from .command_words import describe
 from .sandbox import available as sandbox_available
 from .sandbox import run_command
 from .shell_paths import into_working_copy
@@ -75,6 +76,8 @@ class ToolResult:
     activity: str
     ok: bool = True
     target: str = ""
+    # A command step: the command as the user knows it (the step line shows the model's words for it).
+    command: str = ""
 
 
 def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -353,6 +356,20 @@ class ToolBox:
             ),
         }
         return [specs[name] for name in self.names]
+
+    def starting(self, name: str, arguments: str | dict[str, Any] | None) -> dict[str, Any] | None:
+        """The step a command shows while it runs (that can take minutes); None for the other tools, which are quick."""
+        if name != "bash" or name not in self.names:
+            return None
+        try:
+            args = _parse_args(arguments)
+        except ValueError:
+            return None
+        command = str(args.get("command") or "").strip()
+        if not command:
+            return None
+        words = describe(command, args.get("description"))
+        return {"detail": words, "tool": name, "target": words, "command": self._readable(command)}
 
     def call(self, name: str, arguments: str | dict[str, Any] | None) -> ToolResult:
         """Run one tool call. Never raises."""
@@ -781,10 +798,22 @@ class ToolBox:
         given = str(self.policy.project) if self.policy.project else None
         return into_working_copy(command, project=project, workdir=workdir, home=self.policy.home_real, given=given)
 
+    def _readable(self, command: str) -> str:
+        """The command as the user knows their project: the working copy's path reads as the project's own."""
+        policy = self.policy
+        if policy.workdir_real is None or policy.project_real is None:
+            return command
+        shown = policy.show(policy.project_real)
+        folders = {str(path) for path in (policy.workdir, policy.workdir_real) if path}
+        for folder in sorted(folders, key=len, reverse=True):  # /private/tmp/… before /tmp/…
+            command = command.replace(folder, shown)
+        return command
+
     def _tool_bash(self, args: dict[str, Any]) -> ToolResult:
         command = str(args["command"]).strip()
         if not command:
             raise ValueError("the command is empty")
+        words, readable = describe(command, args.get("description")), self._readable(command)
         if not sandbox_available():
             return ToolResult(
                 "Commands are unavailable: this Mac has no /usr/bin/sandbox-exec, and Nicoder never runs "
@@ -829,9 +858,10 @@ class ToolBox:
             )
         return ToolResult(
             f"$ {command}\n{output}\n[{status}, {result.seconds} s]",
-            f"Running {_short(command, 70)}",
+            words,
             ok=result.exit_code == 0,
-            target=_short(command, 120),
+            target=words,
+            command=readable,
         )
 
     def _tool_open_project(self, args: dict[str, Any]) -> ToolResult:

@@ -11,6 +11,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -311,9 +312,17 @@ class AgentSession:
                 if self._cancelled():
                     result_text = "Stopped by the user before this tool ran."
                 else:
+                    # A command shows while it runs, and its end takes that step's place (`call` ties the two).
+                    step: dict[str, Any] = {"call": uuid.uuid4().hex[:12]}
+                    running = self.toolbox.starting(name, call["function"]["arguments"])
+                    if running is not None and self.on_step is not None:
+                        self.on_step({**running, **step, "ok": True, "running": True})
                     outcome = self.toolbox.call(name, call["function"]["arguments"])
                     calls += 1
-                    self._activity(outcome.activity, {"tool": name, "target": outcome.target, "ok": outcome.ok})
+                    step |= {"tool": name, "target": outcome.target, "ok": outcome.ok}
+                    if outcome.command:
+                        step["command"] = outcome.command
+                    self._activity(outcome.activity, step)
                     result_text = outcome.text
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "name": name, "content": result_text},

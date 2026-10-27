@@ -88,11 +88,14 @@ func steps(start: Date) -> [TraceStep] {
         ("read", "Reading app/prototypes/shadow-paris/shadow-app.tsx", "app/prototypes/shadow-paris/shadow-app.tsx", true, 9.9),
         ("grep", "Searching app for “prefers-color-scheme”", "“prefers-color-scheme” in app", true, 12.4),
         ("edit", "Editing app/prototypes/shadow-paris/shadow-app.tsx", "app/prototypes/shadow-paris/shadow-app.tsx", true, 21.0),
-        ("bash", "Running npm run build", "npm run build", false, 38.5),
+        ("bash", "Build the site to check the toggle compiles", "Build the site to check the toggle compiles", false, 38.5),
         ("edit", "Editing app/globals.css", "app/globals.css", true, 44.1),
-        ("bash", "Running npm run build", "npm run build", true, 61.7),
+        ("bash", "Build again after the CSS fix", "Build again after the CSS fix", true, 61.7),
     ]
-    return rows.map { TraceStep(tool: $0.0, detail: $0.1, target: $0.2, ok: $0.3, started: start.addingTimeInterval($0.4)) }
+    return rows.map {
+        TraceStep(tool: $0.0, detail: $0.1, target: $0.2, ok: $0.3, started: start.addingTimeInterval($0.4),
+                  command: $0.0 == "bash" ? "cd ~/projects/prototypes && npm run build 2>&1 | tail -20" : "")
+    }
 }
 
 let prompt = "Add a dark mode toggle to the Shadow Paris map"
@@ -239,6 +242,20 @@ MainActor.assumeIsolated {
                       steps: Array(steps(start: Date().addingTimeInterval(-47)).prefix(6)))
     capture(main, "11-live-run")
     capture(main, "11-live-run-later")
+
+    // 2a. A command while it runs reads as the model's words for it, not the command (Nico, 2026-10-27), and the
+    // finished steps list them the same way.
+    let commandRun = Date().addingTimeInterval(-200)
+    model.showDemoRun(prompt: prompt, started: commandRun, steps: Array(steps(start: commandRun).prefix(6)) + [
+        TraceStep(tool: "bash", detail: "Run the scraper on the live page", target: "Run the scraper on the live page",
+                  ok: true, started: Date().addingTimeInterval(-152),
+                  command: "cd ~/projects/ingestion-scrape && python3 scrape.py --live canary", running: true, call: "c1"),
+    ])
+    capture(main, "11c-live-run-command")
+    let timeline = show(TraceTimeline(steps: steps(start: commandRun), start: commandRun, live: false).padding(16),
+                        size: CGSize(width: 640, height: 280))
+    capture(timeline, "11d-steps-with-commands")
+    timeline.orderOut(nil)
 
     // 2b. A run whose messages were cleared mid-run still shows the prompt and live steps (reasoning off).
     model.chatTurns = []
