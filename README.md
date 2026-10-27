@@ -1,10 +1,10 @@
-# Local Coder
+# Nicoder
 
 A local coding application for an Apple-silicon Mac. Open the app, start or
 open a project, describe what you want, watch a running preview, then keep or
 discard the result. The original files are not changed until you keep them.
 
-The default engine is Local Coder’s candidate-only read / write / hash-edit
+The default engine is Nicoder’s candidate-only read / write / hash-edit
 loop plus a local llama.cpp model (Bonsai 2 27B when that GGUF is installed).
 OpenCode remains pinned but is not on the ordinary path. The older Python
 FIND/PATCH/CHECK/DONE loop is a legacy setting.
@@ -13,8 +13,8 @@ FIND/PATCH/CHECK/DONE loop is a legacy setting.
 
 After packaging (or if it is already installed):
 
-1. Open **Local Coder** from `~/Applications/Local Coder.app` or from
-   `dist/macos/Local Coder.app`.
+1. Open **Nicoder** from `~/Applications/Nicoder.app` or from
+   `dist/macos/Nicoder.app`.
 2. Choose a project folder.
 3. Type what you want to change.
 4. Review the proposed difference and the recorded checks.
@@ -234,7 +234,7 @@ explicitly yours to keep or remove.
 
 ```text
 src/local_coder/   application package (controller, skills, adapters, CLI, app API)
-macos/             SwiftUI Local Coder.app sources and package script
+macos/             SwiftUI Nicoder.app sources and package script
 tests/             offline test suite (no live calls by default)
 fixtures/          real broken Python fixtures + tickets + gold diffs
                      demo_calc, localization, multi_hunk, recovery, greet_empty
