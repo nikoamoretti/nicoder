@@ -5,7 +5,9 @@ The profile allows everything except: writing anywhere but the given folders
 private places and secret files the file tools refuse, and reaching the
 Keychain (the `security` CLI, Nico's `key` tool, and the securityd services).
 The command gets a scrubbed environment with no API keys. Network access is
-allowed so installs, builds and git fetches work.
+allowed so installs, builds and git fetches work. A command the model runs on
+the Mac itself (`mac_access.py`) goes through the same runner with
+`sandboxed=False`: the same environment, time limit and output, no profile.
 """
 from __future__ import annotations
 
@@ -189,14 +191,18 @@ def run_command(
     cancel: threading.Event | None = None,
     max_output: int = 30_000,
     extra_env: dict[str, str] | None = None,
+    sandboxed: bool = True,
 ) -> CommandResult:
-    """Run `command` with bash inside the sandbox. Never raises for a failing command."""
+    """Run `command` with bash inside the sandbox (outside it when not `sandboxed`). Never raises for a failing
+    command."""
     tmp.mkdir(parents=True, exist_ok=True)
-    profile = build_profile(home=home, writable=[*writable, tmp])
+    shell = [SHELL, "-c", command]
+    if sandboxed:
+        shell = [str(SANDBOX_EXEC), "-p", build_profile(home=home, writable=[*writable, tmp]), *shell]
     started = time.monotonic()
     try:
         proc = subprocess.Popen(
-            [str(SANDBOX_EXEC), "-p", profile, SHELL, "-c", command],
+            shell,
             cwd=str(cwd),
             env={**command_env(home, tmp), **(extra_env or {})},
             stdin=subprocess.DEVNULL,

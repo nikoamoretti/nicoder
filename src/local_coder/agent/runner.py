@@ -157,8 +157,10 @@ def build_session(
     cancel: threading.Event | None = None,
     home: Path | None = None,
     on_step: Callable[[dict[str, Any]], None] | None = None,
+    mac_access: bool = False,
 ) -> AgentSession:
-    """A session that may change the request's working copy."""
+    """A session that may change the request's working copy; with `mac_access`, run commands on the Mac itself
+    too."""
     home = home or Path.home()
     toolbox = ToolBox(
         AccessPolicy(home=home, workdir=workdir, project=project),
@@ -168,11 +170,12 @@ def build_session(
         # A change request works in its own project: no hunting for a folder that might match (Nico, 2026-10-25).
         # A project he names can still be read by its path.
         allow_find_project=False,
+        mac_access=mac_access,
     )
     return AgentSession(
         chat=chat,
         toolbox=toolbox,
-        system=build_prompt(home=home, project=project, workdir=workdir),
+        system=build_prompt(home=home, project=project, workdir=workdir, mac_access=mac_access),
         history=history,
         context_chars=context_chars,
         on_activity=on_activity,

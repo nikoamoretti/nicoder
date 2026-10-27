@@ -1081,6 +1081,7 @@ def readiness() -> dict[str, Any]:
         "orcarouter": orca_status(),
         "reasoning": cfg.reasoning,
         "reasoning_switch": cfg.reasoning_switch,
+        "mac_access": cfg.mac_access,
     }
 
 
@@ -1119,6 +1120,13 @@ def set_reasoning(mode: str) -> dict[str, Any]:
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     write_machine_config(cfg.model_copy(update={"reasoning": mode, "reasoning_switch": True}))
     return {"ok": True, "reasoning": mode, "model": selected}
+
+
+def set_mac_access(on: bool) -> dict[str, Any]:
+    """Let change runs run commands on the Mac itself, outside the sandbox, or keep every command in it."""
+    cfg = load_machine_config()
+    write_machine_config(cfg.model_copy(update={"mac_access": bool(on)}))
+    return {"ok": True, "mac_access": bool(on)}
 
 
 def orca_status() -> dict[str, Any]:

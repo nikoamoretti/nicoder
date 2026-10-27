@@ -9,6 +9,10 @@ struct StepStyle {
     /// A command shown as the model's words for it ("run the tests"), which carry their own verb (Nico, 2026-10-27:
     /// "something more descriptive or qualitative about what the model is doing" than "ran cd /Users/…").
     let isDescribed: Bool
+    /// "on your Mac" after a command that ran outside the sandbox, unless its words already say where.
+    let place: String
+    /// The tooltip: the command, and for a Mac command that it ran outside the sandbox.
+    let help: String
 
     init(_ step: TraceStep) {
         let target = step.target.isEmpty ? Self.subject(from: step.detail) : step.target
@@ -21,13 +25,17 @@ struct StepStyle {
         case "read": (symbol, verb) = ("doc.text", "Read")
         case "write": (symbol, verb) = ("doc.badge.plus", "Wrote")
         case "edit": (symbol, verb) = ("pencil.line", "Edited")
-        case "bash": (symbol, verb) = ("terminal", described ? "" : "Ran")
+        case "bash": (symbol, verb) = (step.mac ? "desktopcomputer" : "terminal", described ? "" : "Ran")
         case "open_project": (symbol, verb) = ("arrow.up.forward.app", "Opened")
         case "note": (symbol, verb) = ("text.bubble", "")
         default: (symbol, verb) = ("circle.dotted", "")
         }
         isNote = step.tool == "note"
         isDescribed = described
+        let saysWhere = step.target.range(of: #"\bMac\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+        place = step.mac && !saysWhere ? "on your Mac" : ""
+        let shown = step.command.isEmpty ? step.detail : step.command
+        help = step.mac ? "On your Mac, outside the sandbox:\n\(shown)" : shown
         if described {
             subject = Self.lowered(step.target)
         } else if verb.isEmpty {
@@ -139,6 +147,11 @@ private struct TraceRow: View {
                     .foregroundStyle(step.ok ? Console.mute : Console.faint)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if !style.place.isEmpty {
+                    Text(style.place)
+                        .foregroundStyle(Console.faint)
+                        .fixedSize()
+                }
             }
             Spacer(minLength: 12)
             Text(Durations.label(duration))
@@ -146,7 +159,7 @@ private struct TraceRow: View {
         }
         .font(Console.mono(12))
         .padding(.vertical, 2.5)
-        .help(step.command.isEmpty ? step.detail : step.command)
+        .help(style.help)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -300,9 +313,14 @@ private struct WheelLabel: View {
                     .foregroundStyle(step.ok ? Console.green : .orange)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if !style.place.isEmpty {
+                    Text(style.place)
+                        .foregroundStyle(Console.faint)
+                        .fixedSize()
+                }
             }
         }
-        .help(step.command.isEmpty ? step.detail : step.command)
+        .help(style.help)
     }
 }
 

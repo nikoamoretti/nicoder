@@ -45,3 +45,16 @@ def test_the_model_talks_plainly():
         assert "plain" in text and "jargon" in text
     assert "Never explain sandboxes, permissions or your own limits." in ask_prompt(home=Path("/h"), project=None)
     assert 'Say "do it" and I\'ll make the change.' in ask_prompt(home=Path("/h"), project=None)
+
+
+def test_a_change_request_knows_when_to_work_on_the_mac_itself(tmp_path):
+    # Nico, 2026-10-27: "i want nicoder to be able to manipulated my mac if needed and therefore be outside of a
+    # sandbox".
+    plain = build_prompt(home=tmp_path, project=tmp_path / "crime", workdir=tmp_path / "wc")
+    assert "on_mac" not in plain and "(the sandbox stops all of these)" in plain
+    mac = build_prompt(home=tmp_path, project=tmp_path / "crime", workdir=tmp_path / "wc", mac_access=True)
+    assert "run that command with on_mac: true" in mac and "brew install" in mac
+    assert "builds, tests, reading and searching stay in the sandbox" in mac
+    assert "say in a few words what you changed on the Mac" in mac
+    assert "install and start it beside the old one (on another port)" in mac
+    assert "never open the app in their browser yourself" in mac and "(the sandbox stops all of these)" not in mac

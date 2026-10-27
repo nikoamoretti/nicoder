@@ -118,6 +118,16 @@ private struct AdvancedSettings: View {
     var body: some View {
         Form {
             Section {
+                Toggle("Run commands on this Mac when a task needs it", isOn: Binding(
+                    get: { model.macAccess },
+                    set: { model.setMacAccess($0) }
+                ))
+            } footer: {
+                Text("Outside the sandbox: installs, services, databases, settings and apps. Your keys stay private, and the project still changes only when you keep it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 Picker("Engine for local models", selection: $model.engineName) {
                     Text("General").tag("general")
                     Text("Legacy Python repair").tag("legacy")

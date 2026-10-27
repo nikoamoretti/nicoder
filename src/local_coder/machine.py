@@ -45,6 +45,8 @@ class MachineConfig(BaseModel):
     top_p: float = 0.0
     reasoning: str = "on"
     reasoning_switch: bool = False
+    # A change run may run commands on the Mac itself, outside the sandbox (Settings > Advanced; `agent/mac_access.py`).
+    mac_access: bool = True
 
 
 def is_hosted(cfg: MachineConfig) -> bool:
@@ -119,6 +121,7 @@ def write_machine_config(cfg: MachineConfig) -> Path:
         f"top_p = {float(cfg.top_p)}",
         f'reasoning = "{cfg.reasoning}"',
         f"reasoning_switch = {'true' if cfg.reasoning_switch else 'false'}",
+        f"mac_access = {'true' if cfg.mac_access else 'false'}",
         "",
     ]
     tmp = path.with_suffix(".toml.tmp")

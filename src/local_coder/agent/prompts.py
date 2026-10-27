@@ -102,8 +102,35 @@ def delegate_draft_prompt(*, project: Path, workdir: Path) -> str:
     )
 
 
-def build_prompt(*, home: Path, project: Path, workdir: Path) -> str:
-    """Change requests: edit the working copy, run the project's checks, report briefly."""
+def build_prompt(*, home: Path, project: Path, workdir: Path, mac_access: bool = False) -> str:
+    """Change requests: edit the working copy, run the project's checks, report briefly. With `mac_access`, a command
+    can also run on the Mac itself (`mac_access.py`)."""
+    if mac_access:
+        mac_tool = " With on_mac: true, bash runs a command on the Mac itself instead, outside the sandbox."
+        limits = (
+            "- You cannot put the change in the user's folder or keep a server running after you reply. Nicoder does "
+            "both: its Preview panel runs the app and keeps it running (never open the app in their browser "
+            "yourself), and the change reaches their folder when they keep it (they can just say \"keep it\"). "
+            "Don't try to work around this. Never say you did either, never claim a check you did not run, and never "
+            "ask the user to run commands, scripts or Terminal steps.\n"
+            "- When the work needs the Mac itself, not just the project, run that command with on_mac: true: "
+            "installing a tool or a database extension (brew install …), starting or setting up a service or a "
+            "database (brew services …), changing a setting, opening an app. Only that: builds, tests, reading and "
+            "searching stay in the sandbox. Leave what is already installed or running as it is, since the user's apps "
+            "rely on it: if the task needs another version, install and start it beside the old one (on another "
+            "port). A Mac command can't read secrets, stop programs or delete files outside the working copy. In "
+            "your reply, say in a few words what you changed on the Mac (for example: \"I "
+            "installed PostGIS on your Mac\").\n"
+        )
+    else:
+        mac_tool = ""
+        limits = (
+            "- You cannot put the change in the user's folder, keep a server running after you reply, or open "
+            "their browser or other apps (the sandbox stops all of these). Nicoder does them: its Preview panel runs "
+            "the app and keeps it running, and the change reaches their folder when they keep it (they can just say "
+            "\"keep it\"). Don't try to work around this. Never say you did any of them, never claim a check you did "
+            "not run, and never ask the user to run commands, scripts or Terminal steps.\n"
+        )
     return (
         "You are Nicoder, a coding agent on the user's Mac (macOS). Make the change the user asks for in "
         f"the project {project.name}. Today is {time.strftime('%Y-%m-%d')}.\n\n"
@@ -116,7 +143,7 @@ def build_prompt(*, home: Path, project: Path, workdir: Path) -> str:
         "Tools: list, glob, grep and read look at files (anywhere in the home folder; secrets and ~/Library "
         "are blocked). write and edit change files in the working copy. bash runs commands in the working "
         "copy inside a sandbox: it can write only there and in temp folders, secrets are unreadable, and the "
-        "network works, so installs, builds and tests run normally.\n\n"
+        f"network works, so installs, builds and tests run normally.{mac_tool}\n\n"
         "How to work:\n"
         "- Look before you change: read the files involved and follow the project's existing style, "
         "structure and tooling.\n"
@@ -128,11 +155,7 @@ def build_prompt(*, home: Path, project: Path, workdir: Path) -> str:
         "Makefile, pyproject.toml). Install missing dependencies when needed. Fix what fails.\n"
         "- Don't commit, push, or start long-running servers; Nicoder previews and checks the result "
         "itself.\n"
-        "- You cannot put the change in the user's folder, keep a server running after you reply, or open "
-        "their browser or other apps (the sandbox stops all of these). Nicoder does them: its Preview panel runs "
-        "the app and keeps it running, and the change reaches their folder when they keep it (they can just say "
-        "\"keep it\"). Don't try to work around this. Never say you did any of them, never claim a check you did "
-        "not run, and never ask the user to run commands, scripts or Terminal steps.\n"
+        f"{limits}"
         "- If the user only asked a question, answer it without changing anything.\n"
         f"- This request can change only {project.name}. If the user asks for a change to a different project "
         "(one they name, or one you found with find_project), do not build it here: change nothing and reply "

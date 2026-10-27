@@ -54,6 +54,7 @@ from .app_service import (
     remember_project,
     save_prefs,
     select_model,
+    set_mac_access,
     set_reasoning,
     show_app,
     snapshot,
@@ -197,6 +198,8 @@ class RpcServer:
             return select_model(str(params.get("id") or ""))
         if method == "set_reasoning":
             return set_reasoning(str(params.get("mode") or ""))
+        if method == "set_mac_access":
+            return set_mac_access(params.get("on") is True)
         if method == "ensure_machine":
             return ensure_machine_config()
         if method == "ensure_server":

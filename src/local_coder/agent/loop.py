@@ -322,6 +322,8 @@ class AgentSession:
                     step |= {"tool": name, "target": outcome.target, "ok": outcome.ok}
                     if outcome.command:
                         step["command"] = outcome.command
+                    if outcome.mac:
+                        step["mac"] = True
                     self._activity(outcome.activity, step)
                     result_text = outcome.text
                 self.messages.append(

@@ -21,6 +21,7 @@ from local_coder.paths import EXCLUDE_DIRS
 
 from .access import AccessDenied, AccessPolicy, secret_name
 from .command_words import describe
+from .mac_access import hide_keys, refusal
 from .sandbox import available as sandbox_available
 from .sandbox import run_command
 from .shell_paths import into_working_copy
@@ -78,6 +79,8 @@ class ToolResult:
     target: str = ""
     # A command step: the command as the user knows it (the step line shows the model's words for it).
     command: str = ""
+    # The command ran (or was refused) on the Mac itself, outside the sandbox.
+    mac: bool = False
 
 
 def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -97,6 +100,15 @@ def _str(description: str) -> dict[str, str]:
 
 def _int(description: str) -> dict[str, str]:
     return {"type": "integer", "description": description}
+
+
+def _bool(description: str) -> dict[str, str]:
+    return {"type": "boolean", "description": description}
+
+
+def _flag(value: object) -> bool:
+    """A boolean argument, also when the model sends it as text ("true")."""
+    return value is True or str(value).strip().lower() in {"true", "1", "yes"}
 
 
 def expand_braces(pattern: str) -> list[str]:
@@ -235,8 +247,12 @@ class ToolBox:
         cancel: threading.Event | None = None,
         allow_open_project: bool = False,
         allow_find_project: bool = True,
+        mac_access: bool = False,
     ) -> None:
         self.policy = policy
+        # Commands on the Mac itself (bash's on_mac), only where the run can change things (`mac_access.py`).
+        self.mac_access = mac_access and policy.can_write
+        self.mac_commands: list[str] = []
         self.allow_find_project = allow_find_project
         self.cwd = Path(os.path.realpath(cwd))
         self.run_tmp = run_tmp
@@ -271,6 +287,12 @@ class ToolBox:
                 "inside the working copy and temp folders, secrets are unreadable, and the network works "
                 "(installs, builds, tests, git). Background jobs are stopped when the command ends."
             )
+            if self.mac_access:
+                shell += (
+                    " With on_mac it runs on the Mac itself instead, outside the sandbox, for what the sandbox "
+                    "blocks: installing a tool (brew install …), starting or setting up a service or a database, "
+                    "changing a setting, opening an app."
+                )
         else:
             shell = (
                 "Run a read-only bash command (git log, git show, ls, wc, …) in a sandbox. It cannot change "
@@ -342,8 +364,16 @@ class ToolBox:
                 shell,
                 {
                     "command": _str("The command."),
-                    "timeout_seconds": _int("Time limit in seconds (default 120, max 600)."),
+                    "timeout_seconds": _int(
+                        "Time limit in seconds (default 120, max 600; with on_mac default 900, max 1800)."
+                        if self.mac_access else "Time limit in seconds (default 120, max 600)."
+                    ),
                     "description": _str("Five words on what the command does."),
+                    **({"on_mac": _bool(
+                        "true runs it on the Mac itself, outside the sandbox. Only for what the Mac itself needs "
+                        "(installs, services, databases, settings, apps); builds, tests, reading and searching stay "
+                        "in the sandbox. Secrets stay blocked, and nothing outside the working copy is deleted."
+                    )} if self.mac_access else {}),
                 },
                 ["command"],
             ),
@@ -369,7 +399,8 @@ class ToolBox:
         if not command:
             return None
         words = describe(command, args.get("description"))
-        return {"detail": words, "tool": name, "target": words, "command": self._readable(command)}
+        step = {"detail": words, "tool": name, "target": words, "command": self._readable(command)}
+        return {**step, "mac": True} if self.mac_access and _flag(args.get("on_mac")) else step
 
     def call(self, name: str, arguments: str | dict[str, Any] | None) -> ToolResult:
         """Run one tool call. Never raises."""
@@ -814,17 +845,28 @@ class ToolBox:
         if not command:
             raise ValueError("the command is empty")
         words, readable = describe(command, args.get("description")), self._readable(command)
-        if not sandbox_available():
+        on_mac = _flag(args.get("on_mac"))
+        if on_mac and not self.mac_access:
+            return ToolResult(
+                "Not run: commands on the Mac itself are off here. Run it without on_mac, in the sandbox.",
+                words, ok=False, target=words, command=readable,
+            )
+        if not on_mac and not sandbox_available():
             return ToolResult(
                 "Commands are unavailable: this Mac has no /usr/bin/sandbox-exec, and Nicoder never runs "
                 "commands without a sandbox.",
                 "Commands are unavailable (no sandbox)",
                 ok=False,
             )
-        timeout = float(args.get("timeout_seconds") or 120)
-        if timeout > 1000:
-            timeout /= 1000
-        timeout = min(600.0, max(1.0, timeout))
+        if on_mac:
+            # Installs take minutes: a longer limit, and a number past 10,000 is milliseconds.
+            timeout = float(args.get("timeout_seconds") or 900)
+            timeout = min(1800.0, max(1.0, timeout / 1000 if timeout > 10_000 else timeout))
+        else:
+            timeout = float(args.get("timeout_seconds") or 120)
+            if timeout > 1000:
+                timeout /= 1000
+            timeout = min(600.0, max(1.0, timeout))
         writable: list[Path] = []
         extra_env: dict[str, str] = {}
         if self.policy.workdir_real is not None:
@@ -833,6 +875,11 @@ class ToolBox:
             # The working copy has no .git: git there must not find the repository of a folder above it (Nico's
             # home folder is one), so it says "not a git repository" instead.
             extra_env["GIT_CEILING_DIRECTORIES"] = str(self.policy.workdir_real.parent)
+        if on_mac:
+            reason = refusal(command, policy=self.policy, cwd=self.cwd, tmp=self.run_tmp)
+            if reason:
+                return ToolResult(f"Not run on the Mac: {reason}", words, ok=False, target=words, command=readable,
+                                  mac=True)
         result = run_command(
             command,
             cwd=self.cwd,
@@ -842,8 +889,11 @@ class ToolBox:
             timeout_s=timeout,
             cancel=self.cancel,
             extra_env=extra_env,
+            sandboxed=not on_mac,
         )
         self.commands.append(command)
+        if on_mac:
+            self.mac_commands.append(readable)
         if result.cancelled:
             status = "stopped by the user"
         elif result.timed_out:
@@ -851,17 +901,20 @@ class ToolBox:
         else:
             status = f"exit code {result.exit_code}"
         output = result.output.rstrip() or "(no output)"
+        if on_mac:
+            output = hide_keys(output)
         if extra_env and "not a git repository" in output and self.policy.project_real is not None:
             output += (
                 f"\n[The working copy has no .git folder. To read the project's git history, run git -C "
                 f"'{self.policy.project_real}' … (that folder is read-only).]"
             )
         return ToolResult(
-            f"$ {command}\n{output}\n[{status}, {result.seconds} s]",
+            f"$ {command}\n{output}\n[{status}, {result.seconds} s{', on the Mac' if on_mac else ''}]",
             words,
             ok=result.exit_code == 0,
             target=words,
             command=readable,
+            mac=on_mac,
         )
 
     def _tool_open_project(self, args: dict[str, Any]) -> ToolResult:

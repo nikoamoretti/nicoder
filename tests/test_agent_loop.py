@@ -331,3 +331,19 @@ def test_a_command_shows_while_it_runs_and_its_end_takes_its_place(home):
     assert start["running"] and start["target"] == "List the project" and start["call"] == end["call"]
     assert "running" not in end and end["target"] == "List the project" and end["command"] == "ls" and end["ok"]
     assert read["tool"] == "read" and "running" not in read and read["call"] != end["call"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")
+def test_a_command_on_the_mac_says_so_while_it_runs_and_when_it_ends(home, tmp_path):
+    work = home / "wc"
+    work.mkdir()
+    box = ToolBox(AccessPolicy(home=home, workdir=work, project=home / "projects" / "site"), cwd=work,
+                  run_tmp=tmp_path / "tmp", mac_access=True)
+    steps: list[dict] = []
+    bash = _call("bash", {"command": "mkdir -p made", "description": "Make a folder", "on_mac": True}, "m")
+    session = AgentSession(chat=Script(_reply(calls=[bash]), _reply("Done.")), toolbox=box, system="system prompt",
+                           on_step=steps.append)
+    assert session.ask("go").status == "answered"
+    start, end = steps
+    assert start["running"] and start["mac"] and end["mac"] and end["ok"] and "running" not in end
+    assert (work / "made").is_dir()

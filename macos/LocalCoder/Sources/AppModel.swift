@@ -102,6 +102,8 @@ struct TraceStep: Identifiable, Hashable {
     var running = false
     /// Ties a running command to the step it sends when it ends.
     var call = ""
+    /// The command ran on the Mac itself, outside the sandbox (an install, a service, a setting).
+    var mac = false
 }
 
 /// The finished work behind one answer.
@@ -247,6 +249,8 @@ final class AppModel: ObservableObject {
     @Published var switchingModel = false
     @Published var settingsTab = "models"
     @Published var reasoningOn = true
+    /// Change runs may run commands on the Mac itself, outside the sandbox (Settings > Advanced).
+    @Published var macAccess = true
 
     let engine = EngineClient()
     /// Projects where the last change was kept: the next request builds on it.
@@ -1167,6 +1171,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Let change runs run commands on the Mac itself, outside the sandbox, or keep them all in it.
+    func setMacAccess(_ on: Bool) {
+        guard on != macAccess else { return }
+        macAccess = on
+        Task {
+            do {
+                _ = try await engine.call("set_mac_access", ["on": on])
+            } catch {
+                macAccess = !on
+                banner = error.localizedDescription
+            }
+        }
+    }
+
     func chooseRouterModel(_ modelID: String) {
         selectModel("orca:\(modelID)")
     }
@@ -1198,6 +1216,9 @@ final class AppModel: ObservableObject {
         }
         if let mode = payload?["reasoning"] as? String {
             reasoningOn = mode != "off"
+        }
+        if let mac = payload?["mac_access"] as? Bool {
+            macAccess = mac
         }
     }
 
@@ -1403,7 +1424,8 @@ final class AppModel: ObservableObject {
                     fromChat: fromChat,
                     command: data["command"] as? String ?? "",
                     running: data["running"] as? Bool ?? false,
-                    call: data["call"] as? String ?? ""
+                    call: data["call"] as? String ?? "",
+                    mac: data["mac"] as? Bool ?? false
                 )
             }
         }
@@ -1437,11 +1459,11 @@ final class AppModel: ObservableObject {
     ]
 
     private func recordStep(tool: String, detail: String, target: String, ok: Bool, fromChat: Bool,
-                            command: String = "", running: Bool = false, call: String = "") {
+                            command: String = "", running: Bool = false, call: String = "", mac: Bool = false) {
         let lowered = detail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if Self.vaguePhrases.contains(where: { lowered == $0 || lowered.hasPrefix($0) }) { return }
         let step = TraceStep(tool: tool, detail: detail, target: target, ok: ok, started: Date(),
-                             command: command, running: running, call: call)
+                             command: command, running: running, call: call, mac: mac)
         if fromChat {
             questionJob?.add(step)
         } else {

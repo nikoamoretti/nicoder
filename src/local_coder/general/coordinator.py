@@ -1185,6 +1185,7 @@ def _run_agent_request(
         history=recent_messages(folder, limit=10, max_chars=1500),
         cancel=cancel,
         on_step=lambda step: _emit(listener, "activity", step),
+        mac_access=load_machine_config().mac_access,
     )
     from local_coder import attachments as attached
 

@@ -257,6 +257,30 @@ MainActor.assumeIsolated {
     capture(timeline, "11d-steps-with-commands")
     timeline.orderOut(nil)
 
+    // 2a'. A command on the Mac itself, outside the sandbox, says so (Nico, 2026-10-27: "i want nicoder to be able to
+    // manipulated my mac if needed").
+    let macRun = Date().addingTimeInterval(-95)
+    let macSteps = [
+        TraceStep(tool: "read", detail: "Reading sql/init.sql", target: "sql/init.sql", ok: true,
+                  started: macRun.addingTimeInterval(2)),
+        TraceStep(tool: "bash", detail: "Create the tables", target: "Create the tables", ok: false,
+                  started: macRun.addingTimeInterval(9), command: "psql -d crime_analysis_db -f sql/init.sql"),
+        TraceStep(tool: "bash", detail: "Install PostGIS with Homebrew", target: "Install PostGIS with Homebrew",
+                  ok: true, started: macRun.addingTimeInterval(14), command: "brew install postgis", mac: true),
+        TraceStep(tool: "bash", detail: "Create the tables", target: "Create the tables", ok: true,
+                  started: macRun.addingTimeInterval(71), command: "psql -d crime_analysis_db -f sql/init.sql"),
+    ]
+    model.showDemoRun(prompt: "Set up the crime analysis database", started: macRun, steps: Array(macSteps.prefix(2)) + [
+        TraceStep(tool: "bash", detail: "Install PostGIS with Homebrew", target: "Install PostGIS with Homebrew",
+                  ok: true, started: Date().addingTimeInterval(-81), command: "brew install postgis", running: true,
+                  call: "m1", mac: true),
+    ])
+    capture(main, "11e-live-mac-command")
+    let macTimeline = show(TraceTimeline(steps: macSteps, start: macRun, live: false).padding(16),
+                           size: CGSize(width: 640, height: 170))
+    capture(macTimeline, "11f-steps-with-a-mac-command")
+    macTimeline.orderOut(nil)
+
     // 2b. A run whose messages were cleared mid-run still shows the prompt and live steps (reasoning off).
     model.chatTurns = []
     model.reasoningOn = false

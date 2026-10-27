@@ -24,14 +24,31 @@
    tools that Local Coder executes: find_project / list / glob / grep / read
    anywhere in the home folder except secrets and ~/Library; write / edit only
    in the request's working copy (Keep/Discard still decides what lands); bash
-   only inside the macOS sandbox (`agent/sandbox.py`: writes limited to the
+   inside the macOS sandbox (`agent/sandbox.py`: writes limited to the
    working copy and temp folders, secrets unreadable, Keychain and the `key`
    tool blocked, scrubbed environment, signals only to the command's own
    processes, never to the user's apps; no launching apps or URLs (`open`,
    `lsopen`), AppleScript or Apple Events, Shortcuts, Automator, `launchctl`,
-   preference writes or clipboard reads). Questions are read-only and may
-   `open_project` the repo they found. Do not loosen these rules, add an
-   unsandboxed shell, or route the agent through a foreign agent CLI.
+   preference writes or clipboard reads). One exception, Nico's call on
+   2026-10-27 ("i want nicoder to be able to manipulated my mac if needed and
+   therefore be outside of a sandbox"): in a change request, a command the model
+   marks `on_mac` runs on the Mac itself with no sandbox (macOS refuses a
+   sandbox inside a restricted one, and Homebrew, SwiftPM and Xcode start their
+   own), while Settings > Advanced allows it (on by default). `agent/mac_access.py`
+   checks each one first, following `cd`, `bash -c` and heredocs fed to a shell:
+   no Keychain, `key` tool or sign-in tokens, no path the file tools refuse, no
+   deploying, publishing or pushing on his accounts, reading and searching stay
+   in the sandbox, no sudo, no AppleScript that messages, types, quits or
+   deletes, no Shortcuts, no stopping programs (only Finder/Dock-style relaunches),
+   no sleep or restart, nothing deleted, moved away or overwritten in the home
+   folder outside the working copy, temp folders and caches or in the service
+   data under /opt/homebrew/var (paths compared ignoring case, as the disk
+   does), and never Nicoder's own data, its app or the project's own folder.
+   Key-shaped text in its output is hidden from the model, the environment stays
+   scrubbed, and the step says "on your Mac". Questions and delegated drafts never get it. Questions are
+   read-only and may `open_project` the repo they found. Do not loosen these
+   rules further, add another unsandboxed path, or route the agent through a
+   foreign agent CLI.
 2. **Software owns truth.** Only the controller mutates `EpisodeState`. The model
    cannot write state, pick commands, or declare tests green. A model's "solved"
    is a validation request, nothing more.
@@ -281,7 +298,8 @@
   for the local llama.cpp models. No host bash. No foreign agent CLI.
 - `src/local_coder/agent/` — the tool-calling agent for models with native tool
   calls (today the hosted Nemotron): `access.py` (path rules), `sandbox.py`
-  (sandbox-exec profile and runner), `tools.py`, `loop.py`, `prompts.py`,
+  (sandbox-exec profile and runner), `mac_access.py` (the checks on a command
+  that runs on the Mac itself), `tools.py`, `loop.py`, `prompts.py`,
   `runner.py` (app entry points). Change requests run it in
   `coordinator._run_agent_request`; Local Coder's own checks run only on Vite
   web apps and only for a change that touched web files (`src/`, `public/`, a
