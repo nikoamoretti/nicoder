@@ -188,6 +188,7 @@ def run_command(
     timeout_s: float = 120.0,
     cancel: threading.Event | None = None,
     max_output: int = 30_000,
+    extra_env: dict[str, str] | None = None,
 ) -> CommandResult:
     """Run `command` with bash inside the sandbox. Never raises for a failing command."""
     tmp.mkdir(parents=True, exist_ok=True)
@@ -197,7 +198,7 @@ def run_command(
         proc = subprocess.Popen(
             [str(SANDBOX_EXEC), "-p", profile, SHELL, "-c", command],
             cwd=str(cwd),
-            env=command_env(home, tmp),
+            env={**command_env(home, tmp), **(extra_env or {})},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

@@ -78,3 +78,23 @@ def test_do_it_is_work_and_show_me_what_it_built_starts_the_preview():
     assert classify_request("ok do it now")["kind"] == "code" or classify_request("do it now")["kind"] == "code"
     assert classify_request("show me what it built")["kind"] == "show"  # Nicoder runs its preview, no model
     assert classify_request("can you run it")["kind"] == "show"
+
+
+def test_a_question_mark_inside_a_task_does_not_make_it_a_question():
+    # 2026-10-27 benchmark: a spec containing "Who owns the zebra?" went to read-only Q&A and was never built.
+    spec = ("The tests in zebra_puzzle_test.py should pass once the module answers both questions. Five houses stand "
+            "in a row, each a different color, and their owners keep different pets and drinks. Who owns the zebra? "
+            "Each clue narrows it down, and the answer must come from the clues, not be typed in.")
+    assert classify_request(spec)["kind"] == "code"
+    assert classify_request("The login button does nothing on Safari. Can you fix it?")["kind"] == "code"
+    assert classify_request("Which is better? Implement it with a hash map.")["kind"] == "code"
+    for question in ("is this a React project?", "I think the button is broken?",
+                     "hmm how does the router work? I'm lost", "Où est défini le login ? Je ne le trouve pas.",
+                     "what's wrong?!", "Why did you change the color? I liked it.",
+                     "Why does the build fail?\n\nmake: *** [all] Error 2"):
+        assert classify_request(question)["kind"] == "chat", question
+    # A later sentence is work only when it asks for a change or opens with a verb that only means one.
+    assert classify_request("The header overlaps on mobile. Fix the padding.")["kind"] == "code"
+    for read_only in ("How does the router work? Make it short.", "Explain how auth works. Do not change anything.",
+                      "Why can't I save?\n\nWrite failed: no space", "Why can't I deploy?\n\nBuild failed: no module"):
+        assert classify_request(read_only)["kind"] != "code", read_only

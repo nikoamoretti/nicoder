@@ -86,3 +86,8 @@ def test_the_app_asks_without_a_path(tmp_path, monkeypatch):
 
 def test_an_empty_message_is_still_empty():
     assert classify_without_project("   ")["kind"] == "empty"
+
+
+def test_solving_is_work_even_with_a_question_in_it():
+    assert classify_without_project("Solve the zebra puzzle: who owns the zebra?")["kind"] == "code"
+    assert classify_without_project("how does the router work?")["kind"] == "chat"

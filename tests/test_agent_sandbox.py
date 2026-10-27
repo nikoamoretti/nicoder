@@ -1,6 +1,7 @@
 """The agent's command sandbox on macOS: writes, secrets, Keychain, environment, time limits."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -114,3 +115,21 @@ def test_a_command_cannot_act_outside_through_other_programs(layout):
     assert _run(layout, f'python3 -c "{probe}"').output.strip().endswith("[1, 1, 1]")
     assert _run(layout, "defaults write com.nicoder.sandbox-test probe -string x").exit_code != 0
     assert _run(layout, "node -e 'console.log(1+1)'").output.strip().endswith("2")
+
+
+def test_the_original_folder_in_a_command_means_the_working_copy(tmp_path):
+    # 2026-10-27 benchmark: `cd <original> && python3 -m unittest` tested the untouched original 40 times over.
+    from local_coder.agent.access import AccessPolicy
+    from local_coder.agent.tools import ToolBox
+
+    home = Path(os.path.realpath(tmp_path / "home"))
+    project, work = home / "Local Coder Projects" / "pov", home / "data" / "candidate"
+    (project).mkdir(parents=True)
+    work.mkdir(parents=True)
+    (project / "pov.py").write_text("ORIGINAL = True\n", encoding="utf-8")
+    (work / "pov.py").write_text("EDITED = True\n", encoding="utf-8")
+    box = ToolBox(AccessPolicy(home=home, workdir=work, project=project), cwd=work, run_tmp=tmp_path / "tmp")
+    assert box._into_working_copy(f'cd "{project}" && cat pov.py') == f'cd "{work}" && cat pov.py'
+    assert box._into_working_copy("cat ~/Local\\ Coder\\ Projects/pov/pov.py") == f"cat {work}/pov.py"
+    assert box._into_working_copy(f"ls {project}-old") == f"ls {project}-old"  # another folder stays itself
+    assert "EDITED" in box.call("bash", json.dumps({"command": f'cd "{project}" && cat pov.py'})).text

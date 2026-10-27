@@ -20,6 +20,7 @@ from typing import Any
 from .access import AccessDenied, AccessPolicy, secret_name
 from .sandbox import available as sandbox_available
 from .sandbox import run_command
+from .shell_paths import into_working_copy
 
 PRUNE_DIRS = frozenset({
     "node_modules", ".git", ".hg", ".svn", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache",
@@ -750,6 +751,15 @@ class ToolBox:
         return ToolResult(f"Edited {shown} ({done} replacement{'s' if done != 1 else ''}).", f"Editing {shown}",
                           target=shown)
 
+    def _into_working_copy(self, command: str) -> str:
+        """The original project's path in a command means the working copy, as it does for the file tools
+        (`shell_paths`: only where the shell uses it as a path)."""
+        project, workdir = self.policy.project_real, self.policy.workdir_real
+        if project is None or workdir is None:
+            return command
+        given = str(self.policy.project) if self.policy.project else None
+        return into_working_copy(command, project=project, workdir=workdir, home=self.policy.home_real, given=given)
+
     def _tool_bash(self, args: dict[str, Any]) -> ToolResult:
         command = str(args["command"]).strip()
         if not command:
@@ -766,8 +776,13 @@ class ToolBox:
             timeout /= 1000
         timeout = min(600.0, max(1.0, timeout))
         writable: list[Path] = []
+        extra_env: dict[str, str] = {}
         if self.policy.workdir_real is not None:
             writable = [self.policy.workdir_real, self.policy.home_real / ".npm"]
+            command = self._into_working_copy(command)
+            # The working copy has no .git: git there must not find the repository of a folder above it (Nico's
+            # home folder is one), so it says "not a git repository" instead.
+            extra_env["GIT_CEILING_DIRECTORIES"] = str(self.policy.workdir_real.parent)
         result = run_command(
             command,
             cwd=self.cwd,
@@ -776,6 +791,7 @@ class ToolBox:
             tmp=self.run_tmp,
             timeout_s=timeout,
             cancel=self.cancel,
+            extra_env=extra_env,
         )
         self.commands.append(command)
         if result.cancelled:
@@ -785,6 +801,11 @@ class ToolBox:
         else:
             status = f"exit code {result.exit_code}"
         output = result.output.rstrip() or "(no output)"
+        if extra_env and "not a git repository" in output and self.policy.project_real is not None:
+            output += (
+                f"\n[The working copy has no .git folder. To read the project's git history, run git -C "
+                f"'{self.policy.project_real}' … (that folder is read-only).]"
+            )
         return ToolResult(
             f"$ {command}\n{output}\n[{status}, {result.seconds} s]",
             f"Running {_short(command, 70)}",

@@ -104,17 +104,16 @@ def _suggested_keep(last_reply: str | None) -> bool:
     return bool(paragraphs) and _KEEP_CUE.search(paragraphs[-1]) is not None
 
 
-_CHANGE = re.compile(
-    r"^(?:(?:ok|okay|so|now|then|just|go ahead and)[\s,]+)*"
-    r"(?:please\s+|can you\s+|could you\s+|would you\s+|"
-    r"i want (?:you )?to\s+|i need (?:you )?to\s+)?"
-    r"(make|build|add|fix|wrap|create|implement|change|update|remove|"
+_CHANGE_LEAD = r"^(?:(?:ok|okay|so|now|then|just|go ahead and)[\s,]+)*"
+_CHANGE_ASK = r"(?:please\s+|can you\s+|could you\s+|would you\s+|i want (?:you )?to\s+|i need (?:you )?to\s+)"
+_CHANGE_VERB = (
+    r"(make|build|add|fix|wrap|create|implement|change|update|remove|solve|finish|complete|"
     r"delete|rename|refactor|write|replace|install|upgrade|turn|package|"
     # "do this: …" is work; "do you …" stays a question (Nico's spec, 2026-10-25, was answered as a question).
     r"do(?!\s+(?:you|i|we|they|he|she)\b)|use|scrape|ingest|set ?up|generate|design|develop|draft|"
-    r"prototype|scaffold|convert|port|improve|rewrite|automate|code|connect|integrate|migrate)\b",
-    re.I,
+    r"prototype|scaffold|convert|port|improve|rewrite|automate|code|connect|integrate|migrate)\b"
 )
+_CHANGE = re.compile(_CHANGE_LEAD + _CHANGE_ASK + "?" + _CHANGE_VERB, re.I)
 _LOOK = re.compile(
     r"^(explain|what does|how does|describe how|walk me through|summarize)\b",
     re.I,
@@ -124,6 +123,8 @@ _QUESTION = re.compile(
     r"did|will|would|could)\b",
     re.I,
 )
+# Up to this many words, a message with a "?" is a question; a longer one is a task that quotes one.
+_QUESTION_WORDS = 40
 _MOBILE_HINT = ("swiftui", "uikit", "xcode project", "android studio", "kotlin android")
 
 
@@ -317,9 +318,25 @@ def _inspect_folder(repo: Path, report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+# Where a sentence starts: after ".", "!" or "?" and a space or line break.
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
+# A later sentence is work when it asks for a change ("Can you fix it?") or opens with a verb that only means one
+# ("Implement it with a hash map."), not "Make it short.", "Do not change anything." or a pasted "Build failed: …".
+_LATER_CHANGE = re.compile(
+    _CHANGE_LEAD + "(?:" + _CHANGE_ASK + _CHANGE_VERB + r"|(?:fix|implement|build|create|refactor|rename|install|"
+    r"migrate|delete|remove)\b(?=\s)(?!\s+(?:failed|fails|failing|failure|errors?|succeeded|successful|"
+    r"completed?|done|finished|output|logs?|step|status|warnings?|took)\b))",
+    re.I,
+)
+
+
 def asked_to_change(text: str) -> bool:
-    """True when the user asked to create or edit the project."""
-    return bool(_CHANGE.search(text.strip()))
+    """True when the user asked to create or edit the project, in any of the message's sentences.
+
+    "The login button does nothing on Safari. Can you fix it?" is work (2026-10-27: it went to read-only Q&A).
+    """
+    first, *later = _SENTENCE_BREAK.split(text.strip())
+    return bool(_CHANGE.match(first)) or any(_LATER_CHANGE.match(sentence) for sentence in later)
 
 
 def asked_to_see_ui(text: str) -> bool:
@@ -376,7 +393,9 @@ def classify_request(
     if _LOOK.search(request):
         return {"kind": "explain", "summary": "This will look up the selected code and stay read-only.",
                 "detail": "No files will be edited."}
-    if "?" in request or _QUESTION.search(request):
+    # A "?" inside a long task ("Who owns the zebra?" in a spec) does not make it a question; in a short message it
+    # does (2026-10-27 benchmark: a spec went to read-only Q&A and was never built).
+    if _QUESTION.search(request) or ("?" in request and len(request.split()) <= _QUESTION_WORDS):
         return {"kind": "chat", "summary": "This will answer in chat without editing files.",
                 "detail": "No files will be edited."}
     return {"kind": "code", "summary": "This will try a bounded local coding attempt.",
@@ -385,7 +404,8 @@ def classify_request(
 
 # With no project open, a request to do something is work; questions, look-ups and small talk are a chat.
 _WORK_VERBS = (
-    r"(do(?!\s+(?:you|i|we|they|he|she)\b)|build|make|create|write|add|implement|set ?up|scrape|ingest|"
+    r"(do(?!\s+(?:you|i|we|they|he|she)\b)|build|make|create|write|add|implement|set ?up|scrape|ingest|solve|"
+    r"finish|complete|"
     r"code|generate|design|develop|draft|"
     r"prototype|scaffold|start|turn|convert|port|refactor|fix|update|change|improve|rewrite|automate|deploy|ship|"
     r"put together|spin up)"

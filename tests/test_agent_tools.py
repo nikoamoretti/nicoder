@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -196,12 +197,37 @@ def test_bash_in_a_change_request_writes_only_the_working_copy(home, tmp_path):
     inside = box.call("bash", {"command": "echo built > out.txt && cat out.txt"})
     assert inside.ok and "built" in inside.text and "[exit code 0" in inside.text
     assert (work / "out.txt").read_text() == "built\n"
-    outside = box.call("bash", {"command": f"echo x > '{project}/hacked.txt'"})
-    assert not outside.ok and "Operation not permitted" in outside.text
+    # The original folder's path means the working copy (as for the file tools): the original is never written.
+    redirected = box.call("bash", {"command": f"echo x > '{project}/hacked.txt'"})
+    assert redirected.ok and (work / "hacked.txt").read_text() == "x\n"
     assert not (project / "hacked.txt").exists()
+    other = home / "projects" / "elsewhere"
+    other.mkdir(parents=True, exist_ok=True)
+    outside = box.call("bash", {"command": f"echo x > '{other}/hacked.txt'"})
+    assert not outside.ok and "Operation not permitted" in outside.text
+    assert not (other / "hacked.txt").exists()
     secret = box.call("bash", {"command": f"cat '{home}/.ssh/id_rsa'"})
     assert not secret.ok and "Operation not permitted" in secret.text
     assert "SSH-KEY-CONTENT" not in secret.text
+
+
+@darwin_only
+def test_the_sandbox_still_refuses_the_original_folder(home, tmp_path):
+    # A form of the original's path the mapping does not cover reaches the sandbox, which refuses the write.
+    box, project, _ = _build_box(home, tmp_path)
+    refused = box.call("bash", {"command": f"echo x > '{project.parent}/./{project.name}/hacked.txt'"})
+    assert not refused.ok and "Operation not permitted" in refused.text
+    assert not (project / "hacked.txt").exists()
+
+
+@darwin_only
+def test_git_in_the_working_copy_does_not_find_a_repository_above_it(home, tmp_path):
+    # Nico's home folder is a git repository: git in the working copy (which has no .git) reported on it.
+    box, project, _ = _build_box(home, tmp_path)
+    subprocess.run(["git", "init", "-q", str(home)], check=True)
+    status = box.call("bash", {"command": "git status"})
+    assert not status.ok and "not a git repository" in status.text
+    assert f"git -C '{project}'" in status.text  # where the history is
 
 
 @darwin_only
