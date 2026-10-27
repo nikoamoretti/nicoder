@@ -71,6 +71,7 @@ def test_a_run_that_hits_the_step_limit_reports_its_work_not_a_preview_error(tmp
     home = Path(os.path.realpath(tmp_path / "home"))
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(coordinator, "AGENT_MAX_WALL_S", 0)  # no time left to carry on by itself: it stops here
     monkeypatch.setattr(coordinator, "AGENT_MAX_STEPS", 3)
     folder = home / "Local Coder Projects" / "crime-map"
     folder.mkdir(parents=True)

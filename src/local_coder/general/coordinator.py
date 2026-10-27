@@ -96,6 +96,16 @@ EventListener = Callable[[dict[str, Any]], None]
 AgentChat = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 MAX_CHECK_REPAIRS = 8
 AGENT_REPAIR_ROUNDS = 2
+# A run that ran out of time or steps but changed files in that stretch carries on by itself, half an hour at a time,
+# up to two hours in all (Nico, 2026-10-27: "after 30 minutes of working I ran out of time… Say continue").
+AGENT_MORE_S = 1800
+AGENT_MAX_WALL_S = 7200
+# Carrying on resends a growing conversation each step (his 130-step half hour cost $2.46): it stops at this spend.
+AGENT_KEEP_GOING_MAX_USD = 3.0
+_KEEP_GOING = (
+    "Keep going: carry on from where you are (don't start over) until the work is done, then run the project's "
+    "checks and reply as asked."
+)
 AGENT_MAX_STEPS = 150  # was 80: a real spec (Nico's crime-data pipeline) ran out of steps before its page
 _VITE_CONFIGS = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
 # What makes a change a web change: Nicoder's checks (source scan, build, preview, empty page) look at these.
@@ -121,6 +131,8 @@ class _GenerationLedger:
             int(generation_limit) if generation_limit is not None else int(budget.max_generations)
         )
         self.wall_seconds = int(wall_seconds) if wall_seconds is not None else int(budget.wall_seconds)
+        # A caller that set its own limits (a delegated draft, a test) gets exactly those: no carrying on.
+        self.fixed = generation_limit is not None or wall_seconds is not None
         self.longest_generation_s = 0.0
         self.longest_check_s = 0.0
 
@@ -143,6 +155,14 @@ class _GenerationLedger:
 
     def note_generation(self, seconds: float) -> None:
         self.longest_generation_s = max(self.longest_generation_s, seconds)
+
+    def extend(self, seconds: int, generations: int) -> None:
+        """More time and model calls for a run that is still making progress."""
+        self.wall_seconds += int(seconds)
+        self.max_generations += int(generations)
+
+    def elapsed_s(self) -> float:
+        return time.time() - self.started
 
     def note_check(self, seconds: float) -> None:
         self.longest_check_s = max(self.longest_check_s, seconds)
@@ -1078,6 +1098,38 @@ def _agent_steps(ledger: _GenerationLedger) -> int:
     return max(1, min(AGENT_MAX_STEPS, ledger.max_generations - ledger.count))
 
 
+def _keep_going(
+    session: Any,
+    run: Any,
+    ledger: _GenerationLedger,
+    workdir: Path,
+    window: Any,
+    listener: EventListener | None,
+    cancel: threading.Event,
+) -> Any:
+    """Carry on, half an hour at a time, while the run changes files, instead of asking for "continue".
+
+    `window` is the working copy's index when this stretch began. A stretch that changed nothing ends the run with
+    the agent's own account; so do two hours in all, AGENT_KEEP_GOING_MAX_USD spent, or Stop.
+    """
+    while run.status in ("step_limit", "time_limit") and not cancel.is_set() and not ledger.fixed:
+        left = AGENT_MAX_WALL_S - ledger.elapsed_s()
+        spent = float(getattr(session, "cost_usd", None) or 0.0)
+        if left < 120 or spent >= AGENT_KEEP_GOING_MAX_USD:
+            break
+        now = index_tree(workdir)
+        if not compute_delta(window, now).touched():
+            break
+        window = now
+        ledger.extend(max(0, min(AGENT_MORE_S, int(left)) - int(ledger.remaining_s())), AGENT_MAX_STEPS)
+        minutes = round(ledger.elapsed_s() / 60)
+        cost = f", ${spent:.2f}" if spent else ""
+        _emit(listener, "activity",
+              {"detail": f"Still working ({minutes} minutes so far{cost}): carrying on by itself."})
+        run = session.ask(_KEEP_GOING, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s())
+    return run
+
+
 def _check_feedback(meta: dict[str, Any]) -> str:
     """Nicoder's latest failed check, phrased for the agent's next turn."""
     checks = meta.get("checks") or []
@@ -1141,8 +1193,10 @@ def _run_agent_request(
     asked = text.strip() or "Use the attached files."
     if files:
         asked = f"{asked}\n\n{attached.note(files, shown=shows)}"
+    window = index_tree(engine_cwd)
     run = session.ask(asked, max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s(),
                       look_first=True, images=attached.image_urls(files) if shows and files else None)
+    run = _keep_going(session, run, ledger, engine_cwd, window, listener, cancel)
     web_app = _is_vite_app(engine_cwd)
     rounds = 0
     try:
@@ -1183,9 +1237,11 @@ def _run_agent_request(
                 break
             rounds += 1
             _emit(listener, "activity", {"detail": "Sending Nicoder's check results back to the model."})
+            window = index_tree(engine_cwd)
             run = session.ask(
                 _check_feedback(meta), max_steps=_agent_steps(ledger), deadline=time.monotonic() + ledger.remaining_s(),
             )
+            run = _keep_going(session, run, ledger, engine_cwd, window, listener, cancel)
     finally:
         meta["agent"] = {
             "status": run.status,
