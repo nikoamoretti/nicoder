@@ -13,8 +13,11 @@ models. Nicoder calls it like any hosted provider (`hosted.py`, provider
   to 127.0.0.1 and is exchanged for a new key.
 - The model list is OrcaRouter's public /v1/models joined with its public
   benchmark board (intelligence index, speed, price), cached for the picker.
-  Only chat models that can call tools are offered: Nicoder's agent needs
-  tool calls.
+  Only chat models are offered: Nicoder's agent needs tool calls. The listing's
+  own parameter list does not decide that: it leaves `tools` out for MiniMax
+  M2.5/M2.7 and DeepSeek Reasoner, which call tools fine (checked live
+  2026-10-28), and some free models list no endpoints at all. Ids without a
+  provider part (gpt-5.6-luna) repeat a listed model and are left out.
 """
 from __future__ import annotations
 
@@ -48,7 +51,10 @@ RECENT_LIMIT = 8
 SIGN_IN_SECONDS = 300
 _SECURITY = "/usr/bin/security"
 _KEY_SHAPE = re.compile(r"^sk-orca-[A-Za-z0-9_.-]{8,200}$")
-_NOT_CHAT = ("embed", "tts", "image", "imagen", "video", "audio", "transcribe", "realtime", "search", "moderation")
+_NOT_CHAT = ("embed", "tts", "image", "imagen", "video", "audio", "transcribe", "realtime", "search", "moderation",
+             "verify")
+_DATED = re.compile(r"^(.{1,200})-(?:\d{4}-\d{2}-\d{2}|\d{4})$")
+CATALOG_VERSION = 2  # 2: chat models the listing undersells, dated copies marked
 _PROVIDERS = {
     "openai": "OpenAI", "anthropic": "Anthropic", "google": "Google", "deepseek": "DeepSeek", "grok": "xAI",
     "qwen": "Qwen", "kimi": "Moonshot", "minimax": "MiniMax", "z-ai": "Z.ai", "tencent": "Tencent",
@@ -337,8 +343,9 @@ def _list(value: Any) -> list[Any]:
 
 
 def normalize(raw: list[dict[str, Any]], bench: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Chat models that can call tools, with the facts the picker shows."""
+    """Chat models, with the facts the picker shows."""
     scores = {str(row.get("model")): row for row in bench or [] if isinstance(row, dict) and row.get("model")}
+    listed = {str(item.get("id") or "") for item in raw}
     models: list[dict[str, Any]] = []
     for item in raw:
         model_id = str(item.get("id") or "")
@@ -347,11 +354,12 @@ def normalize(raw: list[dict[str, Any]], bench: list[dict[str, Any]] | None = No
         prefix, slug = model_id.split("/", 1)
         lowered = model_id.lower()
         capabilities = item.get("endpoint_capabilities")
+        endpoints = _list(item.get("supported_endpoint_types"))
         if isinstance(capabilities, list):
             if "chat_completions" not in capabilities:
                 continue
-        elif "openai" not in (item.get("supported_endpoint_types") or []):
-            continue
+        elif endpoints and "openai" not in endpoints:
+            continue  # an empty list says nothing: Tencent's free Hy3 and Hy4 preview chat and call tools
         architecture = _dict(item.get("architecture"))
         outputs = _list(architecture.get("output_modalities"))
         if outputs and outputs != ["text"]:
@@ -361,8 +369,6 @@ def normalize(raw: list[dict[str, Any]], bench: list[dict[str, Any]] | None = No
         if any(word in lowered for word in _NOT_CHAT):
             continue
         parameters = item.get("supported_parameters")
-        if isinstance(parameters, list) and "tools" not in parameters:
-            continue
         pricing = _dict(item.get("pricing"))
         price_in = _price(pricing.get("prompt_per_million"))
         price_out = _price(pricing.get("completion_per_million"))
@@ -374,6 +380,7 @@ def normalize(raw: list[dict[str, Any]], bench: list[dict[str, Any]] | None = No
             provider_label, name = name.split(": ", 1)
             provider = _PROVIDERS.get(prefix) or provider_label
         bench_row = _dict(scores.get(slug) or scores.get(slug.removesuffix("-free")))
+        dated = _DATED.match(model_id)
         inputs = _list(architecture.get("input_modalities"))
         models.append({
             "id": model_id,
@@ -393,6 +400,8 @@ def normalize(raw: list[dict[str, Any]], bench: list[dict[str, Any]] | None = No
             "reasoning_switch": has_reasoning_switch(model_id, parameters if isinstance(parameters, list) else None),
             "intelligence": _price(bench_row.get("intelligence")),
             "speed": round(float(bench_row["tokens_per_sec"])) if bench_row.get("tokens_per_sec") else None,
+            # A pinned dated version of a listed model (gpt-5.4-2026-03-05): the model menu leaves it out.
+            "dated_copy": bool(dated and dated.group(1) in listed),
         })
     return models
 
@@ -415,7 +424,7 @@ def fetch_catalog(*, timeout_s: float = 20.0) -> dict[str, Any]:
                 bench = []
     except (httpx.HTTPError, ValueError, AttributeError) as exc:
         raise OrcaError(f"OrcaRouter's model list could not be loaded ({type(exc).__name__}).") from exc
-    payload = {"fetched_at": int(time.time()), "models": normalize(raw, bench)}
+    payload = {"fetched_at": int(time.time()), "version": CATALOG_VERSION, "models": normalize(raw, bench)}
     path = catalog_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -434,9 +443,10 @@ def cached_catalog() -> dict[str, Any]:
 
 
 def load_catalog(*, refresh: bool = False) -> dict[str, Any]:
-    """The model list, downloaded again when asked or when the cache is over 12 hours old."""
+    """The model list, downloaded again when asked, when the cache is over 12 hours old or an older build made it."""
     cached = cached_catalog()
-    if not refresh and cached["models"] and time.time() - float(cached.get("fetched_at") or 0) < CATALOG_MAX_AGE_S:
+    fresh = time.time() - float(cached.get("fetched_at") or 0) < CATALOG_MAX_AGE_S
+    if not refresh and cached["models"] and fresh and cached.get("version") == CATALOG_VERSION:
         return cached
     try:
         return fetch_catalog()

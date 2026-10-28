@@ -62,6 +62,12 @@ _STUCK = (
 # A reply with no tool call that announces a step ("Rewriting more simply:"), or that follows the note above, is sent
 # back once: it is not an answer (2026-10-27: a replay ended on "… Rewriting more simply:", the fix never written).
 _GO_ON = "Go ahead and do that now with your tools."
+# A reply cut off at the model's output limit ends in an unfinished tool call (OrcaRouter stops MiniMax M2.x at 2,048
+# tokens, checked 2026-10-28). That call cannot run; saying why beats "not valid JSON", which gets the same call again.
+_CUT_OFF = (
+    "Your reply hit this model's output limit and was cut off, so this call did not run. Write big files in parts: "
+    "a short first version, then add the rest with more edits."
+)
 _KEEP_RECENT = 6
 _RECENT_TOOL_CHARS = 4000
 _LIMIT_TEXT = {
@@ -117,6 +123,19 @@ def _message(reply: dict[str, Any]) -> dict[str, Any]:
         return {}
     message = choices[0].get("message")
     return message if isinstance(message, dict) else {}
+
+
+def _cut_off(reply: dict[str, Any]) -> bool:
+    choices = reply.get("choices") if isinstance(reply, dict) else None
+    return bool(isinstance(choices, list) and choices and isinstance(choices[0], dict)
+                and choices[0].get("finish_reason") == "length")
+
+
+def _readable(arguments: str) -> bool:
+    try:
+        return isinstance(json.loads(arguments or "{}"), dict)
+    except ValueError:
+        return False
 
 
 def _tool_calls(message: dict[str, Any], *, offset: int) -> list[dict[str, Any]]:
@@ -277,6 +296,7 @@ class AgentSession:
             steps += 1
             after_note, noted = noted, False
             message = _message(reply)
+            cut_off = _cut_off(reply)
             content = strip_think(str(message.get("content") or "")).strip()
             tool_calls = _tool_calls(message, offset=calls)
             entry: dict[str, Any] = {"role": "assistant", "content": content}
@@ -311,6 +331,8 @@ class AgentSession:
                 name = call["function"]["name"]
                 if self._cancelled():
                     result_text = "Stopped by the user before this tool ran."
+                elif cut_off and not _readable(call["function"]["arguments"]):
+                    result_text = _CUT_OFF
                 else:
                     # A command shows while it runs, and its end takes that step's place (`call` ties the two).
                     step: dict[str, Any] = {"call": uuid.uuid4().hex[:12]}

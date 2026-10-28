@@ -53,6 +53,8 @@ struct RouterModel: Identifiable, Hashable {
     let vision: Bool
     let intelligence: Double?
     let speed: Int?
+    /// A pinned dated version of another listed model (gpt-5.4-2026-03-05): only the full list shows it.
+    var datedCopy = false
 
     var priceLabel: String {
         if free { return "Free" }
@@ -237,7 +239,11 @@ final class AppModel: ObservableObject {
     // OrcaRouter
     @Published var orcaConnected = false
     @Published var orcaWhere = ""
-    @Published var routerModels: [RouterModel] = []
+    @Published var routerModels: [RouterModel] = [] {
+        didSet { routerProviders = Self.byProvider(routerModels) }
+    }
+    /// OrcaRouter's models by provider for the model menu: providers A to Z, the newest version first.
+    @Published private(set) var routerProviders: [(String, [RouterModel])] = []
     @Published var routerFetchedAt: Date?
     @Published var routerLoading = false
     @Published var routerError: String?
@@ -332,6 +338,26 @@ final class AppModel: ObservableObject {
         let known = order.compactMap { name in grouped[name].map { (name, $0) } }
         let others = grouped.keys.filter { !order.contains($0) }.sorted().map { ($0, grouped[$0] ?? []) }
         return known + others
+    }
+
+    /// The model menu's grouping, made once per downloaded list (the menu's body runs on every published change).
+    static func byProvider(_ rows: [RouterModel]) -> [(String, [RouterModel])] {
+        let versions = Dictionary(rows.map { ($0.id, version($0.name)) }, uniquingKeysWith: { first, _ in first })
+        return Dictionary(grouping: rows.filter { !$0.datedCopy }, by: \.provider)
+            .map { provider, group in
+                (provider, group.sorted { left, right in
+                    let (one, two) = (versions[left.id] ?? [], versions[right.id] ?? [])
+                    if one != two { return two.lexicographicallyPrecedes(one) }
+                    return left.name.localizedStandardCompare(right.name) == .orderedAscending
+                })
+            }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+    }
+
+    /// The first version number in a model's name: "GPT-5.4 Mini" is [5, 4]; none is [].
+    static func version(_ name: String) -> [Int] {
+        guard let range = name.range(of: #"\d+(\.\d+)*"#, options: .regularExpression) else { return [] }
+        return name[range].split(separator: ".").compactMap { Int($0) }
     }
 
     /// The conversation the window shows.
@@ -1268,7 +1294,8 @@ final class AppModel: ObservableObject {
             reasoning: row["reasoning"] as? Bool ?? false,
             vision: row["vision"] as? Bool ?? false,
             intelligence: (row["intelligence"] as? Double) ?? (row["intelligence"] as? Int).map(Double.init),
-            speed: row["speed"] as? Int
+            speed: row["speed"] as? Int,
+            datedCopy: row["dated_copy"] as? Bool ?? false
         )
     }
 

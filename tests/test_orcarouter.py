@@ -40,7 +40,9 @@ NOT_CHAT = [
      "architecture": {"output_modalities": ["text", "image"]}},
     {"id": "openai/text-embedding-3-small", "supported_endpoint_types": ["embeddings"]},
     {"id": "orcarouter/fusion", "supported_endpoint_types": ["openai"]},
-    {"id": "openai/o1-mini", "endpoint_capabilities": ["chat_completions"], "supported_parameters": ["max_tokens"]},
+    {"id": "orca/orcaverify-text1.0", "endpoint_capabilities": ["chat_completions"],
+     "supported_parameters": ["max_tokens"]},
+    {"id": "orca/dub", "supported_endpoint_types": [], "architecture": {"output_modalities": ["video"]}},
     {"id": "openai/gpt-5-search-api", "endpoint_capabilities": ["chat_completions"], "supported_parameters": ["tools"]},
 ]
 BENCH = [
@@ -81,13 +83,15 @@ def keychain(monkeypatch, tmp_path) -> FakeKeychain:
 def _cache(models: list[dict], *, age_s: float = 0) -> None:
     path = orcarouter.catalog_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"fetched_at": time.time() - age_s, "models": models}), encoding="utf-8")
+    path.write_text(json.dumps({"fetched_at": time.time() - age_s, "version": orcarouter.CATALOG_VERSION,
+                                "models": models}), encoding="utf-8")
 
 
-def test_only_chat_models_that_call_tools_are_offered():
+def test_only_chat_models_are_offered():
     models = orcarouter.normalize([SONNET, GLM_FREE, *NOT_CHAT, {"id": "orcarouter/free"}], BENCH)
-    assert [row["id"] for row in models] == ["anthropic/claude-sonnet-5.5", "z-ai/glm-5.3-flash-free"]
-    sonnet, glm = models
+    assert [row["id"] for row in models] == ["anthropic/claude-sonnet-5.5", "z-ai/glm-5.3-flash-free",
+                                             "orcarouter/free"]
+    sonnet, glm, _ = models
     assert (sonnet["name"], sonnet["provider"], sonnet["context"]) == ("Claude Sonnet 5.5", "Anthropic", 1000000)
     assert (sonnet["price_in"], sonnet["price_out"], sonnet["free"]) == (2.0, 10.0, False)
     assert sonnet["reasoning"] and sonnet["vision"] and (sonnet["intelligence"], sonnet["speed"]) == (56.0, 89)
@@ -95,6 +99,32 @@ def test_only_chat_models_that_call_tools_are_offered():
     assert (glm["name"], glm["provider"], glm["free"], glm["intelligence"]) == ("GLM 5.3 Flash (Free)", "Z.ai", True,
                                                                                41.8)
     assert orcarouter.price_label(sonnet) == "$2 in · $10 out" and orcarouter.price_label(glm) == "Free"
+
+
+def test_chat_models_the_listing_undersells_are_offered():
+    """Each called a tool in a live check (2026-10-28), though the listing leaves `tools` out or names no endpoint."""
+    minimax = {"id": "minimax/minimax-m2.7", "name": "MiniMax: MiniMax M2.7",
+               "endpoint_capabilities": ["chat_completions"],
+               "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+               "pricing": {"prompt_per_million": "0.3", "completion_per_million": "1.2"},
+               "supported_parameters": ["max_completion_tokens", "reasoning", "stream", "temperature", "top_p"]}
+    hy3 = {"id": "tencent/hy3-free", "name": "Tencent: Hy3 (Free)", "supported_endpoint_types": [],
+           "pricing": {"request": "0.000000"}}
+    alias = {"id": "gpt-5.6-luna", "endpoint_capabilities": ["chat_completions"]}  # repeats openai/gpt-5.6-luna
+    models = orcarouter.normalize([minimax, hy3, alias, *NOT_CHAT])
+    assert [(row["id"], row["name"], row["provider"], row["free"]) for row in models] == [
+        ("minimax/minimax-m2.7", "MiniMax M2.7", "MiniMax", False),
+        ("tencent/hy3-free", "Hy3 (Free)", "Tencent", True),
+    ]
+
+
+def test_dated_copies_of_a_listed_model_are_marked_for_the_menu():
+    names = ("gpt-5.4", "gpt-5.4-2026-03-05", "gpt-3.5-turbo", "gpt-3.5-turbo-0125", "gpt-4o-mini-2024-07-18")
+    rows = orcarouter.normalize([{"id": f"openai/{name}", "endpoint_capabilities": ["chat_completions"]}
+                                 for name in names])
+    assert {row["id"].removeprefix("openai/"): row["dated_copy"] for row in rows} == {
+        "gpt-5.4": False, "gpt-5.4-2026-03-05": True, "gpt-3.5-turbo": False, "gpt-3.5-turbo-0125": True,
+        "gpt-4o-mini-2024-07-18": False}
 
 
 def test_suggestions_are_the_smartest_affordable_models_plus_a_free_one():
@@ -146,6 +176,10 @@ def test_the_list_is_downloaded_joined_and_cached(monkeypatch):
     assert orcarouter.find_model("anthropic/claude-sonnet-5.5")["intelligence"] == 56.0
     orcarouter.load_catalog()
     assert len(seen) == 2, "a fresh cache is reused without a download"
+    cache = json.loads(orcarouter.catalog_path().read_text(encoding="utf-8"))
+    orcarouter.catalog_path().write_text(json.dumps({**cache, "version": 1}), encoding="utf-8")
+    orcarouter.load_catalog()
+    assert len(seen) == 4, "a list an older build cached is downloaded again"
 
 
 def test_a_pasted_key_is_checked_then_kept_in_the_keychain(keychain, monkeypatch, tmp_path):

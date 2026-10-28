@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// The model switcher in the composer: grouped by where each model runs.
+/// The model switcher in the composer: grouped by where each model runs, with every OrcaRouter model in a
+/// submenu per provider.
 struct ModelMenu: View {
     @EnvironmentObject private var model: AppModel
 
@@ -16,12 +17,16 @@ struct ModelMenu: View {
                         .disabled(item.provider == "local" && !item.available)
                     }
                     if group == "OrcaRouter" {
+                        providerMenus
                         orcaActions
                     }
                 }
             }
             if !model.modelGroups.contains(where: { $0.0 == "OrcaRouter" }) {
-                Section("OrcaRouter") { orcaActions }
+                Section("OrcaRouter") {
+                    providerMenus
+                    orcaActions
+                }
             }
             Divider()
             SettingsLink {
@@ -47,6 +52,19 @@ struct ModelMenu: View {
         .accessibilityIdentifier("modelMenu")
     }
 
+    private var providerMenus: some View {
+        ForEach(model.routerProviders, id: \.0) { provider, rows in
+            Menu(provider) {
+                ForEach(rows) { row in
+                    Toggle(isOn: routerBinding(for: row)) {
+                        Text(row.name)
+                        Text(model.orcaConnected ? row.priceLabel : "\(row.priceLabel) · connect first")
+                    }
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var orcaActions: some View {
         if !model.orcaConnected {
@@ -59,6 +77,15 @@ struct ModelMenu: View {
         if item.provider == "local" && !item.available { return "Not installed on this Mac" }
         if item.provider == "orcarouter" && !model.orcaConnected { return "\(item.subtitle) · connect first" }
         return item.subtitle
+    }
+
+    private func routerBinding(for row: RouterModel) -> Binding<Bool> {
+        Binding(
+            get: { model.selectedModelId == "orca:\(row.id)" },
+            set: { isOn in
+                if isOn { model.chooseRouterModel(row.id) }
+            }
+        )
     }
 
     private func binding(for item: CatalogModel) -> Binding<Bool> {
