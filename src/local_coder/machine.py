@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -89,8 +93,23 @@ def _guess_installed_model() -> MachineConfig:
     return cfg
 
 
-def load_machine_config() -> MachineConfig:
-    """Load machine config; missing file yields defaults (model path guessed)."""
+# A request's own model (its conversation's, `app_service.conversation_model_for`). Set on the request's thread only,
+# so a question and a change in two chats can run on two models at once.
+_RUN_MODEL: ContextVar[dict[str, Any] | None] = ContextVar("local_coder_run_model", default=None)
+
+
+@contextmanager
+def run_model(fields: dict[str, Any]) -> Iterator[None]:
+    """Within the block, on this thread, the config answers with these model fields; nothing saves them."""
+    token = _RUN_MODEL.set(dict(fields))
+    try:
+        yield
+    finally:
+        _RUN_MODEL.reset(token)
+
+
+def saved_machine_config() -> MachineConfig:
+    """The config file as saved: the machine's model, never a request's own."""
     path = config_path()
     if not path.exists():
         return _guess_installed_model()
@@ -101,8 +120,19 @@ def load_machine_config() -> MachineConfig:
     return MachineConfig.model_validate(data)
 
 
+def load_machine_config() -> MachineConfig:
+    """Load machine config; missing file yields defaults (model path guessed). Inside `run_model`, that model."""
+    cfg = saved_machine_config()
+    fields = _RUN_MODEL.get()
+    return cfg.model_copy(update=fields) if fields else cfg
+
+
 def write_machine_config(cfg: MachineConfig) -> Path:
-    """Write the machine-local config atomically. Returns its path."""
+    """Write the machine-local config atomically. Returns its path. A request's own model is never saved."""
+    fields = _RUN_MODEL.get()
+    if fields:
+        saved = saved_machine_config()
+        cfg = cfg.model_copy(update={name: getattr(saved, name) for name in fields})
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [

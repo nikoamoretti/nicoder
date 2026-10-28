@@ -55,6 +55,7 @@ struct RouterModel: Identifiable, Hashable {
     let speed: Int?
     /// A pinned dated version of another listed model (gpt-5.4-2026-03-05): only the full list shows it.
     var datedCopy = false
+    var reasoningSwitch = false
 
     var priceLabel: String {
         if free { return "Free" }
@@ -231,7 +232,13 @@ final class AppModel: ObservableObject {
     @Published var previewURL: String?
     @Published var engineName = "general"
     @Published var models: [CatalogModel] = []
+    /// The open conversation's model: its own, or the last pick (`defaultModelId`) while it has none.
     @Published var selectedModelId = ""
+    /// The last model picked anywhere: what a conversation without its own runs on.
+    private var defaultModelId = ""
+    private var defaultReasoningOn = true
+    /// Models conversations keep (each chat and project runs on its own; the engine remembers them).
+    private var placeModels: [Place: String] = [:]
     /// The finished work behind each answer, per conversation.
     @Published private var traceRecords: [Place: [String: TraceRecord]] = [:]
     @Published var inspectorShown = false
@@ -328,7 +335,15 @@ final class AppModel: ObservableObject {
     }
 
     var selectedModel: CatalogModel? {
-        models.first(where: { $0.id == selectedModelId })
+        if let item = models.first(where: { $0.id == selectedModelId }) {
+            return item
+        }
+        // A chat's own model that is not among the recent ones.
+        return routerModels.first(where: { "orca:\($0.id)" == selectedModelId }).map { row in
+            CatalogModel(id: "orca:\(row.id)", name: row.name, available: orcaConnected, note: row.summary,
+                         group: "OrcaRouter", subtitle: row.priceLabel, provider: "orcarouter", free: row.free,
+                         intelligence: row.intelligence, reasoningSwitch: row.reasoningSwitch)
+        }
     }
 
     /// Models grouped by where they run, in a fixed order.
@@ -541,6 +556,26 @@ final class AppModel: ObservableObject {
         if let note = notes.removeValue(forKey: place) {
             banner = note
         }
+        showModel(of: place)
+    }
+
+    /// The model menu shows the conversation's own model, or the last pick while it has none.
+    private func showModel(of place: Place) {
+        selectedModelId = placeModels[place] ?? defaultModelId
+        if placeModels[place] == nil {
+            reasoningOn = defaultReasoningOn
+        }
+    }
+
+    /// A conversation's payload says which model it keeps ("" while it has none) and that model's reasoning.
+    private func applyModel(_ payload: [String: Any], of place: Place) {
+        let own = payload["model"] as? String ?? ""
+        placeModels[place] = own.isEmpty ? nil : own
+        guard self.place == place else { return }
+        showModel(of: place)
+        if !own.isEmpty, let mode = payload["reasoning"] as? String {
+            reasoningOn = mode != "off"
+        }
     }
 
     /// A new chat with no project (⌘N, the toolbar, the sidebar). Nothing is archived: every chat stays in the
@@ -553,6 +588,7 @@ final class AppModel: ObservableObject {
         inspection = nil
         history = []
         chatID = Self.newChatID()
+        showModel(of: place)
     }
 
     /// Open a chat that has no project.
@@ -566,6 +602,7 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let payload = try await engine.call("load_chat", ["chat_id": id])
+                applyModel(payload, of: .chat(id))
                 guard place == .chat(id) else { return }
                 applyChatTurns(payload["turns"])
             } catch {
@@ -1160,10 +1197,20 @@ final class AppModel: ObservableObject {
     func selectModel(_ id: String) {
         guard !id.isEmpty, id != selectedModelId || !(selectedModel?.available ?? false) else { return }
         switchingModel = true
+        let here = place
+        var params: [String: Any] = ["id": id]
+        switch here {
+        case .project(let path): params["path"] = path
+        case .chat(let chat): params["chat_id"] = chat
+        }
         Task {
             defer { switchingModel = false }
             do {
-                let result = try await engine.call("select_model", ["id": id], timeoutSeconds: 20)
+                let result = try await engine.call("select_model", params, timeoutSeconds: 20)
+                placeModels[here] = id
+                if place == here {
+                    selectedModelId = id
+                }
                 if let catalog = result["catalog"] as? [String: Any] {
                     applyCatalog(from: ["models": catalog["models"] as Any, "selected_model": catalog["selected"] as Any])
                 }
@@ -1189,7 +1236,7 @@ final class AppModel: ObservableObject {
         reasoningOn = on
         Task {
             do {
-                _ = try await engine.call("set_reasoning", ["mode": on ? "on" : "off"])
+                _ = try await engine.call("set_reasoning", ["mode": on ? "on" : "off", "model": selectedModelId])
             } catch {
                 reasoningOn = !on
                 banner = error.localizedDescription
@@ -1235,13 +1282,19 @@ final class AppModel: ObservableObject {
             }
         }
         if let selected = payload?["selected_model"] as? String, !selected.isEmpty {
-            selectedModelId = selected
+            defaultModelId = selected
+            if placeModels[place] == nil {
+                selectedModelId = selected
+            }
         }
         if let orca = payload?["orcarouter"] as? [String: Any] {
             applyOrcaStatus(orca)
         }
         if let mode = payload?["reasoning"] as? String {
-            reasoningOn = mode != "off"
+            defaultReasoningOn = mode != "off"
+            if placeModels[place] == nil || placeModels[place] == defaultModelId {
+                reasoningOn = defaultReasoningOn
+            }
         }
         if let mac = payload?["mac_access"] as? Bool {
             macAccess = mac
@@ -1295,7 +1348,8 @@ final class AppModel: ObservableObject {
             vision: row["vision"] as? Bool ?? false,
             intelligence: (row["intelligence"] as? Double) ?? (row["intelligence"] as? Int).map(Double.init),
             speed: row["speed"] as? Int,
-            datedCopy: row["dated_copy"] as? Bool ?? false
+            datedCopy: row["dated_copy"] as? Bool ?? false,
+            reasoningSwitch: row["reasoning_switch"] as? Bool ?? false
         )
     }
 
@@ -1598,6 +1652,7 @@ final class AppModel: ObservableObject {
 
     private func loadChat(for path: String) async throws {
         let payload = try await engine.call("load_chat", ["path": path])
+        applyModel(payload, of: .project(path))
         guard projectPath == path else { return }
         applyChatTurns(payload["turns"])
     }

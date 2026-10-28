@@ -14,7 +14,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ import httpx
 
 from . import BUILD_ID, __version__
 from . import accept as accept_mod
-from .catalog import entry_by_id, list_models
+from .catalog import CatalogEntry, entry_by_id, list_models
 from .config import CONFIG_FILENAME, EXAMPLE_TOML, RepoConfig, load_config
 from .controller import Controller, git_is_dirty, git_revision
 from .errorlog import UNEXPECTED, record_error
@@ -31,11 +32,14 @@ from .hosted import HostedError, find_api_key, hosted_chat, provider_place
 from .hostenv import apply_host_path
 from .machine import (
     DEFAULT_ENDPOINT,
+    MachineConfig,
     config_dir,
     config_path,
     is_hosted,
     load_machine_config,
     machine_status,
+    run_model,
+    saved_machine_config,
     write_machine_config,
 )
 from .persistence import EpisodeStore, new_episode_id
@@ -247,6 +251,8 @@ def start_chat(text: str, *, parent: str | Path | None = None, chat_id: str | No
     remember_project(dest)
     if earlier:
         move_free_chat(str(chat_id), dest)
+    if chat_id:
+        _remember_conversation_models({conversation_key(dest): conversation_model(conversation_key(chat_id=chat_id))})
     report = general_inspect(dest)
     return {
         "path": str(dest),
@@ -433,13 +439,19 @@ def classify_request(
         except Exception:  # noqa: BLE001 — a damaged record must never block a message; it is just not a Keep
             waiting = False
     result = general_classify(text, inspection, last_reply=last_reply, waiting=waiting)
-    if result.get("kind") == "explain" and agent_capable(load_machine_config()):
+    if result.get("kind") == "explain" and agent_capable(conversation_config(folder)):
         summary = "This will look through the code and answer without editing files."
         return {**result, "kind": "chat", "summary": summary}
     return result
 
 
 def explain_request(path: str | Path, text: str) -> dict[str, Any]:
+    """Answer a "how does this work" request on the project's own model."""
+    with conversation_model_for(path):
+        return _explain_request(path, text)
+
+
+def _explain_request(path: str | Path, text: str) -> dict[str, Any]:
     """Read-only, retrieval-grounded explanation. No PATCH episode, no cloud."""
     repo = Path(path).expanduser().resolve()
     if not repo.is_dir():
@@ -478,6 +490,27 @@ def explain_request(path: str | Path, text: str) -> dict[str, Any]:
 
 
 def chat_request(
+    path: str | Path | None,
+    text: str,
+    *,
+    listener: EventListener | None = None,
+    cancel: threading.Event | None = None,
+    history: Any = None,
+    chat_id: str | None = None,
+    attachments: Any = None,
+) -> dict[str, Any]:
+    """Answer a question on its conversation's own model (`_answer`). A project it opens that has no model of its
+    own yet carries on with this one."""
+    with conversation_model_for(path, chat_id) as chosen:
+        result = _answer(path, text, listener=listener, cancel=cancel, history=history, chat_id=chat_id,
+                         attachments=attachments)
+    opened = result.get("open_project")
+    if opened and not conversation_model(conversation_key(opened)):
+        _remember_conversation_models({conversation_key(opened): chosen})
+    return result
+
+
+def _answer(
     path: str | Path | None,
     text: str,
     *,
@@ -643,7 +676,7 @@ def load_free_chat_payload(chat_id: str) -> dict[str, Any]:
     from local_coder.general.chat_log import load_free_chat
 
     try:
-        return load_free_chat(chat_id)
+        return {**load_free_chat(chat_id), **_model_of(conversation_key(chat_id=chat_id))}
     except ValueError as exc:
         raise AppError("That chat does not exist.") from exc
 
@@ -824,7 +857,7 @@ def load_project_chat(path: str | Path) -> dict[str, Any]:
     repo = Path(path).expanduser().resolve()
     if not repo.is_dir():
         raise AppError("That folder does not exist.")
-    return load_chat(repo)
+    return {**load_chat(repo), **_model_of(conversation_key(repo))}
 
 
 def clear_project_chat(path: str | Path) -> dict[str, Any]:
@@ -974,8 +1007,148 @@ def apply_speed_defaults() -> Any:
     return updated
 
 
-def select_model(model_id: str) -> dict[str, Any]:
-    """Switch the machine config to a catalog model. Does not start a server."""
+_CONVERSATIONS_LOCK = threading.Lock()
+
+
+def _conversation_models_path() -> Path:
+    return config_dir() / "conversation-models.json"
+
+
+def conversation_key(path: str | Path | None = None, chat_id: str | None = None) -> str:
+    """A conversation's name in the model list: a chat without a project, else a project folder."""
+    if chat_id:
+        return f"chat:{chat_id}"
+    return f"project:{Path(path).expanduser().resolve()}" if path else ""
+
+
+def _conversation_models() -> dict[str, str]:
+    try:
+        data = json.loads(_conversation_models_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): value for key, value in data.items() if isinstance(value, str)}
+
+
+def conversation_model(key: str) -> str:
+    """The catalog id last picked or used in a conversation; "" when it has none yet (it follows the last pick)."""
+    return _conversation_models().get(key, "") if key else ""
+
+
+def _remember_conversation_models(updates: dict[str, str]) -> None:
+    updates = {key: value for key, value in updates.items() if key and value}
+    if not updates:
+        return
+    with _CONVERSATIONS_LOCK:
+        data = _conversation_models()
+        if all(data.get(key) == value for key, value in updates.items()):
+            return
+        data.update(updates)
+        path = _conversation_models_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(path)
+
+
+def _model_of(key: str) -> dict[str, Any]:
+    """The `model` and `reasoning` a conversation's payload carries for the app's model menu."""
+    chosen = conversation_model(key)
+    return {"model": chosen, "reasoning": reasoning_pref(chosen)} if chosen else {"model": ""}
+
+
+def machine_model_id() -> str:
+    """The catalog id of the machine's model: the last pick, which a conversation without its own starts with."""
+    return str(list_models(saved_machine_config())["selected"] or "")
+
+
+def _missing_key(entry: CatalogEntry) -> AppError:
+    if entry.provider == "orcarouter":
+        return AppError(f"Connect OrcaRouter to use {entry.name}.", code="missing_key")
+    return AppError(f"{entry.name} needs the {entry.api_key_name} key, and it is not on this Mac.", code="missing_key")
+
+
+def _model_fields(entry: CatalogEntry) -> dict[str, Any]:
+    """The config fields that name a catalog model, past where it runs (`select_model` places a local one)."""
+    return {
+        "model_alias": entry.model_alias,
+        "n_ctx": entry.n_ctx,
+        "quantization": entry.quantization,
+        "max_tokens": entry.max_tokens,
+        "gen_timeout": entry.gen_timeout,
+        "provider": entry.provider,
+        "api_key_name": entry.api_key_name,
+        "temperature": entry.temperature,
+        "top_p": entry.top_p,
+        "reasoning": reasoning_pref(entry.id) if entry.reasoning_switch else "on",
+        "reasoning_switch": entry.reasoning_switch,
+    }
+
+
+def _own_hosted_entry(key: str, machine: str) -> CatalogEntry | None:
+    """The conversation's own hosted model when it differs from the machine's (None: the machine's config holds)."""
+    chosen = conversation_model(key)
+    entry = entry_by_id(chosen) if chosen and chosen != machine else None
+    return entry if entry is not None and entry.provider != "local" else None
+
+
+def conversation_config(path: str | Path | None = None, chat_id: str | None = None) -> MachineConfig:
+    """The config a request in this conversation runs with (nothing is switched or saved)."""
+    cfg = saved_machine_config()
+    entry = _own_hosted_entry(conversation_key(path, chat_id), machine_model_id())
+    if entry is None:
+        return cfg
+    return cfg.model_copy(update={"model_file": "", "server_binary": "", "endpoint": entry.endpoint,
+                                  **_model_fields(entry)})
+
+
+@contextmanager
+def conversation_model_for(path: str | Path | None = None, chat_id: str | None = None) -> Iterator[str]:
+    """Run a request on its conversation's own model; yields that model's catalog id.
+
+    A conversation keeps the model last picked or used in it. One without its own yet takes the machine's (the
+    last pick) and keeps it from then on. A hosted model holds for this request only (`run_model`), so two chats
+    can run two models at once; a local model is one server for the whole Mac, so the machine switches to it.
+    """
+    key = conversation_key(path, chat_id)
+    machine = machine_model_id()
+    chosen = conversation_model(key)
+    entry = entry_by_id(chosen) if chosen else None
+    if entry is None:
+        chosen, entry = machine, None
+    _remember_conversation_models({key: chosen})
+    if entry is None or chosen == machine:
+        yield chosen
+    elif entry.provider == "local":
+        select_model(entry.id)
+        yield chosen
+    else:
+        if not find_api_key(entry.api_key_name)[0]:
+            raise _missing_key(entry)
+        with run_model({"model_file": "", "server_binary": "", "endpoint": entry.endpoint, **_model_fields(entry)}):
+            yield chosen
+
+
+def _pin_conversations(model_id: str, *, besides: str) -> None:
+    """Conversations that followed the last pick keep it when another model is picked elsewhere."""
+    from local_coder.general.chat_log import list_free_chats
+
+    keys = [conversation_key(chat_id=str(row["id"])) for row in list_free_chats(limit=100_000)]
+    keys += [conversation_key(str(row.get("path"))) for row in load_prefs().get("recent_projects", [])
+             if row.get("path")]
+    known = _conversation_models()
+    _remember_conversation_models({key: model_id for key in keys if key != besides and key not in known})
+
+
+def select_model(
+    model_id: str, *, path: str | Path | None = None, chat_id: str | None = None,
+) -> dict[str, Any]:
+    """Pick a catalog model for the conversation it was picked in (`path` or `chat_id`).
+
+    It also becomes the machine's model, which new conversations start with; the others keep theirs. Does not
+    start a server.
+    """
     apply_host_path()
     entry = entry_by_id(model_id)
     if entry is None:
@@ -983,12 +1156,7 @@ def select_model(model_id: str) -> dict[str, Any]:
     current = load_machine_config()
     if entry.provider != "local":
         if not find_api_key(entry.api_key_name)[0]:
-            if entry.provider == "orcarouter":
-                raise AppError(f"Connect OrcaRouter to use {entry.name}.", code="missing_key")
-            raise AppError(
-                f"{entry.name} needs the {entry.api_key_name} key, and it is not on this Mac.",
-                code="missing_key",
-            )
+            raise _missing_key(entry)
         placement: dict[str, Any] = {"model_file": "", "server_binary": "", "endpoint": entry.endpoint}
         loads = ""
     else:
@@ -1005,21 +1173,13 @@ def select_model(model_id: str) -> dict[str, Any]:
             placement["endpoint"] = DEFAULT_ENDPOINT
         loads = " The model loads while you do that."
     stop_owned_server()
-    cfg = current.model_copy(update={
-        **placement,
-        "model_alias": entry.model_alias,
-        "n_ctx": entry.n_ctx,
-        "quantization": entry.quantization,
-        "max_tokens": entry.max_tokens,
-        "gen_timeout": entry.gen_timeout,
-        "provider": entry.provider,
-        "api_key_name": entry.api_key_name,
-        "temperature": entry.temperature,
-        "top_p": entry.top_p,
-        "reasoning": reasoning_pref(entry.id) if entry.reasoning_switch else "on",
-        "reasoning_switch": entry.reasoning_switch,
-    })
+    previous = machine_model_id()
+    cfg = current.model_copy(update={**placement, **_model_fields(entry)})
     write_machine_config(cfg)
+    key = conversation_key(path, chat_id)
+    if previous and previous != entry.id:
+        _pin_conversations(previous, besides=key)
+    _remember_conversation_models({key: entry.id})
     if entry.provider == "orcarouter":
         from . import orcarouter
 
@@ -1098,14 +1258,15 @@ def reasoning_pref(model_id: str) -> str:
     return "off" if isinstance(data, dict) and data.get(model_id) == "off" else "on"
 
 
-def set_reasoning(mode: str) -> dict[str, Any]:
-    """Turn the selected model's reasoning on or off; remembered for that model."""
+def set_reasoning(mode: str, model_id: str | None = None) -> dict[str, Any]:
+    """Turn a model's reasoning on or off (the open conversation's, else the machine's); remembered for that model."""
     if mode not in {"on", "off"}:
         raise AppError("Reasoning is either on or off.", code="bad_request")
     cfg = load_machine_config()
-    selected = list_models(cfg)["selected"]
+    machine = list_models(cfg)["selected"]
+    selected = model_id or machine
     entry = entry_by_id(selected) if selected else None
-    if not (cfg.reasoning_switch or (entry is not None and entry.reasoning_switch)):
+    if not ((selected == machine and cfg.reasoning_switch) or (entry is not None and entry.reasoning_switch)):
         raise AppError("This model has no reasoning switch.", code="no_switch")
     path = _reasoning_prefs_path()
     try:
@@ -1118,7 +1279,8 @@ def set_reasoning(mode: str) -> dict[str, Any]:
         data[selected] = mode
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    write_machine_config(cfg.model_copy(update={"reasoning": mode, "reasoning_switch": True}))
+    if selected == machine:
+        write_machine_config(cfg.model_copy(update={"reasoning": mode, "reasoning_switch": True}))
     return {"ok": True, "reasoning": mode, "model": selected}
 
 
@@ -1605,39 +1767,9 @@ class AppRuntime:
     def _run(self, kwargs: dict[str, Any], emit: EventListener) -> Any:
         from local_coder.general.coordinator import GeneralError
 
-        started = False
         try:
-            engine = str(kwargs.get("engine") or "general")
-            profile = str(kwargs.get("profile_name") or "")
-            if engine == "legacy" or profile.startswith("legacy:"):
-                if not profile.startswith("fake:"):
-                    result = ensure_server()
-                    started = bool(result.get("started"))
-                    if started:
-                        self.started_server = True
-                return run_request(
-                    kwargs["repo"], kwargs["request"],
-                    profile_name=profile.removeprefix("legacy:"),
-                    execution=kwargs.get("execution"),
-                    state_dir=self.state_dir,
-                    episode_id=kwargs["episode_id"],
-                    listener=emit,
-                    cancel_event=self.cancel_event,
-                    ensure_local_server=False,
-                )
-            from local_coder.general.coordinator import run_general_request
-
-            return run_general_request(
-                kwargs["repo"], kwargs["request"],
-                request_id=kwargs["episode_id"],
-                kind=str(kwargs.get("kind") or "create"),
-                listener=emit,
-                cancel_event=self.cancel_event,
-                generation_limit=kwargs.get("generation_limit"),
-                continue_from=kwargs.get("continue_from"),
-                wall_seconds=kwargs.get("wall_seconds"),
-                attachments=kwargs.get("attachments"),
-            )
+            with conversation_model_for(kwargs["repo"]):
+                return self._start_run(kwargs, emit)
         except (AppError, GeneralError) as exc:
             self.last_error = exc.detail
             emit({"type": "app_error", "data": {"detail": exc.detail, "code": exc.code}, "seq": None})
@@ -1647,6 +1779,40 @@ class AppRuntime:
             self.last_error = UNEXPECTED
             emit({"type": "app_error", "data": {"detail": UNEXPECTED, "code": "runtime"}, "seq": None})
         return None
+
+    def _start_run(self, kwargs: dict[str, Any], emit: EventListener) -> Any:
+        started = False
+        engine = str(kwargs.get("engine") or "general")
+        profile = str(kwargs.get("profile_name") or "")
+        if engine == "legacy" or profile.startswith("legacy:"):
+            if not profile.startswith("fake:"):
+                result = ensure_server()
+                started = bool(result.get("started"))
+                if started:
+                    self.started_server = True
+            return run_request(
+                kwargs["repo"], kwargs["request"],
+                profile_name=profile.removeprefix("legacy:"),
+                execution=kwargs.get("execution"),
+                state_dir=self.state_dir,
+                episode_id=kwargs["episode_id"],
+                listener=emit,
+                cancel_event=self.cancel_event,
+                ensure_local_server=False,
+            )
+        from local_coder.general.coordinator import run_general_request
+
+        return run_general_request(
+            kwargs["repo"], kwargs["request"],
+            request_id=kwargs["episode_id"],
+            kind=str(kwargs.get("kind") or "create"),
+            listener=emit,
+            cancel_event=self.cancel_event,
+            generation_limit=kwargs.get("generation_limit"),
+            continue_from=kwargs.get("continue_from"),
+            wall_seconds=kwargs.get("wall_seconds"),
+            attachments=kwargs.get("attachments"),
+        )
 
     def cancel(self) -> dict[str, Any]:
         """Request stop of the active episode and its OpenCode session."""
