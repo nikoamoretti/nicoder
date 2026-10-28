@@ -195,9 +195,10 @@ class RpcServer:
         if method == "list_models":
             return list_models()
         if method == "select_model":
-            return select_model(str(params.get("id") or ""))
+            return select_model(str(params.get("id") or ""), path=params.get("path") or None,
+                                chat_id=str(params.get("chat_id") or "") or None)
         if method == "set_reasoning":
-            return set_reasoning(str(params.get("mode") or ""))
+            return set_reasoning(str(params.get("mode") or ""), str(params.get("model") or "") or None)
         if method == "set_mac_access":
             return set_mac_access(params.get("on") is True)
         if method == "ensure_machine":
