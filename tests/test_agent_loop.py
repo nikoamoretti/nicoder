@@ -74,6 +74,15 @@ def test_tool_round_then_answer(home):
     assert session.toolbox.read_paths == ["~/projects/site/README.md"]
 
 
+def test_a_call_cut_off_at_the_output_limit_says_so(home):
+    cut = _reply(calls=[_call("read", '{"path": "~/projects/site/REA', "c1")])
+    cut["choices"][0]["finish_reason"] = "length"
+    script = Script(cut, _reply("Done."))
+    run = _session(home, script).ask("go")
+    assert run.status == "answered"
+    assert script.sent[1][-1]["content"].startswith("Your reply hit this model's output limit and was cut off")
+
+
 def test_missing_call_ids_and_bad_arguments_are_handled(home):
     script = Script(_reply(calls=[_call("read", "{oops")]), _reply("Done."))
     run = _session(home, script).ask("go")
