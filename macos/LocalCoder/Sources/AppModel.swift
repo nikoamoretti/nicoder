@@ -239,7 +239,11 @@ final class AppModel: ObservableObject {
     // OrcaRouter
     @Published var orcaConnected = false
     @Published var orcaWhere = ""
-    @Published var routerModels: [RouterModel] = []
+    @Published var routerModels: [RouterModel] = [] {
+        didSet { routerProviders = Self.byProvider(routerModels) }
+    }
+    /// OrcaRouter's models by provider for the model menu: providers A to Z, the newest version first.
+    @Published private(set) var routerProviders: [(String, [RouterModel])] = []
     @Published var routerFetchedAt: Date?
     @Published var routerLoading = false
     @Published var routerError: String?
@@ -336,12 +340,13 @@ final class AppModel: ObservableObject {
         return known + others
     }
 
-    /// OrcaRouter's models by provider for the model menu: providers A to Z, the newest version first.
-    var routerProviders: [(String, [RouterModel])] {
-        Dictionary(grouping: routerModels.filter { !$0.datedCopy }, by: \.provider)
-            .map { provider, rows in
-                (provider, rows.sorted { left, right in
-                    let (one, two) = (Self.version(left.name), Self.version(right.name))
+    /// The model menu's grouping, made once per downloaded list (the menu's body runs on every published change).
+    static func byProvider(_ rows: [RouterModel]) -> [(String, [RouterModel])] {
+        let versions = Dictionary(rows.map { ($0.id, version($0.name)) }, uniquingKeysWith: { first, _ in first })
+        return Dictionary(grouping: rows.filter { !$0.datedCopy }, by: \.provider)
+            .map { provider, group in
+                (provider, group.sorted { left, right in
+                    let (one, two) = (versions[left.id] ?? [], versions[right.id] ?? [])
                     if one != two { return two.lexicographicallyPrecedes(one) }
                     return left.name.localizedStandardCompare(right.name) == .orderedAscending
                 })
