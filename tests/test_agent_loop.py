@@ -12,6 +12,7 @@ import pytest
 from local_coder.agent.access import AccessPolicy
 from local_coder.agent.loop import DROPPED, AgentSession
 from local_coder.agent.tools import ToolBox
+from local_coder.hosted import ReplyCutOff
 
 
 def _call(name: str, args: dict | str, call_id: str | None = None) -> dict:
@@ -72,6 +73,36 @@ def test_tool_round_then_answer(home):
     assert [row["role"] for row in second] == ["system", "user", "user", "assistant", "tool"]
     assert second[-1]["tool_call_id"] == "c1" and "A tiny site." in second[-1]["content"]
     assert session.toolbox.read_paths == ["~/projects/site/README.md"]
+
+
+class Dropping(Script):
+    """A model whose first `drops` replies the provider cuts off partway."""
+
+    def __init__(self, drops: int, *replies: dict) -> None:
+        super().__init__(*replies)
+        self.drops = drops
+
+    def __call__(self, messages: list[dict], tools: list[dict]) -> dict:
+        if self.drops:
+            self.drops -= 1
+            self.sent.append(json.loads(json.dumps(messages)))
+            raise ReplyCutOff("OrcaRouter closed the connection partway through the reply (RemoteProtocolError)")
+        return super().__call__(messages, tools)
+
+
+def test_a_reply_dropped_partway_asks_for_the_work_in_parts(home):
+    activity: list[str] = []
+    script = Dropping(1, _reply(calls=[_call("read", {"path": "~/projects/site/README.md"}, "c1")]), _reply("Done."))
+    run = _session(home, script, on_activity=activity.append).ask("go")
+    assert (run.status, run.answer) == ("answered", "Done.")
+    assert script.sent[1][-1]["content"].startswith("Your last reply was lost")
+    assert activity == ["The connection dropped during a long reply; asking for it in parts",
+                        "Reading ~/projects/site/README.md"]
+
+
+def test_replies_dropped_again_and_again_end_the_run(home):
+    run = _session(home, Dropping(4)).ask("go")
+    assert run.status == "error" and "closed the connection partway" in run.answer
 
 
 def test_a_call_cut_off_at_the_output_limit_says_so(home):

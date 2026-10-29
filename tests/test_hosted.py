@@ -153,6 +153,39 @@ def test_dropped_stream_is_retried_once(monkeypatch):
     assert len(_requests(calls)) == 2
 
 
+class _CutResponse(_Response):
+    """A stream the provider closes after some lines (OrcaRouter's edge after a minute without a byte)."""
+
+    def iter_lines(self):
+        yield from self._lines
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+
+def test_a_reply_cut_off_partway_ends_at_once_for_the_agent(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    thinking = _sse({"id": "c0", "model": SERVED, "choices": [{"index": 0, "delta": {"reasoning_content": "Plan"}}]})
+    calls = _install_client(monkeypatch, _CutResponse(lines=thinking[:-2]), _Response(lines=_reply_lines("Whole.")))
+    with pytest.raises(hosted.ReplyCutOff, match="partway through the reply"):
+        hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False, drops_end_reply=True)
+    assert len(_requests(calls)) == 1, "the same long reply is not asked for again"
+
+
+def test_other_callers_still_ask_again_after_a_cut(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    thinking = _sse({"id": "c0", "model": SERVED, "choices": [{"index": 0, "delta": {"reasoning_content": "Plan"}}]})
+    calls = _install_client(monkeypatch, _CutResponse(lines=thinking[:-2]), _Response(lines=_reply_lines("Whole.")))
+    data = hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False)
+    assert data["choices"][0]["message"]["content"] == "Whole." and len(_requests(calls)) == 2
+
+
+def test_a_connection_lost_before_the_reply_starts_is_still_retried_for_the_agent(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
+    dropped = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    calls = _install_client(monkeypatch, dropped, _Response(lines=_reply_lines("Whole.")))
+    data = hosted.hosted_chat(_hosted_cfg(), {"messages": []}, thinking=False, drops_end_reply=True)
+    assert data["choices"][0]["message"]["content"] == "Whole." and len(_requests(calls)) == 2
+
+
 def test_dropped_connections_and_server_errors_give_up_after_three_attempts(monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", SECRET)
     dropped = httpx.RemoteProtocolError("Server disconnected without sending a response.")

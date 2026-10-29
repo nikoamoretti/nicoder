@@ -60,7 +60,7 @@ def hosted_tool_chat(
             body["tools"] = tools
             body["tool_choice"] = "auto"
         return hosted_chat(cfg, body, thinking=cfg.reasoning != "off", session=session, cancel=cancel,
-                           on_wait=on_wait)
+                           on_wait=on_wait, drops_end_reply=True)
 
     return chat
 

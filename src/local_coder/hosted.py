@@ -11,7 +11,10 @@ folded into one completion dict (text, reasoning, tool calls and usage; on
 OrcaRouter the usage carries the billed `cost_usd`). Hosted endpoints fail
 intermittently, so a dropped stream or a 5xx answer gets three attempts, a
 rate limit (429) four; refusals such as a bad key or an empty balance are not
-retried.
+retried. The agent loop asks for a reply cut off partway to end at once
+(`ReplyCutOff`): OrcaRouter's edge closes a stream after a minute without a
+byte, which a model whose provider sends tool-call arguments only at the end
+reaches while writing a long file, so the same request would only fail again.
 """
 from __future__ import annotations
 
@@ -57,6 +60,14 @@ class HostedError(RuntimeError):
 
 class _Retryable(HostedError):
     """A dropped stream or server error worth exactly one more attempt."""
+
+
+class _Dropped(_Retryable):
+    """The stream closed after the reply had started."""
+
+
+class ReplyCutOff(HostedError):
+    """The provider closed the stream partway through the reply; nothing of it can be used."""
 
 
 class _Unreachable(_Retryable):
@@ -129,12 +140,14 @@ def hosted_chat(
     session: str = "",
     cancel: threading.Event | None = None,
     on_wait: Callable[[str], None] | None = None,
+    drops_end_reply: bool = False,
 ) -> dict[str, Any]:
     """One chat completion from the hosted provider, shaped like a non-streaming llama.cpp reply.
 
     `session` groups an agent run's calls on OrcaRouter (its Sessions view); other providers ignore it.
     `cancel` (the run's Stop) ends a streaming reply at the next chunk instead of after it finishes, and ends a wait.
     `on_wait` hears one line when the provider cannot be reached and the call waits for the connection.
+    With `drops_end_reply`, a reply the provider cuts off partway raises `ReplyCutOff` instead of being asked again.
     """
     key, where = credential(cfg)
     if not key:
@@ -182,6 +195,9 @@ def hosted_chat(
             _pause(min(15.0, 2.0 ** min(attempt, 4)), cancel)
             continue
         except _Retryable as exc:
+            if drops_end_reply and isinstance(exc, _Dropped):
+                where = provider_name(cfg)
+                raise ReplyCutOff(f"{where} closed the connection partway through the reply ({exc})") from exc
             problem = str(exc)
             failed += 1
             if failed >= _ATTEMPTS:
@@ -260,9 +276,11 @@ def _stream_once(
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise _Unreachable(f"{type(exc).__name__}: {exc}") from exc
     except (httpx.HTTPError, OSError) as exc:
-        raise _Retryable(f"{type(exc).__name__}: {exc}") from exc
+        dropped = _Dropped if first_token_s is not None else _Retryable
+        raise dropped(f"{type(exc).__name__}: {exc}") from exc
     if finish is None:
-        raise _Retryable("the connection closed before the reply finished")
+        dropped = _Dropped if first_token_s is not None else _Retryable
+        raise dropped("the connection closed before the reply finished")
     reply: dict[str, Any] = {
         "role": "assistant",
         "content": "".join(content),
