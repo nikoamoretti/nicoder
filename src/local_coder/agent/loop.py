@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from local_coder.general.harness import strip_think
+from local_coder.hosted import ReplyCutOff
 
 from .tools import ToolBox
 
@@ -62,6 +63,16 @@ _STUCK = (
 # A reply with no tool call that announces a step ("Rewriting more simply:"), or that follows the note above, is sent
 # back once: it is not an answer (2026-10-27: a replay ended on "… Rewriting more simply:", the fix never written).
 _GO_ON = "Go ahead and do that now with your tools."
+# A reply the provider dropped partway (OrcaRouter's edge closes a stream after 60 s without a byte; OrcaCyber Flash
+# sends a tool call's arguments only at the end, so writing a long file in one call went silent and was cut three times
+# in a row, 2026-10-29). Asking again for the same reply fails the same way; with this note the model wrote the first
+# 150 lines and finished in 67 s.
+_LOST = (
+    "Your last reply was lost: the connection closed before it finished. The model service drops a reply that sends "
+    "nothing for a minute, and a long file written in one call can take longer than that. Nothing from that reply "
+    "ran. Write big files in parts: a first version of at most about 150 lines, then add the rest with more edits."
+)
+_LOST_LIMIT = 3
 # A reply cut off at the model's output limit ends in an unfinished tool call (OrcaRouter stops MiniMax M2.x at 2,048
 # tokens, checked 2026-10-28). That call cannot run; saying why beats "not valid JSON", which gets the same call again.
 _CUT_OFF = (
@@ -255,6 +266,7 @@ class AgentSession:
         limit = deadline if deadline is not None else started + 900
         steps = calls = 0
         nudged = hurried = looked = announced = noted = False
+        lost = 0
         look_first = look_first and not _THANKS.match(text.strip())
         first_answer = ""
         # Progress in a change run: the step of the last change to the working copy (write, edit, or a command that
@@ -287,6 +299,18 @@ class AgentSession:
             call_started = time.monotonic()
             try:
                 reply = self.chat(self.messages, self.toolbox.schemas())
+            except ReplyCutOff as exc:
+                self._log_call(call_started, None, error=str(exc))
+                steps += 1
+                lost += 1
+                if self._cancelled():
+                    return AgentRun("Stopped.", "stopped", steps, calls)
+                if lost > _LOST_LIMIT:
+                    return AgentRun(f"The model did not answer: {exc}", "error", steps, calls, error=str(exc))
+                self._activity("The connection dropped during a long reply; asking for it in parts", {"tool": "note"})
+                self.messages.append({"role": "user", "content": _LOST})
+                noted = True
+                continue
             except Exception as exc:  # noqa: BLE001 — any provider failure ends this request plainly
                 self._log_call(call_started, None, error=str(exc))
                 if self._cancelled():
