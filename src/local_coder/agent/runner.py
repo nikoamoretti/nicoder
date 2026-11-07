@@ -89,6 +89,7 @@ class AskResult:
     steps: int = 0
     transcript: Path | None = None
     cost_usd: float | None = None
+    handoff: bool = False  # the message needs work: the app starts a change run with it
 
 
 def run_ask(
@@ -105,8 +106,10 @@ def run_ask(
     seconds: int = ASK_SECONDS,
     on_step: Callable[[dict[str, Any]], None] | None = None,
     images: list[str] | None = None,
+    allow_change: bool = False,
 ) -> AskResult:
-    """Answer a question with read-only tools across the home folder; `images` are shown with it."""
+    """Answer a question with read-only tools across the home folder; `images` are shown with it. With
+    `allow_change`, a message that needs work is handed to a change run (`AskResult.handoff`)."""
     home = home or Path.home()
     run_root = runs_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
     toolbox = ToolBox(
@@ -115,11 +118,12 @@ def run_ask(
         run_tmp=run_root / "tmp",
         cancel=cancel,
         allow_open_project=True,
+        allow_start_change=allow_change,
     )
     session = AgentSession(
         chat=chat,
         toolbox=toolbox,
-        system=ask_prompt(home=home, project=project),
+        system=ask_prompt(home=home, project=project, can_change=allow_change),
         history=history,
         context_chars=min(context_chars, ASK_CONTEXT_CHARS),
         on_activity=on_activity,
@@ -142,6 +146,7 @@ def run_ask(
         steps=run.steps,
         transcript=transcript,
         cost_usd=session.cost_usd,
+        handoff=toolbox.handoff,
     )
 
 

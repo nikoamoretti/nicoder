@@ -1,4 +1,4 @@
-"""The agent's tools, run by Nicoder: list, glob, grep, read, write, edit, bash, open_project.
+"""The agent's tools, run by Nicoder: list, glob, grep, read, write, edit, bash, open_project, start_change.
 
 Every path goes through AccessPolicy and every command through the sandbox.
 A tool never raises: refusals and failures come back as text the model can
@@ -248,6 +248,7 @@ class ToolBox:
         allow_open_project: bool = False,
         allow_find_project: bool = True,
         mac_access: bool = False,
+        allow_start_change: bool = False,
     ) -> None:
         self.policy = policy
         # Commands on the Mac itself (bash's on_mac), only where the run can change things (`mac_access.py`).
@@ -258,6 +259,9 @@ class ToolBox:
         self.run_tmp = run_tmp
         self.cancel = cancel
         self.allow_open_project = allow_open_project
+        # A chat that finds the message needs work hands it to a change run (`start_change`), then stops.
+        self.allow_start_change = allow_start_change
+        self.handoff = False
         self.read_paths: list[str] = []
         self.read_files: list[Path] = []
         self.changed_paths: list[str] = []
@@ -275,6 +279,8 @@ class ToolBox:
         names.append("bash")
         if self.allow_open_project:
             names.append("open_project")
+        if self.allow_start_change:
+            names.append("start_change")
         return names
 
     def schemas(self) -> list[dict[str, Any]]:
@@ -383,6 +389,17 @@ class ToolBox:
                 "Call it only when the user asks to open a project or to work on one, not to answer a question.",
                 {"path": _str("The project's folder.")},
                 ["path"],
+            ),
+            "start_change": _spec(
+                "start_change",
+                "Start working on the user's message: Nicoder's coding run builds, edits or fixes the project, "
+                "previews it, and lets the user keep the result. Call it when they want something built, changed, "
+                "fixed, installed or set up (a pasted spec or plan to build counts, and so does a complaint that "
+                "something in the app is broken, wrong or bad), or say to go ahead with what you discussed. Not for "
+                "questions, ideas, explanations or advice: answer those yourself. With no project open, it starts a "
+                "new one; to work in one of their projects, call open_project first.",
+                {},
+                [],
             ),
         }
         return [specs[name] for name in self.names]
@@ -916,6 +933,10 @@ class ToolBox:
             command=readable,
             mac=on_mac,
         )
+
+    def _tool_start_change(self, args: dict[str, Any]) -> ToolResult:
+        self.handoff = True
+        return ToolResult("Nicoder starts the change now.", "Starting the change")
 
     def _tool_open_project(self, args: dict[str, Any]) -> ToolResult:
         path = self.policy.readable(str(args["path"]), self.cwd)

@@ -145,7 +145,8 @@ def plain_answer(text: str) -> str:
 
 @dataclass
 class AgentRun:
-    """How one request ended. status: answered, stopped, step_limit, time_limit or error."""
+    """How one request ended. status: answered, handoff (a chat started a change), stopped, step_limit, time_limit
+    or error."""
 
     answer: str
     status: str
@@ -425,6 +426,8 @@ class AgentSession:
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "name": name, "content": result_text},
                 )
+            if self.toolbox.handoff:
+                return AgentRun(plain_answer(content) if content else "", "handoff", steps, calls)
             if watch and self.toolbox.edits != edits:
                 edits, changed_at, changed = self.toolbox.edits, steps, True
                 state = self.toolbox.working_copy_state()

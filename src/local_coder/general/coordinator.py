@@ -858,8 +858,12 @@ def run_general_request(
     wall_seconds: int | None = None,
     agent_chat: AgentChat | None = None,
     attachments: Any = None,
+    handoff: bool = False,
 ) -> dict[str, Any]:
     """Snapshot, ask the model for files, apply them, then review.
+
+    A message that reads as a question is answered in the chat instead, unless the app's chat handed it over
+    (`handoff`): its model already found that the message needs work.
 
     With an agent-capable model (or `agent_chat` in tests), Nicoder's own
     agent edits the working copy with tools instead of the file-block path.
@@ -875,9 +879,12 @@ def run_general_request(
         raise GeneralError(problem["summary"], code=problem["verdict"])
     files = attached.parse(attachments)
     inspection = inspect_project(folder)
-    classified = classify_request(text, inspection) if text.strip() or not files else {"kind": "code"}
+    classified = (classify_request(text, inspection, chat_first=False) if text.strip() or not files
+                  else {"kind": "code"})
     if classified["kind"] == "empty":
         raise GeneralError(classified["summary"], code="empty")
+    if handoff:
+        classified = {"kind": "code"}
     if classified["kind"] == "explain":
         from local_coder.app_service import explain_request
 

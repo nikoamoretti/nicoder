@@ -185,6 +185,9 @@ struct Waiting: Identifiable {
     let text: String
     let change: Bool
     var files: [Attachment] = []
+    /// A message the chat handed to a change run: it starts as one, in `project` when the chat opened one.
+    var handoff = false
+    var project: String?
 }
 
 @MainActor
@@ -934,7 +937,9 @@ final class AppModel: ObservableObject {
                 result = try await engine.call("chat_request", params, timeoutSeconds: 1200)
             }
             let job = finishQuestion(cost: result["cost_usd"] as? Double)
-            if let opened = result["open_project"] as? String, !opened.isEmpty {
+            if result["start_change"] as? Bool == true {
+                await handOff(text, in: place, project: result["open_project"] as? String, files: files, after: job)
+            } else if let opened = result["open_project"] as? String, !opened.isEmpty {
                 if let job, let record = traceRecords[job.place]?[job.prompt] {
                     traceRecords[.project(opened), default: [:]][job.prompt] = record
                 }
@@ -980,7 +985,23 @@ final class AppModel: ObservableObject {
 
     /// Make a change in its project. Without a project the message names one ("add X to vc-jobs-board") or a new
     /// one is made for it, and the chat moves into it; the window follows when it still shows that chat.
-    private func change(_ text: String, in place: Place, project named: String?, files: [Attachment] = []) async {
+    /// The chat found that the message needs work ("act like a normal LLM and then if needs be start coding", Nico
+    /// 2026-11-07): a change run takes it as if it had been sent as one, after the chat's own steps.
+    private func handOff(_ text: String, in place: Place, project: String?, files: [Attachment], after question: Job?)
+        async
+    {
+        if changeJob != nil {
+            waiting.append(Waiting(place: place, text: text, change: true, files: files, handoff: true, project: project))
+            return
+        }
+        changeJob = Job(place: place, prompt: question?.prompt ?? turnText(text, files),
+                        started: question?.started ?? Date(), steps: question?.steps ?? [])
+        syncRunning()
+        await change(text, in: place, project: project, files: files, handoff: true)
+    }
+
+    private func change(_ text: String, in place: Place, project named: String?, files: [Attachment] = [],
+                        handoff: Bool = false) async {
         do {
             var path = place.path
             if path == nil {
@@ -1031,6 +1052,9 @@ final class AppModel: ObservableObject {
             if !files.isEmpty {
                 request["attachments"] = files.map(\.payload)
             }
+            if handoff {
+                request["handoff"] = true  // the chat already found it needs work: it is not answered as a question
+            }
             let started = try await engine.call("run_request", request)
             let episode = started["episode_id"] as? String
             changeJob?.episode = episode
@@ -1067,7 +1091,11 @@ final class AppModel: ObservableObject {
             return
         }
         let item = waiting.remove(at: index)
-        Task { await send(item.text, in: item.place, files: item.files) }
+        if item.handoff {
+            Task { await handOff(item.text, in: item.place, project: item.project, files: item.files, after: nil) }
+        } else {
+            Task { await send(item.text, in: item.place, files: item.files) }
+        }
     }
 
     private func syncRunning() {

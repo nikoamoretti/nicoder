@@ -585,6 +585,12 @@ def _answer(
             result = {"kind": "chat", "summary": reply, "hits": [], "model_commentary": reply, "status": "answered"}
     if preview is not None:
         result["preview"] = preview
+    if repo is None and chat_id and result.get("start_change"):
+        from local_coder.general.chat_log import drop_last_free_turn
+
+        drop_last_free_turn(chat_id, "user", saved)  # the change run keeps the message, with its answer
+        result["chat_id"] = chat_id
+        return result
     if repo is None and chat_id:
         from local_coder.general.chat_log import append_free_turn
 
@@ -725,10 +731,11 @@ def _agent_chat(
     images: list[str] | None = None,
     saved_question: str | None = None,
 ) -> dict[str, Any]:
-    """A question answered by the agent with read-only tools across the home folder.
+    """A message answered by the agent with read-only tools across the home folder, like a normal chat.
 
     `images` are shown to the model with the question; `saved_question` is what the chat keeps (the message and
-    the attached names, without the note the model reads about them).
+    the attached names, without the note the model reads about them). When the message needs work, the model hands
+    it on (`start_change` in the result): the app starts a change run with it, which keeps the turns.
     """
     from local_coder.agent.runner import context_chars_for, hosted_tool_chat, run_ask
     from local_coder.agent.tools import inside_data_root
@@ -749,6 +756,7 @@ def _agent_chat(
         cancel=cancel,
         on_step=step,
         images=images,
+        allow_change=True,
     )
     opened = asked.opened if asked.opened is not None and asked.opened != repo else None
     if opened is not None and inside_data_root(opened):
@@ -763,6 +771,11 @@ def _agent_chat(
         "open_project": str(opened) if opened is not None else None,
         "cost_usd": asked.cost_usd,
     }
+    if asked.handoff:
+        result["start_change"] = True
+        if opened is not None:
+            remember_project(opened)
+        return result
     target = opened or repo
     if target is not None:
         append_turn(target, "user", saved_question or question)
@@ -1696,7 +1709,8 @@ class AppRuntime:
                       execution: str | None = None, engine: str | None = None,
                       kind: str = "create", generation_limit: int | None = None,
                       continue_from: str | None = None,
-                      wall_seconds: int | None = None, attachments: Any = None) -> dict[str, Any]:
+                      wall_seconds: int | None = None, attachments: Any = None,
+                      handoff: bool = False) -> dict[str, Any]:
         """Start a request on a worker thread and return immediately."""
         from local_coder.general.inspect import folder_problem
 
@@ -1731,6 +1745,7 @@ class AppRuntime:
                     "continue_from": continue_from,
                     "wall_seconds": wall_seconds,
                     "attachments": attachments,
+                    "handoff": handoff,
                 },
                 name="local-coder-episode",
                 daemon=True,
@@ -1812,6 +1827,7 @@ class AppRuntime:
             continue_from=kwargs.get("continue_from"),
             wall_seconds=kwargs.get("wall_seconds"),
             attachments=kwargs.get("attachments"),
+            handoff=bool(kwargs.get("handoff")),
         )
 
     def cancel(self) -> dict[str, Any]:

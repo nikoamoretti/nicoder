@@ -52,6 +52,18 @@ _SEE_UI = (
     "start it",
     "launch it",
     "preview it",
+    # The app's address: only Nicoder knows its preview (a chat answered "whats the link" with map tile URLs).
+    "whats the link",
+    "what's the link",
+    "what is the link",
+    "give me the link",
+    "send me the link",
+    "link to the app",
+    "whats the url",
+    "what's the url",
+    "what is the url",
+    "where can i see it",
+    "where can i see the app",
 )
 # Short commands Nicoder answers itself, with no model (Nico's chat, 2026-10-26: "just show me", "its not running",
 # "it worked and it stopped" each became a build run that only claimed to start a server or to keep the change).
@@ -118,6 +130,19 @@ _LOOK = re.compile(
     r"^(explain|what does|how does|describe how|walk me through|summarize)\b",
     re.I,
 )
+# Short follow-ups that resume work, as after a run that stopped at its limit: "continue", "go on", "try again".
+_RESUME = re.compile(
+    r"^(?:(?:ok|okay|yes|yeah|so|now|then|just|please|pls)[\s,]+)*"
+    r"(?:continue|go(?:\s+on|\s+ahead)?|keep\s+going|carry\s+on|resume|proceed|try\s+again|retry|again)"
+    r"[\s.!?]*$",
+    re.I,
+)
+# Nico, 2026-11-07: "Is it possible to have it not necessarily touch a file right away and just act like a normal LLM
+# and then if needs be start coding". A message that is not plainly work goes to the chat, whose model starts a change
+# run itself when the message needs one (`start_change`): "but so whats the closest thing to live information
+# relating to crime" had made a new project and built a page instead of an answer.
+_CHAT = {"kind": "chat", "summary": "This will answer in chat, and start a change if the message needs one.",
+         "detail": "Nothing is edited unless the model starts a change."}
 _QUESTION = re.compile(
     r"^(\?|what|where|why|how|who|when|which|is|are|can|does|do|should|"
     r"did|will|would|could)\b",
@@ -349,6 +374,7 @@ def asked_to_see_ui(text: str) -> bool:
 
 def classify_request(
     text: str, inspection: dict[str, Any] | None = None, *, last_reply: str | None = None, waiting: bool = False,
+    chat_first: bool = True,
 ) -> dict[str, Any]:
     """Classify one user message as empty, talk, look, or act, or as a command Nicoder carries out itself.
 
@@ -356,6 +382,8 @@ def classify_request(
     act=code). "show" starts Nicoder's own preview and "keep" keeps the waiting result, with no model: a model asked
     for either could only claim it. "keep" needs `waiting` (a result waits for Keep); otherwise the words go on as
     any other message. `last_reply` is Nicoder's previous answer, for "just do it" after "press Keep".
+    With `chat_first` (the app's messages), a message that is neither plainly work nor a question goes to the chat,
+    which starts a change when it needs one; a change run asked directly (`chat_first=False`) makes the change.
     """
     request = text.strip()
     if not request:
@@ -376,7 +404,7 @@ def classify_request(
     if asked_to_see_ui(request):
         return {"kind": "chat", "summary": "This will answer in chat without editing files.",
                 "detail": "No files will be edited."}
-    if asked_to_change(request):
+    if asked_to_change(request) or _RESUME.match(request):
         limited = any(hint in request.lower() for hint in _MOBILE_HINT)
         result: dict[str, Any] = {
             "kind": "code",
@@ -396,8 +424,11 @@ def classify_request(
     # A "?" inside a long task ("Who owns the zebra?" in a spec) does not make it a question; in a short message it
     # does (2026-10-27 benchmark: a spec went to read-only Q&A and was never built).
     if _QUESTION.search(request) or ("?" in request and len(request.split()) <= _QUESTION_WORDS):
-        return {"kind": "chat", "summary": "This will answer in chat without editing files.",
-                "detail": "No files will be edited."}
+        return dict(_CHAT)
+    # Anything else that is not plainly work (a spec, a bug report, a thought): in the app the chat answers, and its
+    # model starts a change when the message needs one.
+    if chat_first:
+        return dict(_CHAT)
     return {"kind": "code", "summary": "This will try a bounded local coding attempt.",
             "detail": "You will review any proposed change before it is kept."}
 
@@ -413,19 +444,6 @@ _WORK_VERBS = (
 _WORK = re.compile(
     rf"^(please\s+|pls\s+|can you\s+|could you\s+|would you\s+|i want you to\s+|i need you to\s+|let'?s\s+|"
     rf"go ahead and\s+)?{_WORK_VERBS}\b",
-    re.I,
-)
-_SMALL_TALK = re.compile(
-    r"^(hi|hello|hey|yo|thanks|thank you|ok|okay|cool|nice|great|good (morning|afternoon|evening|night))\b", re.I,
-)
-_ASKS = re.compile(
-    r"^(what|why|how|who|whom|whose|when|where|which|tell|explain|describe|summari[sz]e|compare|define|translate|"
-    r"recommend|suggest|find|show|look|check|search|list|read|see|"
-    r"help me (plan|think|decide|understand|figure|choose|pick|learn|prepare))\b",
-    re.I,
-)
-_ASKS_YOU = re.compile(
-    r"^(do|does|did|can|could|would|should|will|is|are|was|were|has|have|had|may|might)\s+(you|i|we|they|he|she|there|it)\b",
     re.I,
 )
 # Folder names too generic to mean one project ("to the app", "in my projects").
@@ -465,12 +483,9 @@ def classify_without_project(text: str, projects: Iterable[Path] = ()) -> dict[s
     request = text.strip()
     if not request:
         return classify_request(text)
-    asks = (
-        request.endswith("?") or _SMALL_TALK.match(request) or _ASKS.match(request) or _ASKS_YOU.match(request)
-    ) and not _WORK.match(request)
-    if asks:
-        return {"kind": "chat", "summary": "This will answer in chat without editing files.",
-                "detail": "No files will be edited."}
+    if not _WORK.match(request):
+        # Questions, small talk and anything not plainly work: the chat, which makes a project itself when needed.
+        return dict(_CHAT)
     named = _named_project(request, projects)
     if named is not None:
         return {"kind": "code", "project": str(named), "summary": f"This will make the change in {named.name}.",
