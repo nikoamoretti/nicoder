@@ -40,8 +40,14 @@ NEW_WORK = [
     "scrape the Interstat datasets and map crime by commune",
     "can you build a todo app?",
     "please make a game where a frog jumps over cars",
-    "I need a website for my bakery",
     "make a task board app",
+]
+# Not plainly work: the chat answers, and its model makes the project when the message needs one (Nico, 2026-11-07:
+# "but so whats the closest thing to live information relating to crime" had made a project and built a page).
+FOR_THE_CHAT = [
+    "I need a website for my bakery",
+    "but so whats the closest thing to live information relating to crime",
+    "the telegram channels you found yesterday",
 ]
 PROJECTS = [Path("/Users/n/projects/vc-jobs-board"), Path("/Users/n/projects/prototypes"),
             Path("/Users/n/projects/task-board")]
@@ -49,6 +55,11 @@ PROJECTS = [Path("/Users/n/projects/vc-jobs-board"), Path("/Users/n/projects/pro
 
 @pytest.mark.parametrize("text", CHATS)
 def test_a_question_without_a_project_is_a_chat(text):
+    assert classify_without_project(text, PROJECTS)["kind"] == "chat"
+
+
+@pytest.mark.parametrize("text", FOR_THE_CHAT)
+def test_a_message_that_is_not_plainly_work_goes_to_the_chat(text):
     assert classify_without_project(text, PROJECTS)["kind"] == "chat"
 
 

@@ -10,6 +10,7 @@ from local_coder.app_service import AppError, chat_request, classify_request
 from local_coder.general.activity import assistant_text_from_messages
 from local_coder.general.chat_log import append_turn, recent_messages
 from local_coder.general.coordinator import run_general_request
+from local_coder.general.inspect import classify_request as change_run_classify
 
 
 @pytest.fixture
@@ -57,7 +58,9 @@ def test_classify_talk_look_act_rules():
     assert classify_request("can you make the app the mac app that is easily openable")["kind"] == "code"
     assert classify_request("wrap this as a Mac app")["kind"] == "code"
     assert classify_request("is this a Mac app?")["kind"] == "chat"
-    assert classify_request("the page is blank")["kind"] == "code"
+    # A report is no plain order: the app's chat reads it and starts the fix; a change run asked directly makes it.
+    assert classify_request("the page is blank")["kind"] == "chat"
+    assert change_run_classify("the page is blank", chat_first=False)["kind"] == "code"
 
 
 def test_classify_location_question_is_chat():

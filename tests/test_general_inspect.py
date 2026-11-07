@@ -4,6 +4,7 @@ from __future__ import annotations
 import subprocess
 
 from local_coder.app_service import classify_legacy_request, classify_request, inspect_legacy_project, inspect_project
+from local_coder.general.inspect import classify_request as change_run_classify
 
 
 def test_inspect_javascript_project_is_ready(tmp_path):
@@ -85,7 +86,8 @@ def test_a_question_mark_inside_a_task_does_not_make_it_a_question():
     spec = ("The tests in zebra_puzzle_test.py should pass once the module answers both questions. Five houses stand "
             "in a row, each a different color, and their owners keep different pets and drinks. Who owns the zebra? "
             "Each clue narrows it down, and the answer must come from the clues, not be typed in.")
-    assert classify_request(spec)["kind"] == "code"
+    assert change_run_classify(spec, chat_first=False)["kind"] == "code"
+    assert classify_request(spec)["kind"] == "chat", "the app's chat reads it and starts the work"
     assert classify_request("The login button does nothing on Safari. Can you fix it?")["kind"] == "code"
     assert classify_request("Which is better? Implement it with a hash map.")["kind"] == "code"
     for question in ("is this a React project?", "I think the button is broken?",
@@ -98,3 +100,13 @@ def test_a_question_mark_inside_a_task_does_not_make_it_a_question():
     for read_only in ("How does the router work? Make it short.", "Explain how auth works. Do not change anything.",
                       "Why can't I save?\n\nWrite failed: no space", "Why can't I deploy?\n\nBuild failed: no module"):
         assert classify_request(read_only)["kind"] != "code", read_only
+
+def test_messages_that_are_not_plainly_work_go_to_the_chat_and_orders_still_go_to_work():
+    # Nico, 2026-11-07: "just act like a normal LLM and then if needs be start coding".
+    for message in ("it keeps loading the fusion des noeuds predateurs but nothing happens",
+                    "but so whats the closest thing to live information relating to crime",
+                    "### Prompt: a dashboard of Paris incidents with a heat map", "whats the link"):
+        assert classify_request(message)["kind"] == "chat", message
+    for order in ("add a dark mode toggle", "fix the map", "build this: a heat map", "do it", "continue",
+                  "ok continue", "go on", "try again", "keep going"):
+        assert classify_request(order)["kind"] == "code", order

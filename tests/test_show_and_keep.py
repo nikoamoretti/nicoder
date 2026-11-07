@@ -23,8 +23,8 @@ KEEP_HINT = ("The build passed and the app runs.\n\n"
 
 
 @pytest.mark.parametrize(("text", "kind"), [
-    ("keep it", "code"),  # nothing waits: the words go on as any other message
-    ("apply that", "code"),
+    ("keep it", "chat"),  # nothing waits: the chat says so (no change run for it)
+    ("apply that", "chat"),  # the chat applies what it proposed by starting the change
     ("just show me", "show"),
     ("its not running", "show"),
     ("it's not running", "show"),
@@ -43,12 +43,12 @@ KEEP_HINT = ("The build passed and the app runs.\n\n"
     ("go ahead and build it and run it", "code"),
     ("did it run or not?", "chat"),
     ("do that", "code"),
-    ("it doesnt work", "code"),
+    ("it doesnt work", "chat"),  # a report: the chat looks, then starts the fix
     ("keep going", "code"),
     ("start again", "code"),
     ("run the tests", "code"),
     ("fix the header", "code"),
-    ("the page is blank", "code"),
+    ("the page is blank", "chat"),
 ])
 def test_his_messages_go_where_they_can_be_done(text, kind):
     assert classify_request(text, {"supported": True})["kind"] == kind
@@ -59,8 +59,8 @@ def test_his_messages_go_where_they_can_be_done(text, kind):
     ("Keep", "keep"),
     ("keep the changes", "keep"),
     ("ok keep it in my project", "keep"),
-    ("apply the changes", "code"),
-    ("accept", "code"),
+    ("apply the changes", "chat"),
+    ("accept", "chat"),
     ("keep going", "code"),
 ])
 def test_keep_words_keep_only_while_a_result_waits(text, kind):
@@ -79,8 +79,10 @@ def test_just_do_it_keeps_only_right_after_a_reply_that_said_to_keep():
         "Want me to keep the old login page?",
         "I'd keep it simple: one page.",
     ):
-        for yes in ("yes", "do it", "go ahead", "just do it for me"):
+        for yes in ("do it", "go ahead", "just do it for me"):
             assert classify_request(yes, ready, last_reply=reply, waiting=True)["kind"] == "code", (reply, yes)
+        # A bare "yes" goes to the chat, which starts the work it offered.
+        assert classify_request("yes", ready, last_reply=reply, waiting=True)["kind"] == "chat", reply
 
 
 @pytest.fixture
@@ -187,7 +189,7 @@ def test_the_app_classifies_keep_only_when_a_result_waits(project):
         return server.dispatch({"id": "1", "method": "classify_request",
                                 "params": {"path": str(project), "text": text}})["result"]["kind"]
 
-    assert kind("keep it") == "code"
+    assert kind("keep it") == "chat"
     coordinator.run_general_request(project, "change a", request_id="req-1", fake_engine=_change_a,
                                     start_preview_after=False)
     assert kind("keep it") == "keep"
@@ -204,7 +206,7 @@ def test_a_damaged_record_never_blocks_a_message(project, monkeypatch):
         return server.dispatch({"id": "1", "method": "classify_request",
                                 "params": {"path": str(project), "text": text}})["result"]["kind"]
 
-    assert kind("keep it") == "code"
+    assert kind("keep it") == "chat"
     assert kind("add a footer") == "code"
 
 

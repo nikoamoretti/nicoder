@@ -207,6 +207,21 @@ def append_free_turn(chat_id: str, role: str, text: str) -> dict[str, Any]:
         return payload
 
 
+def drop_last_free_turn(chat_id: str, role: str, text: str) -> None:
+    """Take back the last turn of a chat without a project when it is this one (a message handed to a change)."""
+    path = free_chat_path(chat_id)
+    with _WRITE_LOCK:
+        data = _read_json(path)
+        turns = _clean_turns(data.get("turns"))
+        if not turns or turns[-1].get("role") != role or turns[-1].get("text") != text.strip():
+            return
+        turns.pop()
+        if not turns:
+            path.unlink(missing_ok=True)
+            return
+        _write_json(path, {**data, "title": _chat_title(turns), "turns": turns})
+
+
 def list_free_chats(limit: int = 30) -> list[dict[str, Any]]:
     """Saved chats without a project, the most recently active first."""
     folder = chat_dir() / "free"

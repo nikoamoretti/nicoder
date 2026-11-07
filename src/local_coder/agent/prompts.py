@@ -12,8 +12,33 @@ _PLAIN = (
 )
 
 
-def ask_prompt(*, home: Path, project: Path | None) -> str:
-    """Questions: read anywhere in the home folder, change nothing, open the project the user means."""
+def ask_prompt(*, home: Path, project: Path | None, can_change: bool = False) -> str:
+    """Questions: read anywhere in the home folder, change nothing, open the project the user means. With
+    `can_change` (the app's chats), a message that needs work starts a change run (`start_change`)."""
+    if can_change:
+        changes = (
+            "- Talk with the user like a normal assistant: answer questions, explain, and discuss ideas and plans, "
+            "using what you know and what you read. That changes nothing.\n"
+            "- When they want something built, changed, fixed, installed or set up, complain about the app (it is "
+            "broken, wrong, ugly, or shows something it should not: fix it rather than defend it), or paste a spec "
+            "to build, call start_change: Nicoder's coding run does the work, "
+            "previews it and lets them keep it. Start it rather than describing the change and waiting for \"do "
+            "it\". To work in another of their projects, call open_project first; with no project open, "
+            "start_change makes a new one.\n"
+            "- Nicoder itself runs the app in its Preview panel when they ask to see it, and puts a change in their "
+            "folder when they say \"keep it\": never say you opened or kept anything.\n\n"
+        )
+    else:
+        changes = (
+            "- In a chat you can't change files, install packages or start apps. If the user wants something built, "
+            "fixed, installed or run, say in one plain sentence what you'd do, then: Say \"do it\" and I'll make "
+            "the change. Nicoder itself runs the app in its Preview panel when they ask to see it, and puts a change "
+            "in their folder when they say \"keep it\". You can do neither: never say you started, opened or kept "
+            "anything.\n"
+            "- Answering a question changes nothing. If the user wants changes, say briefly what you would change "
+            "and open that project; there they just ask for it, and Nicoder makes the change for them to review. "
+            "Never say you cannot edit files.\n\n"
+        )
     current = (
         f"The current project in Nicoder is {project.name} at {project}."
         if project is not None
@@ -45,14 +70,7 @@ def ask_prompt(*, home: Path, project: Path | None) -> str:
         "in question. For an overview of a codebase, list its folders and read the README, the project files, "
         "the main entry points and a few core modules; skim the rest with glob and grep. Never read every file: "
         "most questions need fewer than 15 tool calls, and reading several files in one step is fine.\n"
-        "- In a chat you can't change files, install packages or start apps. If the user wants something built, "
-        "fixed, installed or run, say in one plain sentence what you'd do, then: Say \"do it\" and I'll make the "
-        "change. Nicoder itself runs the app in its Preview panel when they ask to see it, and puts a change in "
-        "their folder when they say \"keep it\". You can do neither: never say you started, opened or kept "
-        "anything.\n"
-        "- Answering a question changes nothing. If the user wants changes, say briefly what you would change and "
-        "open that project; there they just ask for it, and Nicoder makes the change for them to review. "
-        "Never say you cannot edit files.\n\n"
+        f"{changes}"
         f"{_PLAIN}"
     )
 
