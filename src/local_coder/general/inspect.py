@@ -119,7 +119,8 @@ def _suggested_keep(last_reply: str | None) -> bool:
 _CHANGE_LEAD = r"^(?:(?:ok|okay|so|now|then|just|go ahead and)[\s,]+)*"
 _CHANGE_ASK = r"(?:please\s+|can you\s+|could you\s+|would you\s+|i want (?:you )?to\s+|i need (?:you )?to\s+)"
 _CHANGE_VERB = (
-    r"(make|build|add|fix|wrap|create|implement|change|update|remove|solve|finish|complete|"
+    r"(make|build|rebuild|add|fix|wrap|create|implement|change|update|remove|solve|finish|complete|redo|redesign|"
+    r"restyle|rework|tweak|adjust|"
     r"delete|rename|refactor|write|replace|install|upgrade|turn|package|"
     # "do this: …" is work; "do you …" stays a question (Nico's spec, 2026-10-25, was answered as a question).
     r"do(?!\s+(?:you|i|we|they|he|she)\b)|use|scrape|ingest|set ?up|generate|design|develop|draft|"
@@ -130,10 +131,12 @@ _LOOK = re.compile(
     r"^(explain|what does|how does|describe how|walk me through|summarize)\b",
     re.I,
 )
-# Short follow-ups that resume work, as after a run that stopped at its limit: "continue", "go on", "try again".
+# Short follow-ups that resume or rerun work, as after a run that stopped at its limit: "continue", "try again",
+# "start again", "run the tests".
 _RESUME = re.compile(
     r"^(?:(?:ok|okay|yes|yeah|so|now|then|just|please|pls)[\s,]+)*"
-    r"(?:continue|go(?:\s+on|\s+ahead)?|keep\s+going|carry\s+on|resume|proceed|try\s+again|retry|again)"
+    r"(?:continue|go(?:\s+on|\s+ahead)?|keep\s+going|carry\s+on|resume|proceed|try\s+again|retry|again|"
+    r"start\s+(?:again|over)|do\s+it\s+again|(?:re)?run\s+(?:the\s+)?(?:tests?|build|checks?)(?:\s+again)?)"
     r"[\s.!?]*$",
     re.I,
 )
