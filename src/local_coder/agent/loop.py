@@ -63,6 +63,32 @@ _STUCK = (
 # A reply with no tool call that announces a step ("Rewriting more simply:"), or that follows the note above, is sent
 # back once: it is not an answer (2026-10-27: a replay ended on "… Rewriting more simply:", the fix never written).
 _GO_ON = "Go ahead and do that now with your tools."
+# A change run that changes nothing: asked to give an origin country to each name and write it in the file, the model
+# spent all 61 steps downloading France's death registers and testing download speeds, after the user had ruled that
+# source out, and wrote nothing (Nico, 2026-11-07: "the model doesnt do what im asking it to do and do something else
+# instead"; about a dozen of his runs since 2026-10-27 ended the same way). After this many steps or seconds without a
+# change, the request is quoted back and the model is told to deliver. Replayed from the same point, the model ignored
+# that note twice and kept downloading, so the second one also pauses commands until it writes something.
+_DELIVER_STEPS = 12
+_DELIVER_SECONDS = 360
+_DELIVER = (
+    "You have taken {steps} steps and changed nothing yet. The user asked: \"{request}\" Make that now with what you "
+    "already have (your own knowledge counts): write the file or change the code in your next steps, then improve it "
+    "if time remains. Don't look for better sources or test more first."
+)
+_DELIVER_AGAIN = (
+    "You still have changed nothing after {steps} steps. The user asked: \"{request}\" Commands are paused until you "
+    "write the result with write or edit: put what you have into the file now, from your own knowledge if needed. "
+    "Commands work again once something is written."
+)
+_PAUSED = "Not run: commands are paused until you write the result with write or edit."
+# Replayed again with both notes: the model wrote a script at the first note and had a country for every name by step
+# 21, then spent the rest refining its rule and never put them in the file. A run that has changed something hears the
+# request again once, at the second note's step.
+_ANCHOR = (
+    "You have taken {steps} steps. The user asked: \"{request}\" If that is not in place yet, put a first version of "
+    "it in place now with what you have (where they asked for it), then keep improving it if time remains."
+)
 # A reply the provider dropped partway (OrcaRouter's edge closes a stream after 60 s without a byte; OrcaCyber Flash
 # sends a tool call's arguments only at the end, so writing a long file in one call went silent and was cut three times
 # in a row, 2026-10-29). Asking again for the same reply fails the same way; with this note the model wrote the first
@@ -170,6 +196,12 @@ def _tool_calls(message: dict[str, Any], *, offset: int) -> list[dict[str, Any]]
     return calls
 
 
+def _quoted(text: str, limit: int = 400) -> str:
+    """The user's request on one line, cut at a word."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[:limit].rsplit(" ", 1)[0] + " …"
+
+
 def _first_line(text: str, limit: int = 160) -> str:
     line = next((row.strip() for row in text.splitlines() if row.strip()), "")
     return line if len(line) <= limit else line[: limit - 1] + "…"
@@ -266,6 +298,7 @@ class AgentSession:
         limit = deadline if deadline is not None else started + 900
         steps = calls = 0
         nudged = hurried = looked = announced = noted = False
+        delivered, next_deliver, paused = 0, _DELIVER_STEPS, False
         lost = 0
         look_first = look_first and not _THANKS.match(text.strip())
         first_answer = ""
@@ -295,6 +328,21 @@ class AgentSession:
                     self.messages.append({"role": "user", "content": _STUCK.format(steps=steps - changed_at)})
                     noted = True
                 state, changed_at = current, steps
+            if watch and delivered < 2 and (
+                steps >= next_deliver or (not delivered and now - started >= _DELIVER_SECONDS)
+            ):
+                if not changed and self.toolbox.working_copy_state() != state:
+                    changed = True  # a command changed files
+                if not changed:
+                    delivered, next_deliver, paused = delivered + 1, steps + _DELIVER_STEPS, delivered == 1
+                    note = _DELIVER_AGAIN if paused else _DELIVER
+                    self.messages.append({"role": "user", "content": note.format(steps=steps, request=_quoted(text))})
+                    noted = True
+                elif steps >= 2 * _DELIVER_STEPS:
+                    delivered = 2
+                    self.messages.append({"role": "user", "content": _ANCHOR.format(steps=steps,
+                                                                                     request=_quoted(text))})
+                    noted = True
             self._compact()
             call_started = time.monotonic()
             try:
@@ -357,6 +405,8 @@ class AgentSession:
                     result_text = "Stopped by the user before this tool ran."
                 elif cut_off and not _readable(call["function"]["arguments"]):
                     result_text = _CUT_OFF
+                elif paused and not changed and self.toolbox.edits == edits and name == "bash":
+                    result_text = _PAUSED
                 else:
                     # A command shows while it runs, and its end takes that step's place (`call` ties the two).
                     step: dict[str, Any] = {"call": uuid.uuid4().hex[:12]}
