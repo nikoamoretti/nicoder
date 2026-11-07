@@ -347,6 +347,87 @@ def test_looking_around_before_the_first_change_is_not_stepping_back(home):
     assert not _step_backs(script.sent[-1])
 
 
+def _deliver_notes(sent: list[dict]) -> list[str]:
+    return [str(row["content"]) for row in sent if row["role"] == "user" and "changed nothing" in
+            str(row["content"])]
+
+
+def test_a_change_run_that_changes_nothing_is_asked_to_deliver(home):
+    # Nico, 2026-11-07: asked to give each name an origin country and write it in the file, the model spent 61 steps
+    # downloading registers and testing download speeds, and wrote nothing.
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(12)]
+    write = _reply(calls=[_call("write", {"path": "names.csv", "content": "Martin,France\n"}, "w")])
+    script = Script(*looks, write, _reply("Done."))
+    session, work = _change_session(home, script)
+    assert session.ask("ok now give an origin country for each name and write it in the file").status == "answered"
+    assert not _deliver_notes(script.sent[11])
+    assert script.sent[12][-1]["content"] == (
+        'You have taken 12 steps and changed nothing yet. The user asked: "ok now give an origin country for each '
+        'name and write it in the file" Make that now with what you already have (your own knowledge counts): write '
+        "the file or change the code in your next steps, then improve it if time remains. Don't look for better "
+        "sources or test more first.")
+    assert (work / "names.csv").read_text() == "Martin,France\n"
+
+
+def test_the_deliver_note_comes_at_most_twice(home):
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(40)]
+    script = Script(*looks, _reply("Done."))
+    session, _ = _change_session(home, script)
+    session.ask("go", max_steps=45)
+    assert len(_deliver_notes(script.sent[-1])) == 2
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")
+def test_after_the_second_note_commands_wait_until_something_is_written(home):
+    # Replayed 2026-11-07: the model ignored the first two notes and kept downloading.
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(24)]
+    download = _reply(calls=[_call("bash", {"command": "echo downloading"}, "d")])
+    write_then_run = _reply(calls=[_call("write", {"path": "names.csv", "content": "Martin,France\n"}, "w"),
+                                   _call("bash", {"command": "echo checked"}, "c")])
+    script = Script(*looks, download, write_then_run, _reply("Done."))
+    session, work = _change_session(home, script)
+    assert session.ask("write the file", max_steps=40).status == "answered"
+    notes = _deliver_notes(script.sent[-1])
+    assert len(notes) == 2 and "Commands are paused until you write the result" in notes[1]
+    results = [row["content"] for row in script.sent[-1] if row["role"] == "tool"]
+    assert results[-3] == "Not run: commands are paused until you write the result with write or edit."
+    assert "checked" in results[-1], "a command in the same reply as the write runs"
+    assert (work / "names.csv").exists()
+
+
+def test_a_run_that_changed_a_file_hears_the_request_once_at_step_24(home):
+    # Replayed 2026-11-07: after writing a script the model refined it for 27 steps and never filled the file.
+    write = _reply(calls=[_call("write", {"path": "app.py", "content": "x = 1\n"}, "w")])
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(40)]
+    script = Script(write, *looks, _reply("Done."))
+    session, _ = _change_session(home, script)
+    session.ask("fill in the origin column", max_steps=45)
+    assert not _deliver_notes(script.sent[-1])
+    anchors = [str(row["content"]) for row in script.sent[-1] if row["role"] == "user" and
+               str(row["content"]).startswith("You have taken 24 steps. The user asked: \"fill in the origin column\"")]
+    assert len(anchors) == 1
+    assert not any("steps. The user asked" in str(row["content"]) for row in script.sent[23] if row["role"] == "user")
+
+
+def test_a_long_search_is_asked_to_deliver_after_six_minutes(home, monkeypatch):
+    from local_coder.agent import loop
+
+    clock = iter(range(0, 100_000, 200))
+    monkeypatch.setattr(loop.time, "monotonic", lambda: next(clock))
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(4)]
+    script = Script(*looks, _reply("Done."))
+    session, _ = _change_session(home, script)
+    session.ask("go", max_steps=30, deadline=10**9)
+    assert len(_deliver_notes(script.sent[-1])) == 1
+
+
+def test_questions_never_get_the_deliver_note(home):
+    looks = [_reply(calls=[_call("list", {"path": "."}, f"l{n}")]) for n in range(14)]
+    script = Script(*looks, _reply("It is a tiny site."))
+    _session(home, script).ask("What is the site?", max_steps=30)
+    assert not _deliver_notes(script.sent[-1])
+
+
 def test_a_step_announced_without_a_tool_is_sent_back_once(home):
     # 2026-10-27 replay: "The bug: … Rewriting more simply:" and no tool call ended the run with the fix unwritten.
     script = Script(_reply("The loop runs the wrong way. Rewriting more simply:"),
